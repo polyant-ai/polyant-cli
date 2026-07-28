@@ -1,0 +1,91 @@
+# @polyant-ai/cli
+
+`polyant` is the transport between a local coding agent and a Polyant instance.
+It resolves a target and its credential, forwards requests to the management
+API, and reports results with stable exit codes.
+
+It is deliberately thin: it does not wrap the API's routes, and it does not
+validate request bodies. The engine owns those schemas, and duplicating them
+here would guarantee drift.
+
+## Install
+
+Pin it per workspace rather than installing it globally — the CLI's version
+should follow the API version of the instance you talk to.
+
+```bash
+npm i -D git+ssh://git@github.com/polyant-ai/polyant-cli.git#v0.1.0
+```
+
+## Configuration
+
+`polyant.yaml` at the workspace root is versioned; `.env` is not.
+
+```yaml
+default: staging
+
+targets:
+  staging:
+    baseUrl: https://staging.example.polyant.ai
+    keyEnv: POLYANT_KEY_STAGING   # the NAME of the env var, never the value
+  prod:
+    baseUrl: https://example.polyant.ai
+    keyEnv: POLYANT_KEY_PROD
+    prod: true                     # enables the guard rails on writes
+```
+
+A literal `key:` is rejected: a token in a versioned file is a leak. The key is
+read only from the environment variable named by `keyEnv`, and there is no
+`--key` flag, because argv is visible in `ps` and lands in shell history.
+
+Precedence is flag → environment variable → `polyant.yaml`. Without a
+`polyant.yaml`, the CLI runs on `POLYANT_URL` and `POLYANT_KEY` alone.
+
+## Commands
+
+### `polyant whoami`
+
+Active target, whether the instance answers, and the agents the key can see.
+Add `--json` for a single JSON object.
+
+A management API key cannot introspect its own permissions — `/api/me/access`
+serves only user principals — so permissions are reported as not verified
+rather than guessed. Any agent with `authEnabled: false` is flagged on stderr:
+its runtime routes require no token and validate none.
+
+### `polyant api <METHOD> <path>`
+
+Raw passthrough. One command covers every route without wrapping any.
+
+```bash
+polyant api GET /api/instances
+polyant api GET /api/conversations --query instanceId=acme --query limit=5
+polyant api PATCH /api/instances/acme/prompts --data @prompts.json
+echo '{"enabled":["webSearch"]}' | polyant api PATCH /api/instances/acme/tools --data -
+```
+
+Paths start with `/`, and not every route is under `/api`: `/health`, `/v1`,
+`/memories`, `/channels/http`, `/webhooks` and `/oauth` are top level.
+
+## Output and exit codes
+
+stdout carries only parsable data; diagnostics, progress and warnings go to
+stderr. Every mutation prints its target host on stderr before it is sent.
+
+| code | meaning |
+|------|---------|
+| `0` | success |
+| `1` | a difference, or a failed assertion — not a tool error |
+| `2` | configuration, usage or authentication (4xx except 429, missing target, absent key) |
+| `3` | remote: 5xx, 429, timeout, unreachable host — transient, so retryable |
+
+`429` is `3`, not `2`: it is worth retrying.
+
+## Development
+
+```bash
+npm install
+npm test
+npm run typecheck
+npm run build
+```

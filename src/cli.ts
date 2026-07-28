@@ -2,6 +2,7 @@
 import { CliError, ExitCode, type ExitCodeValue } from "./exit.js";
 import type { Command } from "./command.js";
 import { apiCommand } from "./commands/api.js";
+import { whoamiCommand } from "./commands/whoami.js";
 
 /**
  * The command table. Later tasks add their entry here explicitly rather than
@@ -10,6 +11,7 @@ import { apiCommand } from "./commands/api.js";
  */
 export const COMMANDS: Record<string, Command> = {
   api: apiCommand,
+  whoami: whoamiCommand,
 };
 
 export function renderHelp(): string {
