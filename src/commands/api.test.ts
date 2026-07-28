@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
-import { describe, it, expect } from "vitest";
-import { parseApiArgs } from "./api.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ConfigError } from "../exit.js";
+
+// The network and the filesystem are the two things `run()` must not touch in a
+// test. Mocked before the module under test is imported, then imported with a
+// top-level await so the mocks are already in place.
+const request = vi.fn();
+const loadWorkspaceConfig = vi.fn();
+const resolveTarget = vi.fn();
+
+vi.mock("../api/client.js", () => ({ request }));
+vi.mock("../config.js", () => ({ loadWorkspaceConfig, resolveTarget }));
+
+const { apiCommand, parseApiArgs } = await import("./api.js");
 
 describe("parseApiArgs", () => {
   it("should_read_the_method_and_path_from_positionals", () => {
@@ -49,5 +60,74 @@ describe("parseApiArgs", () => {
 
   it("should_reject_a_query_flag_without_an_equals_sign", () => {
     expect(() => parseApiArgs(["GET", "/x", "--query", "oops"])).toThrow(/k=v/);
+  });
+});
+
+describe("apiCommand.run", () => {
+  let out: string[];
+  let err: string[];
+
+  beforeEach(() => {
+    out = [];
+    err = [];
+    loadWorkspaceConfig.mockResolvedValue(undefined);
+    resolveTarget.mockReturnValue({
+      name: "dev",
+      baseUrl: "http://localhost:4000",
+      key: "pk_uuid_secret",
+      prod: false,
+    });
+    request.mockResolvedValue({ status: 200, body: { ok: true } });
+    vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+      out.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      err.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    request.mockReset();
+    loadWorkspaceConfig.mockReset();
+    resolveTarget.mockReset();
+  });
+
+  it("should_print_the_body_and_stay_silent_on_stderr_when_the_method_is_get", async () => {
+    await apiCommand.run(["GET", "/api/instances"]);
+    expect(out.join("")).toBe('{\n  "ok": true\n}\n');
+    expect(err.join("")).toBe("");
+  });
+
+  // The announcement is this command's only safety measure: it is what tells an
+  // operator which environment they just wrote to.
+  it("should_announce_the_target_host_on_stderr_when_the_method_mutates", async () => {
+    await apiCommand.run(["PATCH", "/api/instances/acme/tools"]);
+    expect(err.join("")).toBe("→ PATCH http://localhost:4000/api/instances/acme/tools [dev]\n");
+  });
+
+  it("should_mark_the_target_as_prod_in_the_announcement_when_the_target_is_prod", async () => {
+    resolveTarget.mockReturnValue({
+      name: "live",
+      baseUrl: "https://example.polyant.ai",
+      key: "pk_uuid_secret",
+      prod: true,
+    });
+    await apiCommand.run(["DELETE", "/api/instances/acme"]);
+    expect(err.join("")).toContain("[live, PROD]");
+  });
+
+  it("should_print_a_plain_text_body_unchanged", async () => {
+    request.mockResolvedValue({ status: 200, body: "plain" });
+    await apiCommand.run(["GET", "/health"]);
+    expect(out.join("")).toBe("plain\n");
+  });
+
+  it("should_print_usage_and_send_no_request_when_help_is_asked", async () => {
+    await apiCommand.run(["--help"]);
+    expect(out.join("")).toContain("Usage: polyant api");
+    expect(request).not.toHaveBeenCalled();
   });
 });
