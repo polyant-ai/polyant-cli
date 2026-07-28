@@ -117,8 +117,13 @@ export async function loadWorkspaceConfig(path: string = CONFIG_FILE): Promise<W
   let text: string;
   try {
     text = await readFile(path, "utf8");
-  } catch {
-    return undefined;
+  } catch (error) {
+    // Only "not there" means "no workspace". A file that exists but cannot be
+    // read (EACCES, EISDIR) must not masquerade as an absent one, or the user
+    // is told to create a file they already have.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`Cannot read ${path} — ${reason}`);
   }
   return parseWorkspaceConfig(text);
 }
@@ -133,9 +138,20 @@ function onlyTargetName(config: WorkspaceConfig): string {
 }
 
 function resolveFromEnvOnly(opts: ResolveOptions): ResolvedTarget {
+  const hint = `Create ${CONFIG_FILE}, or set POLYANT_URL and POLYANT_KEY.`;
+
+  // Silently dropping an explicit --target is the worst failure this module
+  // could have: the user names one instance and the CLI writes to another.
+  // POLYANT_TARGET is treated leniently by contrast — a shell may export it
+  // for a different workspace — but a flag is unambiguous intent.
+  if (opts.target !== undefined) {
+    throw new ConfigError(
+      `--target "${opts.target}" needs a ${CONFIG_FILE} declaring that target, and none was found. ${hint}`,
+    );
+  }
+
   const url = opts.url ?? opts.env.POLYANT_URL;
   const key = opts.env.POLYANT_KEY;
-  const hint = `Create ${CONFIG_FILE}, or set POLYANT_URL and POLYANT_KEY.`;
   if (!url) throw new ConfigError(`No ${CONFIG_FILE} found and POLYANT_URL is unset. ${hint}`);
   if (!key) throw new ConfigError(`No ${CONFIG_FILE} found and POLYANT_KEY is unset. ${hint}`);
   return { name: "env", baseUrl: normaliseBaseUrl(url), key, prod: false };

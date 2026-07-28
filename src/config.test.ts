@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { describe, it, expect } from "vitest";
-import { parseWorkspaceConfig, resolveTarget, type WorkspaceConfig } from "./config.js";
+import {
+  loadWorkspaceConfig,
+  parseWorkspaceConfig,
+  resolveTarget,
+  type WorkspaceConfig,
+} from "./config.js";
 import { ConfigError } from "./exit.js";
 
 const YAML = `
@@ -25,8 +30,12 @@ describe("parseWorkspaceConfig", () => {
     expect(config.targets.prod.prod).toBe(true);
   });
 
-  it("should_strip_trailing_slashes_from_base_url", () => {
+  it("should_strip_trailing_slashes_when_the_base_url_has_them", () => {
     expect(parseWorkspaceConfig(YAML).targets.prod.baseUrl).toBe("https://example.polyant.ai");
+  });
+
+  it("should_reject_the_document_when_the_yaml_is_not_a_mapping", () => {
+    expect(() => parseWorkspaceConfig("just a string\n")).toThrow(/expected a mapping at the top level/);
   });
 
   it("should_refuse_a_literal_key_and_point_at_key_env", () => {
@@ -70,7 +79,7 @@ describe("resolveTarget", () => {
     expect(t.prod).toBe(false);
   });
 
-  it("should_prefer_the_flag_over_the_env_var_over_the_file", () => {
+  it("should_prefer_the_flag_when_both_the_env_var_and_the_file_name_a_target", () => {
     const env = { POLYANT_TARGET: "staging", POLYANT_KEY_PROD: "pk_2_b" };
     expect(resolveTarget({ config, env, target: "prod" }).name).toBe("prod");
   });
@@ -80,12 +89,12 @@ describe("resolveTarget", () => {
     expect(resolveTarget({ config, env }).name).toBe("prod");
   });
 
-  it("should_carry_the_prod_flag_from_the_target", () => {
+  it("should_carry_the_prod_flag_when_the_target_declares_it", () => {
     const t = resolveTarget({ config, env: { POLYANT_KEY_PROD: "pk_2_b" }, target: "prod" });
     expect(t.prod).toBe(true);
   });
 
-  it("should_let_the_url_flag_override_the_targets_base_url", () => {
+  it("should_override_the_base_url_when_the_url_flag_is_given", () => {
     const t = resolveTarget({
       config,
       env: { POLYANT_KEY_STAGING: "pk_1_a" },
@@ -100,6 +109,12 @@ describe("resolveTarget", () => {
 
   it("should_name_the_missing_env_var_when_the_key_is_unset", () => {
     expect(() => resolveTarget({ config, env: {} })).toThrow(/POLYANT_KEY_STAGING/);
+  });
+
+  it("should_treat_an_empty_env_var_as_unset_when_the_key_is_declared", () => {
+    expect(() => resolveTarget({ config, env: { POLYANT_KEY_STAGING: "" } })).toThrow(
+      /POLYANT_KEY_STAGING/,
+    );
   });
 
   it("should_require_an_explicit_target_when_there_is_no_default_and_several_targets", () => {
@@ -127,5 +142,37 @@ describe("resolveTarget", () => {
 
   it("should_explain_both_options_when_no_config_and_no_env_key", () => {
     expect(() => resolveTarget({ env: { POLYANT_URL: "http://localhost:4000" } })).toThrow(/POLYANT_KEY/);
+  });
+
+  it("should_reject_an_explicit_target_when_there_is_no_config_file", () => {
+    expect(() =>
+      resolveTarget({
+        env: { POLYANT_URL: "http://localhost:4000", POLYANT_KEY: "pk_3_c" },
+        target: "prod",
+      }),
+    ).toThrow(/needs a polyant\.yaml declaring that target/);
+  });
+
+  it("should_ignore_the_env_target_when_there_is_no_config_file", () => {
+    const t = resolveTarget({
+      env: {
+        POLYANT_TARGET: "prod",
+        POLYANT_URL: "http://localhost:4000",
+        POLYANT_KEY: "pk_3_c",
+      },
+    });
+    expect(t.name).toBe("env");
+  });
+});
+
+describe("loadWorkspaceConfig", () => {
+  it("should_return_undefined_when_the_file_is_absent", async () => {
+    expect(await loadWorkspaceConfig("no-such-polyant-config.yaml")).toBeUndefined();
+  });
+
+  it("should_raise_a_config_error_when_the_path_exists_but_is_unreadable", async () => {
+    // A directory resolves as a path but not as a file: EISDIR, not ENOENT.
+    // Without the ENOENT check this would be reported as "no workspace".
+    await expect(loadWorkspaceConfig("src")).rejects.toThrow(/Cannot read src/);
   });
 });
