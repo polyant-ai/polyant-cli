@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { ConfigError } from "../exit.js";
-import { loadWorkspaceConfig, resolveTarget } from "../config.js";
+import { loadWorkspaceConfig, resolveTarget, type ResolvedTarget } from "../config.js";
 import { request } from "../api/client.js";
 import type { Command } from "../command.js";
 
@@ -119,13 +119,7 @@ async function readData(spec: string): Promise<unknown> {
   }
 }
 
-async function run(argv: string[]): Promise<void> {
-  if (argv.includes("--help") || argv.includes("-h")) {
-    process.stdout.write(`${API_USAGE}\n`);
-    return;
-  }
-
-  const args = parseApiArgs(argv);
+async function resolveInvocation(args: ApiArgs): Promise<{ target: ResolvedTarget; body: unknown }> {
   const config = await loadWorkspaceConfig();
   const target = resolveTarget({
     config,
@@ -134,13 +128,29 @@ async function run(argv: string[]): Promise<void> {
     ...(args.url === undefined ? {} : { url: args.url }),
   });
   const body = args.data === undefined ? undefined : await readData(args.data);
+  return { target, body };
+}
 
-  // Every mutation announces its target on stderr before it leaves, so the
-  // operator can see which environment was written to.
-  if (args.method !== "GET") {
-    const label = target.prod ? `${target.name}, PROD` : target.name;
-    process.stderr.write(`→ ${args.method} ${target.baseUrl}${args.path} [${label}]\n`);
+/**
+ * Every mutation announces its target on stderr before it leaves, so the
+ * operator can see which environment was written to. This is the command's only
+ * safety measure — `--yes` and `--dry-run` belong to `push`, not here.
+ */
+function announce(method: string, target: ResolvedTarget, path: string): void {
+  if (method === "GET") return;
+  const label = target.prod ? `${target.name}, PROD` : target.name;
+  process.stderr.write(`→ ${method} ${target.baseUrl}${path} [${label}]\n`);
+}
+
+async function run(argv: string[]): Promise<void> {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    process.stdout.write(`${API_USAGE}\n`);
+    return;
   }
+
+  const args = parseApiArgs(argv);
+  const { target, body } = await resolveInvocation(args);
+  announce(args.method, target, args.path);
 
   const res = await request(target, {
     method: args.method,
