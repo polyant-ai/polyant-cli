@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { COMMANDS, renderHelp, run } from "./cli.js";
 import { ConfigError, ExitCode, RemoteError } from "./exit.js";
 
+const BUILT_IN = Object.keys(COMMANDS);
+
 let out: string[];
 let err: string[];
 
@@ -23,7 +25,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  for (const name of Object.keys(COMMANDS)) delete COMMANDS[name];
+  for (const name of Object.keys(COMMANDS)) {
+    if (!BUILT_IN.includes(name)) delete COMMANDS[name];
+  }
 });
 
 describe("run", () => {

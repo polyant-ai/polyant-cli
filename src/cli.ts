@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { CliError, ExitCode, type ExitCodeValue } from "./exit.js";
 import type { Command } from "./command.js";
+import { apiCommand } from "./commands/api.js";
 
 /**
  * The command table. Later tasks add their entry here explicitly rather than
  * registering by import side effect: an explicit table has no cycles and is
  * greppable.
  */
-export const COMMANDS: Record<string, Command> = {};
+export const COMMANDS: Record<string, Command> = {
+  api: apiCommand,
+};
 
 export function renderHelp(): string {
   const names = Object.keys(COMMANDS).sort();
