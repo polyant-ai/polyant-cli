@@ -87,6 +87,22 @@ describe("collectWhoami", () => {
     expect(report.agents).toEqual([]);
     expect(report.agentsError).toBe("Invalid management API key");
   });
+
+  it("should_report_a_clear_error_when_the_agent_list_has_the_wrong_shape", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) =>
+        url.pathname === "/health"
+          ? jsonResponse(200, { status: "ok", timestamp: "t", service: "polyant" })
+          : jsonResponse(200, { unexpected: true }),
+      ),
+    );
+
+    const report = await collectWhoami(TARGET);
+
+    expect(report.agents).toEqual([]);
+    expect(report.agentsError).toBe("GET /api/instances did not return an instances array");
+  });
 });
 
 describe("renderWhoami", () => {
@@ -173,5 +189,20 @@ describe("whoamiCommand.run", () => {
     await whoamiCommand.run([]);
     expect(err.join("")).toContain('agent "open" has authEnabled=false');
     expect(err.join("")).not.toContain('"closed"');
+  });
+
+  // The warning must not be a casualty of choosing machine-readable output: an
+  // agent driving the CLI is exactly who needs to be told the routes are open.
+  it("should_still_name_agents_with_auth_disabled_on_stderr_when_json_is_asked", async () => {
+    await whoamiCommand.run(["--json"]);
+    expect(err.join("")).toContain('agent "open" has authEnabled=false');
+  });
+
+  it("should_print_usage_and_send_no_request_when_help_is_asked", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await whoamiCommand.run(["--help"]);
+    expect(out.join("")).toContain("Usage: polyant whoami");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

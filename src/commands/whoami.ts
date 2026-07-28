@@ -52,7 +52,13 @@ async function probeHealth(target: ResolvedTarget): Promise<Partial<WhoamiReport
 async function loadAgents(target: ResolvedTarget): Promise<Partial<WhoamiReport>> {
   try {
     const res = await request(target, { path: "/api/instances" });
-    const { instances } = res.body as ListAgentsResponse;
+    const instances = (res.body as Partial<ListAgentsResponse> | null)?.instances;
+    // Without this check a wrong shape reaches `.map()` and surfaces as a raw
+    // TypeError — caught below, but reported to the user as a JS-engine message
+    // about undefined properties instead of something they can act on.
+    if (!Array.isArray(instances)) {
+      throw new Error("GET /api/instances did not return an instances array");
+    }
     const agents = instances.map((a) => ({
       slug: a.slug,
       status: a.status,
