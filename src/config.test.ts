@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+import { describe, it, expect } from "vitest";
+import { parseWorkspaceConfig, resolveTarget, type WorkspaceConfig } from "./config.js";
+import { ConfigError } from "./exit.js";
+
+const YAML = `
+default: staging
+
+targets:
+  staging:
+    baseUrl: https://staging.example.polyant.ai
+    keyEnv: POLYANT_KEY_STAGING
+  prod:
+    baseUrl: https://example.polyant.ai/
+    keyEnv: POLYANT_KEY_PROD
+    prod: true
+`;
+
+describe("parseWorkspaceConfig", () => {
+  it("should_read_targets_and_default_when_the_document_is_valid", () => {
+    const config = parseWorkspaceConfig(YAML);
+    expect(config.default).toBe("staging");
+    expect(Object.keys(config.targets).sort()).toEqual(["prod", "staging"]);
+    expect(config.targets.staging.keyEnv).toBe("POLYANT_KEY_STAGING");
+    expect(config.targets.prod.prod).toBe(true);
+  });
+
+  it("should_strip_trailing_slashes_from_base_url", () => {
+    expect(parseWorkspaceConfig(YAML).targets.prod.baseUrl).toBe("https://example.polyant.ai");
+  });
+
+  it("should_refuse_a_literal_key_and_point_at_key_env", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n    key: pk_abc_def\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(ConfigError);
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/keyEnv/);
+  });
+
+  it("should_reject_a_base_url_without_a_scheme", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: localhost:4000\n    keyEnv: K\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/baseUrl/);
+  });
+
+  it("should_reject_a_missing_key_env", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/keyEnv/);
+  });
+
+  it("should_reject_an_empty_targets_mapping", () => {
+    expect(() => parseWorkspaceConfig("targets: {}\n")).toThrow(/non-empty "targets"/);
+  });
+
+  it("should_reject_a_default_that_names_no_declared_target", () => {
+    const bad = `default: ghost\ntargets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/must name one of/);
+  });
+
+  it("should_reject_invalid_yaml", () => {
+    expect(() => parseWorkspaceConfig("targets:\n  - [oops\n")).toThrow(ConfigError);
+  });
+});
+
+describe("resolveTarget", () => {
+  const config: WorkspaceConfig = parseWorkspaceConfig(YAML);
+
+  it("should_use_the_default_target_when_nothing_overrides_it", () => {
+    const t = resolveTarget({ config, env: { POLYANT_KEY_STAGING: "pk_1_a" } });
+    expect(t.name).toBe("staging");
+    expect(t.baseUrl).toBe("https://staging.example.polyant.ai");
+    expect(t.key).toBe("pk_1_a");
+    expect(t.prod).toBe(false);
+  });
+
+  it("should_prefer_the_flag_over_the_env_var_over_the_file", () => {
+    const env = { POLYANT_TARGET: "staging", POLYANT_KEY_PROD: "pk_2_b" };
+    expect(resolveTarget({ config, env, target: "prod" }).name).toBe("prod");
+  });
+
+  it("should_use_the_env_target_when_no_flag_is_given", () => {
+    const env = { POLYANT_TARGET: "prod", POLYANT_KEY_PROD: "pk_2_b" };
+    expect(resolveTarget({ config, env }).name).toBe("prod");
+  });
+
+  it("should_carry_the_prod_flag_from_the_target", () => {
+    const t = resolveTarget({ config, env: { POLYANT_KEY_PROD: "pk_2_b" }, target: "prod" });
+    expect(t.prod).toBe(true);
+  });
+
+  it("should_let_the_url_flag_override_the_targets_base_url", () => {
+    const t = resolveTarget({
+      config,
+      env: { POLYANT_KEY_STAGING: "pk_1_a" },
+      url: "http://localhost:4000/",
+    });
+    expect(t.baseUrl).toBe("http://localhost:4000");
+  });
+
+  it("should_fail_when_the_named_target_is_not_declared", () => {
+    expect(() => resolveTarget({ config, env: {}, target: "ghost" })).toThrow(/Unknown target "ghost"/);
+  });
+
+  it("should_name_the_missing_env_var_when_the_key_is_unset", () => {
+    expect(() => resolveTarget({ config, env: {} })).toThrow(/POLYANT_KEY_STAGING/);
+  });
+
+  it("should_require_an_explicit_target_when_there_is_no_default_and_several_targets", () => {
+    const noDefault = parseWorkspaceConfig(
+      `targets:\n  a:\n    baseUrl: http://a\n    keyEnv: A\n  b:\n    baseUrl: http://b\n    keyEnv: B\n`,
+    );
+    expect(() => resolveTarget({ config: noDefault, env: { A: "x", B: "y" } })).toThrow(/--target/);
+  });
+
+  it("should_use_the_only_target_when_there_is_no_default_and_exactly_one", () => {
+    const single = parseWorkspaceConfig(`targets:\n  only:\n    baseUrl: http://a\n    keyEnv: A\n`);
+    expect(resolveTarget({ config: single, env: { A: "x" } }).name).toBe("only");
+  });
+
+  it("should_fall_back_to_env_only_when_there_is_no_config_file", () => {
+    const t = resolveTarget({
+      env: { POLYANT_URL: "http://localhost:4000", POLYANT_KEY: "pk_3_c" },
+    });
+    expect(t).toEqual({ name: "env", baseUrl: "http://localhost:4000", key: "pk_3_c", prod: false });
+  });
+
+  it("should_explain_both_options_when_no_config_and_no_env_url", () => {
+    expect(() => resolveTarget({ env: { POLYANT_KEY: "pk_3_c" } })).toThrow(/POLYANT_URL/);
+  });
+
+  it("should_explain_both_options_when_no_config_and_no_env_key", () => {
+    expect(() => resolveTarget({ env: { POLYANT_URL: "http://localhost:4000" } })).toThrow(/POLYANT_KEY/);
+  });
+});
