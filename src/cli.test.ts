@@ -152,9 +152,15 @@ describe("run", () => {
     expect(apiMocks.request).not.toHaveBeenCalled();
   });
 
-  it("should_reject_dry_run_before_an_api_request_is_dispatched", async () => {
-    expect(await run(["api", "PATCH", "/api/instances/acme", "--dry-run"])).toBe(ExitCode.Config);
-    expect(err.join("")).toContain("--dry-run");
+  it("should_recap_but_not_dispatch_an_api_mutation_on_a_dry_run", async () => {
+    expect(await run(["api", "PATCH", "/api/instances/acme", "--dry-run"])).toBe(ExitCode.Ok);
+    expect(err.join("")).toContain("dry-run");
+    expect(apiMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("should_reject_dry_run_on_a_command_that_does_not_own_it", async () => {
+    expect(await run(["whoami", "--dry-run"])).toBe(ExitCode.Config);
+    expect(err.join("")).toContain("--dry-run is not supported");
     expect(apiMocks.request).not.toHaveBeenCalled();
   });
 

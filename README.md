@@ -216,10 +216,19 @@ engine's body through unchanged.
 Active target, whether the instance answers, and the agents the key can see.
 Add `--json` for a single JSON object.
 
-A management API key cannot introspect its own permissions — `/api/me/access`
-serves only user principals — so permissions are reported as not verified
-rather than guessed. Any agent with `authEnabled: false` is flagged on stderr:
-its runtime routes require no token and validate none.
+Permissions come from `GET /api/service-context` when the engine serves it: the
+report then names the key's organisation, its effective permission keys, and the
+workspaces it may address. That route is a pending engine contract, so until it
+lands permissions read `not verified` rather than being guessed — `/api/me/access`
+serves user principals only. A malformed introspection answer is also treated as
+unverified: an empty list would claim the key can do nothing, which is a
+different statement.
+
+Any agent with `authEnabled: false` is flagged on stderr: its runtime routes
+require no token and validate none.
+
+`whoami` exits `0` whenever it can resolve a target, even against an unreachable
+instance — reporting that is its job. Use `monitor status` when you need a gate.
 
 ### `polyant-cli api <METHOD> <path>`
 
@@ -228,12 +237,27 @@ Raw passthrough. One command covers every route without wrapping any.
 ```bash
 polyant-cli api GET /api/instances
 polyant-cli api GET /api/conversations --query instanceId=acme --query limit=5
-polyant-cli api PATCH /api/instances/acme/prompts --data @prompts.json
-echo '{"enabled":["webSearch"]}' | polyant-cli api PATCH /api/instances/acme/tools --data -
+polyant-cli api PATCH /api/instances/acme/prompts --data @prompts.json --yes
+echo '{"enabled":["webSearch"]}' | polyant-cli api PATCH /api/instances/acme/tools --data - --yes
+polyant-cli api DELETE /api/instances/acme --yes --confirm /api/instances/acme
 ```
 
 Paths start with `/`, and not every route is under `/api`: `/health`, `/v1`,
 `/memories`, `/channels/http`, `/webhooks` and `/oauth` are top level.
+
+A `GET` sends immediately. Every other method goes through the same preflight as
+the product commands: a recap on stderr naming the target, the method, the path,
+where the body came from, and which query keys are set — then a confirmation, or
+`--yes` in automation. A production target always needs `--yes`. `DELETE`
+additionally needs `--confirm <path>`: an unrecoverable raw call is the one case
+worth naming the target twice. `--dry-run` prints the recap and sends nothing.
+
+The recap never prints the body and never parses it. Both directions are
+byte-for-byte: the response is printed exactly as received, and the request body
+is forwarded exactly as supplied, so a large integer keeps its precision, `1.0`
+stays `1.0`, and key order survives. `--data` is still parsed once — and the
+result discarded — purely so malformed JSON fails locally instead of as a remote
+400.
 
 ## Output and exit codes
 

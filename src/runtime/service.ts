@@ -5,6 +5,7 @@ import type { CommandContext } from "../command.js";
 import { loadWorkspaceConfig, type WorkspaceConfig } from "../config.js";
 import { ConfigError } from "../exit.js";
 import type { ConfirmationIO } from "./confirm.js";
+import { processConfirmationIO, readStdin } from "./process-io.js";
 import { resolveScope, type ResolvedScope, type ScopeRequirement } from "./scope.js";
 
 /**
@@ -26,22 +27,12 @@ export interface ServiceDependencies {
   readPayload(source: string): Promise<string>;
 }
 
-export async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString("utf8");
-}
-
 export const processServiceDependencies: ServiceDependencies = {
   request: processRequest,
   requestStream: processRequestStream,
   loadConfig: () => loadWorkspaceConfig(),
   env: process.env,
-  io: {
-    stdout: (text) => process.stdout.write(text),
-    stderr: (text) => process.stderr.write(text),
-    input: { isTTY: process.stdin.isTTY, readLine: readStdin },
-  },
+  io: processConfirmationIO,
   readPayload: (source) => (source === "-" ? readStdin() : readFile(source, "utf8")),
 };
 

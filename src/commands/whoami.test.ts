@@ -59,6 +59,67 @@ describe("collectWhoami", () => {
     expect(report.permissions).toBe("unverified");
   });
 
+  // /api/service-context is a pending engine contract: absent today, expected
+  // later. Both answers must leave the report honest.
+  it("should_report_effective_permissions_when_service_context_is_served", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (url.pathname === "/health") return jsonResponse(200, { status: "ok", service: "polyant" });
+        if (url.pathname === "/api/service-context") {
+          return jsonResponse(200, {
+            principal: { organization: { id: "org-1", slug: "acme", name: "Acme" } },
+            permissions: ["org:read", "agent:read"],
+            workspaces: [
+              { id: "ws-1", slug: "general", name: "General", isDefault: true },
+              { id: "ws-2", slug: "labs", name: "Labs", isDefault: false },
+            ],
+          });
+        }
+        return jsonResponse(200, { instances: [] });
+      }),
+    );
+
+    const report = await collectWhoami(TARGET);
+
+    expect(report.permissions).toEqual(["agent:read", "org:read"]);
+    expect(report.organization).toMatchObject({ slug: "acme" });
+    expect(report.workspaces?.map((w) => w.slug)).toEqual(["general", "labs"]);
+    expect(renderWhoami(report)).toContain("agent:read, org:read");
+    expect(renderWhoami(report)).toContain("general  ws-1  (default)");
+  });
+
+  it("should_keep_permissions_unverified_when_service_context_is_absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (url.pathname === "/health") return jsonResponse(200, { status: "ok", service: "polyant" });
+        if (url.pathname === "/api/service-context") return jsonResponse(404, { message: "Cannot GET" });
+        return jsonResponse(200, { instances: [] });
+      }),
+    );
+
+    const report = await collectWhoami(TARGET);
+
+    expect(report.permissions).toBe("unverified");
+    expect(report.organization).toBeUndefined();
+    expect(renderWhoami(report)).toContain("not verified");
+  });
+
+  it("should_not_claim_an_empty_permission_set_when_service_context_is_malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (url.pathname === "/health") return jsonResponse(200, { status: "ok", service: "polyant" });
+        if (url.pathname === "/api/service-context") return jsonResponse(200, { permissions: "org:read" });
+        return jsonResponse(200, { instances: [] });
+      }),
+    );
+
+    // A permission set the CLI cannot trust is not a permission set of none.
+    expect((await collectWhoami(TARGET)).permissions).toBe("unverified");
+  });
+
   it("should_report_unreachable_without_throwing_when_health_fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new TypeError("fetch failed");

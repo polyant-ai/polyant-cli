@@ -7,6 +7,8 @@ import { request } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
 import { resolveScope } from "../runtime/scope.js";
 import type { GlobalOptions } from "../runtime/global-options.js";
+import { confirmMutation, type ConfirmationIO } from "../runtime/confirm.js";
+import { processConfirmationIO } from "../runtime/process-io.js";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
@@ -15,9 +17,14 @@ export const API_USAGE = `Usage: polyant-cli api <METHOD> <path> [options]
 Raw passthrough to the management API: resolves the base URL and the auth
 header, forwards the request, prints the response body on stdout unchanged.
 
+Every non-GET request is recapped on stderr and confirmed before it leaves.
+The recap names the target, the method, the path and where the body came from;
+it never prints the body, and never parses it.
+
 Options:
   --data <@file|->   JSON request body — @path reads a file, - reads stdin
   --query <k=v>      query parameter, repeatable
+  --confirm <path>   required for DELETE: repeat the path being deleted
   --target <name>    target from polyant.yaml (default: its "default")
   --url <baseUrl>    override the target's baseUrl
 
@@ -29,6 +36,7 @@ Methods: ${METHODS.join(", ")}`;
 export interface ApiArgs {
   method: string;
   path: string;
+  confirm?: string;
   data?: string;
   query: Record<string, string>;
   target?: string;
@@ -54,6 +62,7 @@ function parseApiFlags(argv: string[]) {
     return parseArgs({
       args: argv,
       options: {
+        confirm: { type: "string" },
         data: { type: "string" },
         query: { type: "string", multiple: true },
         target: { type: "string" },
@@ -85,6 +94,7 @@ export function parseApiArgs(argv: string[]): ApiArgs {
   const { values, positionals } = parseApiFlags(argv);
   return {
     ...requireMethodAndPath(positionals),
+    ...(values.confirm === undefined ? {} : { confirm: values.confirm }),
     ...(values.data === undefined ? {} : { data: values.data }),
     query: splitQuery(values.query ?? []),
     ...(values.target === undefined ? {} : { target: values.target }),
@@ -98,10 +108,19 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function readData(spec: string): Promise<unknown> {
+export interface RawPayload {
+  /** The caller's own bytes, forwarded unchanged. */
+  readonly text: string;
+  /** Where it came from, for the recap. Never the content. */
+  readonly source: string;
+}
+
+async function readData(spec: string): Promise<RawPayload> {
   let text: string;
+  let source: string;
   if (spec === "-") {
     text = await readStdin();
+    source = "stdin";
   } else if (spec.startsWith("@")) {
     const file = spec.slice(1);
     try {
@@ -109,16 +128,21 @@ async function readData(spec: string): Promise<unknown> {
     } catch {
       throw new ConfigError(`--data cannot read "${file}".`);
     }
+    source = file;
   } else {
     throw new ConfigError(`--data expects "@<file>" or "-" (got "${spec}").`);
   }
 
+  // Parsed only to reject a malformed payload locally instead of as a remote
+  // 400 — the parsed value is then discarded. What travels is `text`, so the
+  // caller's integer precision, `1.0` spelling and key order survive intact.
   try {
-    return JSON.parse(text);
+    JSON.parse(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new ConfigError(`--data is not valid JSON — ${reason}`);
   }
+  return { text, source };
 }
 
 /** Lets direct command callers retain local --target parsing while the runtime owns global flags. */
@@ -128,7 +152,7 @@ function globalForScope(context: CommandContext | undefined, target: string | un
   return global.target === undefined && target !== undefined ? { ...global, target } : global;
 }
 
-async function resolveInvocation(args: ApiArgs, context?: CommandContext): Promise<{ target: ResolvedTarget; body: unknown }> {
+async function resolveInvocation(args: ApiArgs, context?: CommandContext): Promise<{ target: ResolvedTarget; payload?: RawPayload }> {
   const config = await loadWorkspaceConfig();
   const target = resolveScope({
     config,
@@ -137,19 +161,52 @@ async function resolveInvocation(args: ApiArgs, context?: CommandContext): Promi
     ...(args.url === undefined ? {} : { url: args.url }),
     required: ["target"],
   }).target;
-  const body = args.data === undefined ? undefined : await readData(args.data);
-  return { target, body };
+  const payload = args.data === undefined ? undefined : await readData(args.data);
+  return { target, ...(payload === undefined ? {} : { payload }) };
 }
 
 /**
- * Every mutation announces its target on stderr before it leaves, so the
- * operator can see which environment was written to. This is the command's only
- * safety measure — `--yes` and `--dry-run` belong to `push`, not here.
+ * A raw non-GET request goes through the same preflight as every other mutation:
+ * a recap on stderr, then a confirmation. The recap describes the payload's
+ * *source*, never its content — printing a body would put a secret on the
+ * terminal, and parsing one to summarise it would defeat the passthrough this
+ * command exists to be.
+ *
+ * DELETE additionally requires `--confirm <path>`: an unrecoverable raw call is
+ * the one case where naming the target twice is worth the keystrokes.
  */
-function announce(method: string, target: ResolvedTarget, path: string): void {
-  if (method === "GET") return;
-  const label = target.prod ? `${target.name}, PROD` : target.name;
-  process.stderr.write(`→ ${method} ${target.baseUrl}${path} [${label}]\n`);
+async function preflight(
+  args: ApiArgs,
+  target: ResolvedTarget,
+  payload: RawPayload | undefined,
+  context: CommandContext | undefined,
+  io: ConfirmationIO,
+): Promise<boolean> {
+  if (args.method === "GET") return true;
+
+  const changes = [
+    `Send ${args.method} to ${target.baseUrl}${args.path}.`,
+    payload === undefined
+      ? "No request body."
+      : `Request body: ${payload.source} (${Buffer.byteLength(payload.text, "utf8")} bytes, forwarded unchanged).`,
+    ...(Object.keys(args.query).length === 0 ? [] : [`Query parameters: ${Object.keys(args.query).sort().join(", ")}.`]),
+  ];
+
+  const decision = await confirmMutation(
+    {
+      title: `${args.method} ${args.path}`,
+      scope: { target: target.name, prod: target.prod },
+      changes,
+      ...(args.method === "DELETE" ? { destructive: { confirm: args.path } } : {}),
+    },
+    {
+      yes: context?.global.yes ?? false,
+      dryRun: context?.global.dryRun ?? false,
+      ...(args.confirm === undefined ? {} : { confirm: args.confirm }),
+    },
+    io,
+  );
+  return decision.shouldWrite;
 }
 
 async function run(argv: string[], context?: CommandContext): Promise<void> {
@@ -159,14 +216,14 @@ async function run(argv: string[], context?: CommandContext): Promise<void> {
   }
 
   const args = parseApiArgs(argv);
-  const { target, body } = await resolveInvocation(args, context);
-  announce(args.method, target, args.path);
+  const { target, payload } = await resolveInvocation(args, context);
+  if (!(await preflight(args, target, payload, context, processConfirmationIO))) return;
 
   const res = await request(target, {
     method: args.method,
     path: args.path,
     query: args.query,
-    ...(body === undefined ? {} : { body }),
+    ...(payload === undefined ? {} : { rawBody: payload.text }),
   });
 
   // The response text verbatim. Parsing and re-serialising would silently alter
@@ -179,5 +236,6 @@ async function run(argv: string[], context?: CommandContext): Promise<void> {
 export const apiCommand = {
   summary: "raw passthrough to the management API",
   usage: API_USAGE,
+  supportsDryRun: true,
   run,
 } satisfies Command;

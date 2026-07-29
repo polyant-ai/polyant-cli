@@ -88,6 +88,24 @@ describe("apiCommand.run", () => {
     }) as typeof process.stderr.write);
   });
 
+  function context(global: Record<string, unknown> = {}) {
+    return { path: ["api"], global: { json: false, yes: false, dryRun: false, ...global } } as never;
+  }
+
+  /** A caller who has already accepted the recap. */
+  function approved() {
+    return context({ yes: true });
+  }
+
+  function prodTarget(): void {
+    resolveTarget.mockReturnValue({
+      name: "live",
+      baseUrl: "https://example.polyant.ai",
+      key: "pk_uuid_secret",
+      prod: true,
+    });
+  }
+
   afterEach(() => {
     vi.restoreAllMocks();
     request.mockReset();
@@ -101,22 +119,50 @@ describe("apiCommand.run", () => {
     expect(err.join("")).toBe("");
   });
 
-  // The announcement is this command's only safety measure: it is what tells an
-  // operator which environment they just wrote to.
-  it("should_announce_the_target_host_on_stderr_when_the_method_mutates", async () => {
-    await apiCommand.run(["PATCH", "/api/instances/acme/tools"]);
-    expect(err.join("")).toBe("→ PATCH http://localhost:4000/api/instances/acme/tools [dev]\n");
+  it("should_recap_a_mutation_on_stderr_and_send_it_once_confirmed", async () => {
+    await apiCommand.run(["PATCH", "/api/instances/acme/tools"], approved());
+
+    const recap = err.join("");
+    expect(recap).toContain("PATCH /api/instances/acme/tools");
+    expect(recap).toContain("target: dev");
+    expect(recap).toContain("Send PATCH to http://localhost:4000/api/instances/acme/tools.");
+    expect(recap).toContain("No request body.");
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it("should_mark_the_target_as_prod_in_the_announcement_when_the_target_is_prod", async () => {
-    resolveTarget.mockReturnValue({
-      name: "live",
-      baseUrl: "https://example.polyant.ai",
-      key: "pk_uuid_secret",
-      prod: true,
-    });
-    await apiCommand.run(["DELETE", "/api/instances/acme"]);
-    expect(err.join("")).toContain("[live, PROD]");
+  it("should_refuse_a_mutation_that_is_neither_confirmed_nor_approved", async () => {
+    await expect(apiCommand.run(["PATCH", "/api/instances/acme/tools"], context()))
+      .rejects.toThrow(/--yes is required/);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("should_require_yes_against_a_production_target", async () => {
+    prodTarget();
+
+    await expect(apiCommand.run(["PATCH", "/api/instances/acme"], context())).rejects.toThrow(/targets production/);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("should_mark_a_production_target_in_the_recap", async () => {
+    prodTarget();
+
+    await apiCommand.run(["PATCH", "/api/instances/acme"], approved());
+
+    expect(err.join("")).toContain("target: live (PROD)");
+  });
+
+  it("should_require_a_matching_confirm_before_a_delete", async () => {
+    await expect(apiCommand.run(["DELETE", "/api/instances/acme"], approved()))
+      .rejects.toThrow(/--confirm \/api\/instances\/acme is required/);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("should_send_nothing_on_a_dry_run", async () => {
+    await apiCommand.run(["PATCH", "/api/instances/acme"], context({ dryRun: true }));
+
+    expect(request).not.toHaveBeenCalled();
+    expect(err.join("")).toContain("dry-run");
+    expect(out.join("")).toBe("");
   });
 
   it("should_print_a_plain_text_body_unchanged", async () => {
@@ -127,7 +173,7 @@ describe("apiCommand.run", () => {
 
   it("should_print_nothing_when_the_response_has_no_body", async () => {
     request.mockResolvedValue({ status: 204, raw: "", body: null });
-    await apiCommand.run(["DELETE", "/api/instances/acme"]);
+    await apiCommand.run(["DELETE", "/api/instances/acme", "--confirm", "/api/instances/acme"], approved());
     expect(out.join("")).toBe("");
   });
 

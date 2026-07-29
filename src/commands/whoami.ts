@@ -19,8 +19,9 @@ Options:
   --target <name>    target from polyant.yaml (default: its "default")
   --url <baseUrl>    override the target's baseUrl
 
-A management API key cannot introspect its own permissions: /api/me/access
-only serves user principals, so permissions are reported as not verified.
+Permissions come from /api/service-context when the engine serves it. Until
+that contract lands, they are reported as not verified rather than guessed:
+/api/me/access serves user principals only.
 
 This command exits 0 whenever it can resolve a target, even if the instance
 never answers — reporting an unreachable instance is its job, not a failure of
@@ -36,8 +37,16 @@ export interface WhoamiReport {
   agents: { slug: string; status: string; authEnabled: boolean }[];
   /** Agents whose runtime routes are open to anyone (`authEnabled: false`). */
   openAgents: string[];
-  /** Always "unverified" — there is no introspection endpoint for a service principal. */
-  permissions: "unverified";
+  /**
+   * The key's effective permission keys, or "unverified" when the engine serves
+   * no introspection route for a service principal. Never a guess: an empty
+   * array would claim the key can do nothing, which is a different statement.
+   */
+  permissions: "unverified" | string[];
+  /** The key's own organisation, when service-context reports it. */
+  organization?: { id: string; slug: string; name: string };
+  /** Workspaces the key may address, when service-context reports them. */
+  workspaces?: { id: string; slug: string; isDefault: boolean }[];
   /** Why /health did not answer, when it did not. */
   unreachableReason?: string;
   /** Why the agent list is empty, when it is. */
@@ -78,10 +87,44 @@ async function loadAgents(target: ResolvedTarget): Promise<Partial<WhoamiReport>
   }
 }
 
+/**
+ * Introspection is optional by design: the route is a pending engine contract,
+ * so a 404 or 403 is an expected answer and must leave the report honest rather
+ * than fail the command.
+ */
+async function probeServiceContext(target: ResolvedTarget): Promise<Partial<WhoamiReport>> {
+  try {
+    const res = await request(target, { path: "/api/service-context" });
+    const body = res.body as
+      | { permissions?: unknown; principal?: { organization?: unknown }; workspaces?: unknown }
+      | null;
+    const permissions = body?.permissions;
+    if (!Array.isArray(permissions) || !permissions.every((entry) => typeof entry === "string")) {
+      return {};
+    }
+    const organization = body?.principal?.organization;
+    const workspaces = body?.workspaces;
+    return {
+      permissions: [...permissions].sort(),
+      ...(isOrganization(organization) ? { organization } : {}),
+      ...(Array.isArray(workspaces) ? { workspaces: workspaces as WhoamiReport["workspaces"] } : {}),
+    };
+  } catch {
+    // Not reported as an error: the absence of the route is the current state of
+    // the engine, and "unverified" already says so.
+    return {};
+  }
+}
+
+function isOrganization(value: unknown): value is NonNullable<WhoamiReport["organization"]> {
+  return value !== null && typeof value === "object" && "slug" in value && "id" in value;
+}
+
 export async function collectWhoami(target: ResolvedTarget): Promise<WhoamiReport> {
   const health = await probeHealth(target);
   // The agent list is only meaningful once the instance answers at all.
   const agents = health.reachable ? await loadAgents(target) : {};
+  const identity = health.reachable ? await probeServiceContext(target) : {};
   return {
     target: target.name,
     baseUrl: target.baseUrl,
@@ -93,6 +136,7 @@ export async function collectWhoami(target: ResolvedTarget): Promise<WhoamiRepor
     permissions: "unverified",
     ...health,
     ...agents,
+    ...identity,
   };
 }
 
@@ -101,8 +145,18 @@ export function renderWhoami(report: WhoamiReport): string {
     `target:      ${report.target}${report.prod ? " (PROD)" : ""}`,
     `baseUrl:     ${report.baseUrl}`,
     `reachable:   ${report.reachable ? `yes (${report.service ?? "unknown service"})` : `no${report.unreachableReason ? ` — ${report.unreachableReason}` : ""}`}`,
-    `permissions: not verified — no introspection endpoint for a management API key`,
+    Array.isArray(report.permissions)
+      ? `permissions: ${report.permissions.length === 0 ? "(none granted)" : report.permissions.join(", ")}`
+      : `permissions: not verified — the engine serves no introspection route for a management API key`,
+    ...(report.organization === undefined ? [] : [`org:         ${report.organization.slug} (${report.organization.id})`]),
   ];
+
+  if (report.workspaces !== undefined) {
+    lines.push("", `workspaces (${report.workspaces.length}):`);
+    for (const workspace of report.workspaces) {
+      lines.push(`  ${workspace.slug}  ${workspace.id}${workspace.isDefault ? "  (default)" : ""}`);
+    }
+  }
 
   if (report.agents.length > 0) {
     lines.push("", `agents (${report.agents.length}):`);

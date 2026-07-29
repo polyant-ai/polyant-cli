@@ -26,6 +26,13 @@ export interface RequestOptions {
   path: string;
   query?: Record<string, string>;
   body?: unknown;
+  /**
+   * Request body forwarded byte-for-byte. `api` uses it so a passthrough does
+   * not alter the caller's own JSON: parsing and re-serialising loses integer
+   * precision, turns `1.0` into `1`, and collapses duplicate keys — on the way
+   * in exactly as it would on the way out.
+   */
+  rawBody?: string;
   /** Request deadline. `0` disables it, which only a long-lived stream needs. */
   timeoutMs?: number;
   /** Runtime routes take a per-instance key as a Bearer token instead of the management key. */
@@ -81,7 +88,7 @@ function buildHeaders(target: ResolvedTarget, opts: RequestOptions): Record<stri
   const headers: Record<string, string> = opts.bearer
     ? { Authorization: `Bearer ${opts.bearer}` }
     : { [KEY_HEADER]: target.key };
-  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+  if (opts.body !== undefined || opts.rawBody !== undefined) headers["Content-Type"] = "application/json";
   if (opts.workspaceId !== undefined) headers[WORKSPACE_HEADER] = opts.workspaceId;
   return headers;
 }
@@ -97,6 +104,11 @@ function buildUrl(target: ResolvedTarget, opts: RequestOptions): URL {
   return url;
 }
 
+function bodyInit(opts: RequestOptions): { body?: string } {
+  if (opts.rawBody !== undefined) return { body: opts.rawBody };
+  return opts.body === undefined ? {} : { body: JSON.stringify(opts.body) };
+}
+
 async function send(
   url: URL,
   method: string,
@@ -107,7 +119,7 @@ async function send(
     return await fetch(url, {
       method,
       headers: buildHeaders(target, opts),
-      ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
+      ...bodyInit(opts),
       // A follow stream is meant to stay open; a deadline would abort it mid-run
       // and read as a remote failure. Such a caller passes 0 and ends the stream
       // itself (or the operator interrupts it).
