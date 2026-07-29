@@ -6,6 +6,7 @@ import type { Command, CommandContext } from "../command.js";
 import { CONFIG_FILE, parseWorkspaceConfig, serializeWorkspaceConfig, type WorkspaceConfig } from "../config.js";
 import { ConfigError } from "../exit.js";
 import { confirmMutation, type ConfirmationIO } from "../runtime/confirm.js";
+import { assertKnown, takeValue } from "../runtime/flags.js";
 
 export interface ConfigFileSystem {
   readFile(path: string, encoding: "utf8"): Promise<string>;
@@ -89,21 +90,12 @@ async function writeYaml(deps: ConfigCommandDependencies, previous: string | und
   await deps.fs.rename(temporary, deps.configPath);
 }
 
-function takeValue(args: string[], flag: string): string | undefined {
-  const index = args.indexOf(flag);
-  if (index === -1) return undefined;
-  const value = args[index + 1];
-  if (value === undefined || value.startsWith("--")) throw new ConfigError(`${flag} needs a value.`);
-  return value;
-}
+const BOOLEAN_FLAGS = ["--prod", "--force", "--no-prod"] as const;
 
-function onlyKnown(args: string[], permitted: readonly string[], booleanFlags: readonly string[] = ["--prod", "--force", "--no-prod"]): void {
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (!arg.startsWith("--")) continue;
-    if (!permitted.includes(arg)) throw new ConfigError(`Unknown config option ${arg}.`);
-    if (!booleanFlags.includes(arg)) index += 1;
-  }
+function onlyKnown(args: string[], permitted: readonly string[]): void {
+  const value = permitted.filter((flag) => !BOOLEAN_FLAGS.includes(flag as (typeof BOOLEAN_FLAGS)[number]));
+  const boolean = permitted.filter((flag) => BOOLEAN_FLAGS.includes(flag as (typeof BOOLEAN_FLAGS)[number]));
+  assertKnown(args, { value, boolean }, "config option");
 }
 
 async function init(args: string[], context: CommandContext | undefined, deps: ConfigCommandDependencies): Promise<void> {

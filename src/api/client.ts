@@ -8,6 +8,13 @@ import type { ResolvedTarget } from "../config.js";
  */
 export const KEY_HEADER = "X-Polyant-Key";
 
+/**
+ * Selects the workspace a management route operates in. A service principal is
+ * org-scoped, so without it the engine picks its own default workspace and the
+ * caller silently reads or writes the wrong one.
+ */
+export const WORKSPACE_HEADER = "x-workspace-id";
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Routes that live outside /api, which callers get wrong systematically. */
@@ -22,6 +29,8 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** Runtime routes take a per-instance key as a Bearer token instead of the management key. */
   bearer?: string;
+  /** Selects the active workspace for management routes that resolve one. */
+  workspaceId?: string;
 }
 
 export interface ApiResponse {
@@ -72,6 +81,7 @@ function buildHeaders(target: ResolvedTarget, opts: RequestOptions): Record<stri
     ? { Authorization: `Bearer ${opts.bearer}` }
     : { [KEY_HEADER]: target.key };
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+  if (opts.workspaceId !== undefined) headers[WORKSPACE_HEADER] = opts.workspaceId;
   return headers;
 }
 

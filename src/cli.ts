@@ -1,20 +1,11 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type { Command } from "./command.js";
+import { agentCommand } from "./commands/agent.js";
 import { apiCommand } from "./commands/api.js";
 import { configCommand } from "./commands/config.js";
 import { whoamiCommand } from "./commands/whoami.js";
 import { CliError, ConfigError, ExitCode, type ExitCodeValue } from "./exit.js";
 import { parseInvocation, type Invocation } from "./runtime/global-options.js";
-
-function placeholder(path: string, summary: string): Command {
-  return {
-    summary,
-    usage: `Usage: polyant-cli ${path} [args]`,
-    async run() {
-      throw new ConfigError(`The command "polyant-cli ${path}" is not implemented.`);
-    },
-  };
-}
 
 /**
  * The command tree. Later tasks add their entry here explicitly rather than
@@ -22,14 +13,7 @@ function placeholder(path: string, summary: string): Command {
  * greppable.
  */
 export const COMMANDS: Record<string, Command> = {
-  agent: {
-    summary: "manage agents",
-    usage: "Usage: polyant-cli agent <action> [args]",
-    children: {
-      list: placeholder("agent list", "list agents"),
-      get: placeholder("agent get", "show an agent"),
-    },
-  },
+  agent: agentCommand,
   api: apiCommand,
   config: configCommand,
   whoami: whoamiCommand,
@@ -48,9 +32,12 @@ function renderChildren(command: Command, heading: string): string[] {
   const names = Object.keys(command.children ?? {}).sort();
   const lines = [heading];
   if (names.length === 0) lines.push("  (none registered)");
+  // Width from the actual names: a fixed column silently misaligns as soon as a
+  // command name outgrows it.
+  const width = Math.max(0, ...names.map((name) => name.length));
   for (const name of names) {
     const child = childCommand(command, name);
-    if (child !== undefined) lines.push(`  ${name.padEnd(10)} ${child.summary}`);
+    if (child !== undefined) lines.push(`  ${name.padEnd(width)}  ${child.summary}`);
   }
   return lines;
 }

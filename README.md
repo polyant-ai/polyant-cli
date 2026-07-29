@@ -106,6 +106,58 @@ may appear before or after the command path.
 `doctor` checks only whether each named key environment variable is set. It
 reports a missing variable name, never the value.
 
+### `polyant-cli agent`
+
+Manage agents inside one workspace. Every agent action needs an organisation and
+a workspace, so select a context (or pass `--org` and `--workspace`) first — the
+CLI never guesses which workspace a write lands in.
+
+```bash
+polyant-cli --context engineering agent list
+polyant-cli --context engineering agent show acme
+polyant-cli --context engineering agent create acme --name Acme --model claude-sonnet-4
+polyant-cli --context engineering agent update acme --model claude-opus-5
+polyant-cli --context engineering agent delete acme --yes --confirm acme
+
+polyant-cli --context engineering agent prompt show acme --section identity
+polyant-cli --context engineering agent prompt set acme --section identity --file identity.md
+
+polyant-cli --context engineering agent tools show acme --enabled-only
+polyant-cli --context engineering agent tools set acme --enable web_search,crm
+
+polyant-cli --context engineering agent channels show acme
+polyant-cli --context engineering agent channels set acme telegram --file telegram.json
+polyant-cli --context engineering agent channels remove acme telegram --yes --confirm telegram
+
+polyant-cli --context engineering agent hooks show acme
+polyant-cli --context engineering agent hooks add acme --file hook.json
+polyant-cli --context engineering agent hooks update acme <hookId> --file patch.json
+polyant-cli --context engineering agent hooks remove acme <hookId> --yes --confirm <hookId>
+
+polyant-cli --context engineering agent conversations list acme --limit 20
+polyant-cli --context engineering agent conversations show acme <conversationId>
+```
+
+Reads print an aligned table or a labelled record; `--json` passes the engine's
+response body through byte-for-byte, so a pipeline never sees re-serialised
+numbers. `agent conversations show --json` emits a composite object whose
+`conversation` and `messages` values are the two original bodies.
+
+Writes print a recap on stderr before anything is sent. `tools set` reads its
+flag as the *complete* desired selection — the engine replaces the list — and the
+recap names what is enabled, disabled, and left alone. `update` and
+`prompt set` read the current state first so the recap can show the previous
+value, including when a flag changes nothing.
+
+`delete`, `channels remove`, and `hooks remove` are destructive: they require
+`--yes` plus `--confirm <slug|type|hookId>`. `--dry-run` prints the recap and
+sends nothing.
+
+Channel and hook configuration is accepted only from a named file or stdin
+(`--file -`), never from an inline flag where a secret would land in shell
+history. `channels show` prints config **key names** only; stored values, masked
+or not, are never echoed.
+
 ### `polyant-cli whoami`
 
 Active target, whether the instance answers, and the agents the key can see.

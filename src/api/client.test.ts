@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { KEY_HEADER, extractMessage, request, statusToExitCode } from "./client.js";
+import { KEY_HEADER, WORKSPACE_HEADER, extractMessage, request, statusToExitCode } from "./client.js";
 import { ExitCode, RemoteError } from "../exit.js";
 import type { ResolvedTarget } from "../config.js";
 
@@ -86,6 +86,26 @@ describe("request", () => {
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer inst-key");
     expect(headers[KEY_HEADER]).toBeUndefined();
+  });
+
+  it("should_select_the_active_workspace_with_a_header_when_one_is_given", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, {}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await request(TARGET, { path: "/api/instances", workspaceId: "ws-1" });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect((init.headers as Record<string, string>)[WORKSPACE_HEADER]).toBe("ws-1");
+  });
+
+  it("should_omit_the_workspace_header_when_no_workspace_is_selected", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, {}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await request(TARGET, { path: "/health" });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect((init.headers as Record<string, string>)[WORKSPACE_HEADER]).toBeUndefined();
   });
 
   it("should_serialise_the_body_and_set_the_content_type", async () => {
