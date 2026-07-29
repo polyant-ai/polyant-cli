@@ -72,6 +72,40 @@ prefer declaring a target over reaching for the flag.
 
 ## Commands
 
+### `polyant-cli config`
+
+Manage the local, versioned `polyant.yaml`; these commands make no API calls
+and never ask for, write, or send a management-key value. `keyEnv` always means
+the name of an environment variable.
+
+```bash
+# Prompts only for target name, base URL, and key environment-variable name.
+polyant-cli config init --target dev --url http://localhost:4000 --key-env POLYANT_KEY_DEV
+
+polyant-cli config validate
+polyant-cli config show
+polyant-cli config doctor
+
+polyant-cli config target add prod --url https://example.polyant.ai --key-env POLYANT_KEY_PROD --prod
+polyant-cli config target default prod
+polyant-cli config context add engineering --target dev --org polyant --workspace platform
+polyant-cli config context default engineering
+```
+
+`init` refuses to replace an existing file unless `--force` is supplied. Every
+configuration change first prints a YAML diff and a local `MutationPlan`, then
+requires confirmation (or `--yes` in non-interactive automation). Writes use a
+temporary file in the same directory followed by an atomic rename. `--dry-run`
+prints the plan and makes no write.
+
+Target operations are `add`, `edit`, `remove`, and `default`; context operations
+are `add`, `edit`, `remove`, and `default`. To edit a context, pass any subset
+of `--target`, `--org`, and `--workspace`. As process-wide options, these flags
+may appear before or after the command path.
+
+`doctor` checks only whether each named key environment variable is set. It
+reports a missing variable name, never the value.
+
 ### `polyant-cli whoami`
 
 Active target, whether the instance answers, and the agents the key can see.

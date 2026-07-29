@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { readFile } from "node:fs/promises";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 import { ConfigError } from "./exit.js";
 
 export const CONFIG_FILE = "polyant.yaml";
@@ -172,6 +172,11 @@ export function parseWorkspaceConfig(text: string): WorkspaceConfig {
     targets,
     ...(contexts === undefined ? {} : { contexts }),
   };
+}
+
+/** Serializes only the validated, non-secret local configuration schema. */
+export function serializeWorkspaceConfig(config: WorkspaceConfig): string {
+  return stringify(config);
 }
 
 /** Absent file is not an error: the CLI then runs on POLYANT_URL + POLYANT_KEY alone. */

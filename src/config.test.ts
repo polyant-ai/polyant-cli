@@ -4,6 +4,7 @@ import {
   loadWorkspaceConfig,
   parseWorkspaceConfig,
   resolveTarget,
+  serializeWorkspaceConfig,
   type WorkspaceConfig,
 } from "./config.js";
 import { ConfigError } from "./exit.js";
@@ -114,6 +115,16 @@ describe("parseWorkspaceConfig", () => {
 
   it("should_reject_invalid_yaml", () => {
     expect(() => parseWorkspaceConfig("targets:\n  - [oops\n")).toThrow(ConfigError);
+  });
+});
+
+describe("serializeWorkspaceConfig", () => {
+  it("round-trips the non-secret configuration schema as YAML", () => {
+    const config = parseWorkspaceConfig(YAML);
+    const text = serializeWorkspaceConfig(config);
+
+    expect(text).toContain("keyEnv: POLYANT_KEY_STAGING");
+    expect(parseWorkspaceConfig(text)).toEqual(config);
   });
 });
 

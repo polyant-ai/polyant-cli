@@ -10,7 +10,8 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("./api/client.js", () => ({ request: apiMocks.request }));
-vi.mock("./config.js", () => ({
+vi.mock("./config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./config.js")>()),
   loadWorkspaceConfig: apiMocks.loadWorkspaceConfig,
   resolveTarget: apiMocks.resolveTarget,
 }));
@@ -118,6 +119,7 @@ describe("run", () => {
     const help = renderHelp();
     expect(help).toContain("agent");
     expect(help).toContain("api");
+    expect(help).toContain("\n  config");
     expect(help).toContain("whoami");
   });
 
