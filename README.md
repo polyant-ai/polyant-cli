@@ -1,6 +1,6 @@
 # @polyant-ai/cli
 
-`polyant` is the transport between a local coding agent and a Polyant instance.
+`polyant-cli` is the transport between a local coding agent and a Polyant instance.
 It resolves a target and its credential, forwards requests to the management
 API, and reports results with stable exit codes.
 
@@ -51,7 +51,7 @@ prefer declaring a target over reaching for the flag.
 
 ## Commands
 
-### `polyant whoami`
+### `polyant-cli whoami`
 
 Active target, whether the instance answers, and the agents the key can see.
 Add `--json` for a single JSON object.
@@ -61,15 +61,15 @@ serves only user principals — so permissions are reported as not verified
 rather than guessed. Any agent with `authEnabled: false` is flagged on stderr:
 its runtime routes require no token and validate none.
 
-### `polyant api <METHOD> <path>`
+### `polyant-cli api <METHOD> <path>`
 
 Raw passthrough. One command covers every route without wrapping any.
 
 ```bash
-polyant api GET /api/instances
-polyant api GET /api/conversations --query instanceId=acme --query limit=5
-polyant api PATCH /api/instances/acme/prompts --data @prompts.json
-echo '{"enabled":["webSearch"]}' | polyant api PATCH /api/instances/acme/tools --data -
+polyant-cli api GET /api/instances
+polyant-cli api GET /api/conversations --query instanceId=acme --query limit=5
+polyant-cli api PATCH /api/instances/acme/prompts --data @prompts.json
+echo '{"enabled":["webSearch"]}' | polyant-cli api PATCH /api/instances/acme/tools --data -
 ```
 
 Paths start with `/`, and not every route is under `/api`: `/health`, `/v1`,
@@ -91,7 +91,7 @@ stderr. Every mutation prints its target host on stderr before it is sent.
 
 Two exceptions worth knowing. `whoami` exits `0` even when the instance does not
 answer — reporting that is the command's job, so read its `reachable` field
-rather than its exit code; use `polyant api GET /health` if you want a health
+rather than its exit code; use `polyant-cli api GET /health` if you want a health
 gate that can fail. And a malformed URL is a `2`, not a `3`: retrying a URL that
 can never parse is pointless.
 

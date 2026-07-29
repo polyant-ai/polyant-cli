@@ -33,7 +33,7 @@ afterEach(() => {
 describe("run", () => {
   it("should_print_help_and_exit_0_when_no_command_is_given", async () => {
     expect(await run([])).toBe(ExitCode.Ok);
-    expect(out.join("")).toContain("Usage: polyant <command>");
+    expect(out.join("")).toContain("Usage: polyant-cli <command>");
   });
 
   it("should_exit_2_when_the_command_is_unknown", async () => {
@@ -84,6 +84,43 @@ describe("run", () => {
     const help = renderHelp();
     expect(help.indexOf("alpha")).toBeLessThan(help.indexOf("zeta"));
     expect(help).toContain("first");
+  });
+
+  it("should_list_resource_families_in_root_help", () => {
+    const help = renderHelp();
+    expect(help).toContain("agent");
+    expect(help).toContain("api");
+    expect(help).toContain("whoami");
+  });
+
+  it("should_show_only_agent_actions_in_agent_help", async () => {
+    expect(await run(["agent", "--help"])).toBe(ExitCode.Ok);
+    expect(out.join("")).toContain("Usage: polyant-cli agent <action>");
+    expect(out.join("")).toContain("list");
+    expect(out.join("")).not.toContain("whoami");
+    expect(out.join("")).not.toContain("raw passthrough");
+  });
+
+  it("should_exit_2_when_a_placeholder_agent_action_is_invoked", async () => {
+    expect(await run(["agent", "list"])).toBe(ExitCode.Config);
+    expect(err.join("")).toContain("not implemented");
+  });
+
+  it("should_dispatch_api_and_whoami_with_their_global_context", async () => {
+    const apiRun = vi.spyOn(COMMANDS.api, "run").mockResolvedValue(undefined);
+    const whoamiRun = vi.spyOn(COMMANDS.whoami, "run").mockResolvedValue(undefined);
+
+    expect(await run(["api", "GET", "/health", "--target", "prod"])).toBe(ExitCode.Ok);
+    expect(apiRun).toHaveBeenCalledWith(
+      ["GET", "/health"],
+      expect.objectContaining({ path: ["api"], global: expect.objectContaining({ target: "prod" }) }),
+    );
+
+    expect(await run(["whoami", "--json"])).toBe(ExitCode.Ok);
+    expect(whoamiRun).toHaveBeenCalledWith(
+      [],
+      expect.objectContaining({ path: ["whoami"], global: expect.objectContaining({ json: true }) }),
+    );
   });
 });
 

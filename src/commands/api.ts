@@ -4,11 +4,11 @@ import { parseArgs } from "node:util";
 import { ConfigError } from "../exit.js";
 import { loadWorkspaceConfig, resolveTarget, type ResolvedTarget } from "../config.js";
 import { request } from "../api/client.js";
-import type { Command } from "../command.js";
+import type { Command, CommandContext } from "../command.js";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
-export const API_USAGE = `Usage: polyant api <METHOD> <path> [options]
+export const API_USAGE = `Usage: polyant-cli api <METHOD> <path> [options]
 
 Raw passthrough to the management API: resolves the base URL and the auth
 header, forwards the request, prints the response body on stdout unchanged.
@@ -119,12 +119,13 @@ async function readData(spec: string): Promise<unknown> {
   }
 }
 
-async function resolveInvocation(args: ApiArgs): Promise<{ target: ResolvedTarget; body: unknown }> {
+async function resolveInvocation(args: ApiArgs, context?: CommandContext): Promise<{ target: ResolvedTarget; body: unknown }> {
   const config = await loadWorkspaceConfig();
+  const targetName = context?.global.target ?? args.target;
   const target = resolveTarget({
     config,
     env: process.env,
-    ...(args.target === undefined ? {} : { target: args.target }),
+    ...(targetName === undefined ? {} : { target: targetName }),
     ...(args.url === undefined ? {} : { url: args.url }),
   });
   const body = args.data === undefined ? undefined : await readData(args.data);
@@ -142,14 +143,14 @@ function announce(method: string, target: ResolvedTarget, path: string): void {
   process.stderr.write(`→ ${method} ${target.baseUrl}${path} [${label}]\n`);
 }
 
-async function run(argv: string[]): Promise<void> {
+async function run(argv: string[], context?: CommandContext): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(`${API_USAGE}\n`);
     return;
   }
 
   const args = parseApiArgs(argv);
-  const { target, body } = await resolveInvocation(args);
+  const { target, body } = await resolveInvocation(args, context);
   announce(args.method, target, args.path);
 
   const res = await request(target, {
@@ -166,8 +167,8 @@ async function run(argv: string[]): Promise<void> {
   if (res.raw.length > 0) process.stdout.write(`${res.raw}\n`);
 }
 
-export const apiCommand: Command = {
+export const apiCommand = {
   summary: "raw passthrough to the management API",
   usage: API_USAGE,
   run,
-};
+} satisfies Command;

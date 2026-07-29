@@ -4,7 +4,7 @@
   "private": true,
   "description": "Configure a Polyant instance as code",
   "type": "module",
-  "bin": { "polyant": "dist/bin.js" },
+  "bin": { "polyant-cli": "dist/bin.js" },
   "main": "dist/cli.js",
   "types": "dist/cli.d.ts",
   "files": ["dist", "src", "README.md"],

@@ -1,32 +1,104 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
-import { CliError, ExitCode, type ExitCodeValue } from "./exit.js";
 import type { Command } from "./command.js";
 import { apiCommand } from "./commands/api.js";
 import { whoamiCommand } from "./commands/whoami.js";
+import { CliError, ConfigError, ExitCode, type ExitCodeValue } from "./exit.js";
+import { parseInvocation, type Invocation } from "./runtime/global-options.js";
+
+function placeholder(path: string, summary: string): Command {
+  return {
+    summary,
+    usage: `Usage: polyant-cli ${path} [args]`,
+    async run() {
+      throw new ConfigError(`The command "polyant-cli ${path}" is not implemented.`);
+    },
+  };
+}
 
 /**
- * The command table. Later tasks add their entry here explicitly rather than
- * registering by import side effect: an explicit table has no cycles and is
+ * The command tree. Later tasks add their entry here explicitly rather than
+ * registering by import side effect: an explicit tree has no cycles and is
  * greppable.
  */
 export const COMMANDS: Record<string, Command> = {
+  agent: {
+    summary: "manage agents",
+    usage: "Usage: polyant-cli agent <action> [args]",
+    children: {
+      list: placeholder("agent list", "list agents"),
+      get: placeholder("agent get", "show an agent"),
+    },
+  },
   api: apiCommand,
   whoami: whoamiCommand,
 };
 
-export function renderHelp(): string {
-  const names = Object.keys(COMMANDS).sort();
-  const lines = [
-    "polyant — configure a Polyant instance as code",
-    "",
-    "Usage: polyant <command> [args]",
-    "",
-    "Commands:",
-  ];
+function renderChildren(command: Command, heading: string): string[] {
+  const names = Object.keys(command.children ?? {}).sort();
+  const lines = [heading];
   if (names.length === 0) lines.push("  (none registered)");
-  for (const name of names) lines.push(`  ${name.padEnd(10)} ${COMMANDS[name].summary}`);
-  lines.push("", "Run `polyant <command> --help` for a command's usage.");
+  for (const name of names) lines.push(`  ${name.padEnd(10)} ${command.children![name].summary}`);
+  return lines;
+}
+
+export function renderHelp(): string {
+  const lines = [
+    "polyant-cli — configure a Polyant instance as code",
+    "",
+    "Usage: polyant-cli <command> [args]",
+    "",
+    ...renderChildren({ summary: "root", usage: "", children: COMMANDS }, "Commands:"),
+    "",
+    "Run `polyant-cli <command> --help` for a command's usage.",
+  ];
   return lines.join("\n");
+}
+
+function renderCommandHelp(command: Command, path: string[]): string {
+  const lines = [command.usage];
+  if (command.children !== undefined) {
+    lines.push("", ...renderChildren(command, "Actions:"), "", `Run \`polyant-cli ${path.join(" ")} <action> --help\` for an action's usage.`);
+  }
+  return lines.join("\n");
+}
+
+function resolveCommand(path: string[]): Command {
+  const root = COMMANDS[path[0]];
+  if (root === undefined) throw new ConfigError(`Unknown command "${path[0]}".`);
+
+  let command = root;
+  for (const segment of path.slice(1)) {
+    const child = command.children?.[segment];
+    if (child === undefined) throw new ConfigError(`Unknown command "${path.join(" ")}".`);
+    command = child;
+  }
+  return command;
+}
+
+function isHelpRequested(args: string[]): boolean {
+  return args.includes("--help") || args.includes("-h") || args[0] === "help";
+}
+
+function reportError(error: unknown): ExitCodeValue {
+  if (error instanceof CliError) {
+    const help = error.message.startsWith("Unknown command ") ? `\n\n${renderHelp()}` : "";
+    process.stderr.write(`${error.message}${help}\n`);
+    return error.code;
+  }
+  // Anything else is a bug in the CLI, not a state the caller can act on.
+  // There is no exit code for "tool defect", so it reports as a config
+  // failure but is labelled so it is never mistaken for one.
+  const reason = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`Internal error: ${reason}\n`);
+  return ExitCode.Config;
+}
+
+function reportMissingAction(invocation: Invocation, command: Command): never {
+  const candidate = invocation.args[0];
+  if (candidate !== undefined) {
+    throw new ConfigError(`Unknown command "${[...invocation.path, candidate].join(" ")}".\n\n${renderCommandHelp(command, invocation.path)}`);
+  }
+  throw new ConfigError(`Missing action for "${invocation.path.join(" ")}".\n\n${renderCommandHelp(command, invocation.path)}`);
 }
 
 /**
@@ -34,32 +106,23 @@ export function renderHelp(): string {
  * so tests can assert on the returned code.
  */
 export async function run(argv: string[]): Promise<ExitCodeValue> {
-  const [name, ...rest] = argv;
-
-  if (name === undefined || name === "--help" || name === "-h" || name === "help") {
-    process.stdout.write(`${renderHelp()}\n`);
-    return ExitCode.Ok;
-  }
-
-  const command = COMMANDS[name];
-  if (!command) {
-    process.stderr.write(`Unknown command "${name}".\n\n${renderHelp()}\n`);
-    return ExitCode.Config;
-  }
-
   try {
-    await command.run(rest);
+    const invocation = parseInvocation(argv, COMMANDS);
+    if (invocation.path.length === 0) {
+      process.stdout.write(`${renderHelp()}\n`);
+      return ExitCode.Ok;
+    }
+
+    const command = resolveCommand(invocation.path);
+    if (isHelpRequested(invocation.args)) {
+      process.stdout.write(`${renderCommandHelp(command, invocation.path)}\n`);
+      return ExitCode.Ok;
+    }
+    if (command.run === undefined) return reportMissingAction(invocation, command);
+
+    await command.run(invocation.args, { path: invocation.path, global: invocation.global });
     return ExitCode.Ok;
   } catch (error) {
-    if (error instanceof CliError) {
-      process.stderr.write(`${error.message}\n`);
-      return error.code;
-    }
-    // Anything else is a bug in the CLI, not a state the caller can act on.
-    // There is no exit code for "tool defect", so it reports as a config
-    // failure but is labelled so it is never mistaken for one.
-    const reason = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`Internal error: ${reason}\n`);
-    return ExitCode.Config;
+    return reportError(error);
   }
 }

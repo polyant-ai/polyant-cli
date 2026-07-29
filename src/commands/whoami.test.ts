@@ -202,7 +202,16 @@ describe("whoamiCommand.run", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     await whoamiCommand.run(["--help"]);
-    expect(out.join("")).toContain("Usage: polyant whoami");
+    expect(out.join("")).toContain("Usage: polyant-cli whoami");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("should_use_the_global_json_option_without_forwarding_it_to_the_local_parser", async () => {
+    await whoamiCommand.run([], {
+      path: ["whoami"],
+      global: { json: true, yes: false, dryRun: false },
+    });
+
+    expect(JSON.parse(out.join(""))).toMatchObject({ target: "prod" });
   });
 });

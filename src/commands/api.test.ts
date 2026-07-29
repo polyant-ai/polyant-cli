@@ -133,7 +133,16 @@ describe("apiCommand.run", () => {
 
   it("should_print_usage_and_send_no_request_when_help_is_asked", async () => {
     await apiCommand.run(["--help"]);
-    expect(out.join("")).toContain("Usage: polyant api");
+    expect(out.join("")).toContain("Usage: polyant-cli api");
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("should_use_the_global_target_without_forwarding_it_to_the_local_parser", async () => {
+    await apiCommand.run(["GET", "/health"], {
+      path: ["api"],
+      global: { target: "prod", json: false, yes: false, dryRun: false },
+    });
+
+    expect(resolveTarget).toHaveBeenCalledWith(expect.objectContaining({ target: "prod" }));
   });
 });

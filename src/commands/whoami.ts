@@ -4,9 +4,9 @@ import { ConfigError } from "../exit.js";
 import { loadWorkspaceConfig, resolveTarget, type ResolvedTarget } from "../config.js";
 import { request } from "../api/client.js";
 import type { HealthResponse, ListAgentsResponse } from "../api/types.js";
-import type { Command } from "../command.js";
+import type { Command, CommandContext } from "../command.js";
 
-export const WHOAMI_USAGE = `Usage: polyant whoami [options]
+export const WHOAMI_USAGE = `Usage: polyant-cli whoami [options]
 
 Reports the active target, whether the instance answers, and the agents the
 key can see.
@@ -22,7 +22,7 @@ only serves user principals, so permissions are reported as not verified.
 This command exits 0 whenever it can resolve a target, even if the instance
 never answers — reporting an unreachable instance is its job, not a failure of
 its own. Read the "reachable" field. If you need a non-zero exit for a health
-gate, use "polyant api GET /health" instead.`;
+gate, use "polyant-cli api GET /health" instead.`;
 
 export interface WhoamiReport {
   target: string;
@@ -135,7 +135,7 @@ function parseWhoamiArgs(argv: string[]): { json: boolean; target?: string; url?
   }
 }
 
-async function run(argv: string[]): Promise<void> {
+async function run(argv: string[], context?: CommandContext): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(`${WHOAMI_USAGE}\n`);
     return;
@@ -143,16 +143,18 @@ async function run(argv: string[]): Promise<void> {
 
   const args = parseWhoamiArgs(argv);
   const config = await loadWorkspaceConfig();
+  const targetName = context?.global.target ?? args.target;
   const target = resolveTarget({
     config,
     env: process.env,
-    ...(args.target === undefined ? {} : { target: args.target }),
+    ...(targetName === undefined ? {} : { target: targetName }),
     ...(args.url === undefined ? {} : { url: args.url }),
   });
 
   const report = await collectWhoami(target);
 
-  process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : `${renderWhoami(report)}\n`);
+  const json = context?.global.json ?? args.json;
+  process.stdout.write(json ? `${JSON.stringify(report, null, 2)}\n` : `${renderWhoami(report)}\n`);
 
   // An agent with authEnabled false has completely open runtime routes: no
   // token required, no token validated. That belongs on stderr, loudly.
@@ -163,8 +165,8 @@ async function run(argv: string[]): Promise<void> {
   }
 }
 
-export const whoamiCommand: Command = {
+export const whoamiCommand = {
   summary: "show the active target, reachability and visible agents",
   usage: WHOAMI_USAGE,
   run,
-};
+} satisfies Command;
