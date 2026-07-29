@@ -26,6 +26,8 @@ export interface RequestOptions {
 
 export interface ApiResponse {
   status: number;
+  /** The response text exactly as received. `api` prints this, so a passthrough stays faithful. */
+  raw: string;
   /** Parsed JSON when the body was JSON, the raw text otherwise, `null` when empty. */
   body: unknown;
 }
@@ -55,13 +57,13 @@ export function extractMessage(status: number, body: unknown): string {
   return `HTTP ${status}`;
 }
 
-async function readBody(res: Response): Promise<unknown> {
-  const text = await res.text();
-  if (text.length === 0) return null;
+async function readBody(res: Response): Promise<{ raw: string; body: unknown }> {
+  const raw = await res.text();
+  if (raw.length === 0) return { raw, body: null };
   try {
-    return JSON.parse(text);
+    return { raw, body: JSON.parse(raw) };
   } catch {
-    return text;
+    return { raw, body: raw };
   }
 }
 
@@ -96,6 +98,11 @@ async function send(
       headers: buildHeaders(target, opts),
       ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
       signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      // Never follow a redirect. The fetch spec strips `Authorization` across
+      // origins but NOT a custom header, so following one would re-send
+      // X-Polyant-Key to whatever host the Location names. `request` turns the
+      // 3xx into a ConfigError instead.
+      redirect: "manual",
     });
   } catch (error) {
     // Unreachable host, DNS failure or timeout — all transient, hence Remote.
@@ -108,9 +115,22 @@ export async function request(target: ResolvedTarget, opts: RequestOptions): Pro
   const url = buildUrl(target, opts);
   const method = opts.method ?? "GET";
   const res = await send(url, method, target, opts);
-  const body = await readBody(res);
+
+  // A 3xx reaches here because `send` asked for `redirect: "manual"`. The
+  // realistic trigger is a login proxy in front of the engine: following it
+  // would hand the management key to the identity provider and return its login
+  // page as if it were the API's answer, with exit 0. Fail closed instead.
+  if (res.status >= 300 && res.status < 400) {
+    const location = res.headers.get("location");
+    throw new ConfigError(
+      `${method} ${url.pathname} was redirected (${res.status}${location ? ` to ${location}` : ""}). ` +
+        `Refusing to resend the management key to another host — is this target behind a login proxy?`,
+    );
+  }
+
+  const { raw, body } = await readBody(res);
   if (!res.ok) {
     throw new RemoteError(extractMessage(res.status, body), statusToExitCode(res.status), res.status);
   }
-  return { status: res.status, body };
+  return { status: res.status, raw, body };
 }

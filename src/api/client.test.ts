@@ -69,7 +69,7 @@ describe("request", () => {
 
     const res = await request(TARGET, { path: "/api/instances" });
 
-    expect(res).toEqual({ status: 200, body: { instances: [] } });
+    expect(res).toEqual({ status: 200, raw: '{"instances":[]}', body: { instances: [] } });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(url.toString()).toBe("http://localhost:4000/api/instances");
     expect(init.method).toBe("GET");
@@ -142,10 +142,14 @@ describe("request", () => {
   });
 
   it("should_return_null_for_an_empty_body", async () => {
+    // A 204 is a null-body status: the Fetch spec requires a literal `null` body
+    // here, not merely an empty string — Node's Response constructor throws
+    // otherwise ("Invalid response status code 204").
     vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
 
     expect(await request(TARGET, { path: "/api/instances/acme", method: "DELETE" })).toEqual({
       status: 204,
+      raw: "",
       body: null,
     });
   });
@@ -153,7 +157,40 @@ describe("request", () => {
   it("should_return_raw_text_when_the_body_is_not_json", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("plain", { status: 200 })));
 
-    expect(await request(TARGET, { path: "/health" })).toEqual({ status: 200, body: "plain" });
+    expect(await request(TARGET, { path: "/health" })).toEqual({
+      status: 200,
+      raw: "plain",
+      body: "plain",
+    });
+  });
+
+  it("should_preserve_the_response_text_verbatim_so_large_numbers_survive", async () => {
+    // JSON.parse would round this; `raw` is what `api` prints.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response('{"id":12345678901234567890}', { status: 200 })));
+
+    expect((await request(TARGET, { path: "/x" })).raw).toBe('{"id":12345678901234567890}');
+  });
+
+  it("should_ask_fetch_not_to_follow_redirects", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, {}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await request(TARGET, { path: "/api/instances" });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.redirect).toBe("manual");
+  });
+
+  // Following a 3xx would re-send X-Polyant-Key to the Location host, because
+  // the fetch spec strips Authorization across origins but not a custom header.
+  it("should_refuse_to_follow_a_redirect_and_name_the_location", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://idp.example/login" } })),
+    );
+
+    await expect(request(TARGET, { path: "/api/instances" })).rejects.toThrow(/was redirected \(302 to https:\/\/idp\.example\/login\)/);
+    await expect(request(TARGET, { path: "/api/instances" })).rejects.toThrow(/login proxy/);
   });
 
   it("should_reject_a_path_that_does_not_start_with_a_slash", async () => {

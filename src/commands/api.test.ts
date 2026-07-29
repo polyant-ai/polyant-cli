@@ -77,7 +77,7 @@ describe("apiCommand.run", () => {
       key: "pk_uuid_secret",
       prod: false,
     });
-    request.mockResolvedValue({ status: 200, body: { ok: true } });
+    request.mockResolvedValue({ status: 200, raw: '{"ok":true}', body: { ok: true } });
     vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
       out.push(String(chunk));
       return true;
@@ -95,9 +95,9 @@ describe("apiCommand.run", () => {
     resolveTarget.mockReset();
   });
 
-  it("should_print_the_body_and_stay_silent_on_stderr_when_the_method_is_get", async () => {
+  it("should_print_the_body_verbatim_and_stay_silent_on_stderr_when_the_method_is_get", async () => {
     await apiCommand.run(["GET", "/api/instances"]);
-    expect(out.join("")).toBe('{\n  "ok": true\n}\n');
+    expect(out.join("")).toBe('{"ok":true}\n');
     expect(err.join("")).toBe("");
   });
 
@@ -120,9 +120,15 @@ describe("apiCommand.run", () => {
   });
 
   it("should_print_a_plain_text_body_unchanged", async () => {
-    request.mockResolvedValue({ status: 200, body: "plain" });
+    request.mockResolvedValue({ status: 200, raw: "plain", body: "plain" });
     await apiCommand.run(["GET", "/health"]);
     expect(out.join("")).toBe("plain\n");
+  });
+
+  it("should_print_nothing_when_the_response_has_no_body", async () => {
+    request.mockResolvedValue({ status: 204, raw: "", body: null });
+    await apiCommand.run(["DELETE", "/api/instances/acme"]);
+    expect(out.join("")).toBe("");
   });
 
   it("should_print_usage_and_send_no_request_when_help_is_asked", async () => {

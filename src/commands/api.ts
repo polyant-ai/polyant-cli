@@ -159,8 +159,11 @@ async function run(argv: string[]): Promise<void> {
     ...(body === undefined ? {} : { body }),
   });
 
-  const rendered = typeof res.body === "string" ? res.body : JSON.stringify(res.body, null, 2);
-  process.stdout.write(`${rendered}\n`);
+  // The response text verbatim. Parsing and re-serialising would silently alter
+  // it — a large integer loses precision, `1.0` becomes `1`, duplicate keys
+  // collapse — and contract §7.5 requires no transformation of the JSON. An
+  // empty body (a 204) prints nothing rather than a fabricated `null`.
+  if (res.raw.length > 0) process.stdout.write(`${res.raw}\n`);
 }
 
 export const apiCommand: Command = {
