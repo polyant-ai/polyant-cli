@@ -51,6 +51,13 @@ describe("parseInvocation", () => {
     expect(() => parseInvocation(["agent", "list", "--workspace"], COMMANDS)).toThrow(/Missing value for --workspace/);
   });
 
+  it("should_reject_empty_org_and_workspace_selectors", () => {
+    expect(() => parseInvocation(["agent", "list", "--org="], COMMANDS)).toThrow(/Missing value for --org/);
+    expect(() => parseInvocation(["agent", "list", "--workspace="], COMMANDS)).toThrow(
+      /Missing value for --workspace/,
+    );
+  });
+
   it("should_reject_an_unknown_root", () => {
     expect(() => parseInvocation(["unknown"], COMMANDS)).toThrow(/Unknown command "unknown"/);
   });

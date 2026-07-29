@@ -99,6 +99,14 @@ describe("parseWorkspaceConfig", () => {
     expect(() => parseWorkspaceConfig(bad)).toThrow(/context "local" must be a mapping/);
   });
 
+  it("should_refuse_a_literal_key_in_a_context_without_echoing_it", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\ncontexts:\n  local:\n    target: dev\n    org: polyant\n    workspace: platform\n    key: pk_context_secret\n`;
+
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/context "local" declares "key"/);
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/keyEnv/);
+    expect(() => parseWorkspaceConfig(bad)).not.toThrow(/pk_context_secret/);
+  });
+
   it("should_reject_a_default_context_that_is_not_declared", () => {
     const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\ndefaultContext: ghost\ncontexts:\n  local:\n    target: dev\n    org: polyant\n    workspace: platform\n`;
     expect(() => parseWorkspaceConfig(bad)).toThrow(/"defaultContext" must name a declared context/);

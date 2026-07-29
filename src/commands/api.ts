@@ -2,9 +2,11 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { ConfigError } from "../exit.js";
-import { loadWorkspaceConfig, resolveTarget, type ResolvedTarget } from "../config.js";
+import { loadWorkspaceConfig, type ResolvedTarget } from "../config.js";
 import { request } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
+import { resolveScope } from "../runtime/scope.js";
+import type { GlobalOptions } from "../runtime/global-options.js";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
@@ -119,15 +121,22 @@ async function readData(spec: string): Promise<unknown> {
   }
 }
 
+/** Lets direct command callers retain local --target parsing while the runtime owns global flags. */
+function globalForScope(context: CommandContext | undefined, target: string | undefined): GlobalOptions {
+  const global = context?.global;
+  if (global === undefined) return { json: false, yes: false, dryRun: false, ...(target === undefined ? {} : { target }) };
+  return global.target === undefined && target !== undefined ? { ...global, target } : global;
+}
+
 async function resolveInvocation(args: ApiArgs, context?: CommandContext): Promise<{ target: ResolvedTarget; body: unknown }> {
   const config = await loadWorkspaceConfig();
-  const targetName = context?.global.target ?? args.target;
-  const target = resolveTarget({
+  const target = resolveScope({
     config,
     env: process.env,
-    ...(targetName === undefined ? {} : { target: targetName }),
+    global: globalForScope(context, args.target),
     ...(args.url === undefined ? {} : { url: args.url }),
-  });
+    required: ["target"],
+  }).target;
   const body = args.data === undefined ? undefined : await readData(args.data);
   return { target, body };
 }

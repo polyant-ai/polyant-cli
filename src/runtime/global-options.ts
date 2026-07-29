@@ -81,7 +81,9 @@ function consumeGlobalOptions(argv: string[]): { tokens: string[]; global: Globa
       if (seen.has(valueKey)) throw new ConfigError(`Duplicate global option ${spelling}.`);
       seen.add(valueKey);
       const value = inlineValue ?? argv[index + 1];
-      if (value === undefined || value.startsWith("--")) throw new ConfigError(`Missing value for ${spelling}.`);
+      if (value === undefined || value.length === 0 || value.startsWith("--")) {
+        throw new ConfigError(`Missing value for ${spelling}.`);
+      }
       global[valueKey] = value;
       if (inlineValue === undefined) index += 1;
       continue;

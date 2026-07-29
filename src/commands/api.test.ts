@@ -145,4 +145,36 @@ describe("apiCommand.run", () => {
 
     expect(resolveTarget).toHaveBeenCalledWith(expect.objectContaining({ target: "prod" }));
   });
+
+  it("should_use_the_context_target_and_keep_a_command_local_url_override", async () => {
+    const config = {
+      default: "dev",
+      targets: {
+        dev: { baseUrl: "http://localhost:4000", keyEnv: "POLYANT_KEY_DEV" },
+        prod: { baseUrl: "https://example.polyant.ai", keyEnv: "POLYANT_KEY_PROD", prod: true },
+      },
+      contexts: {
+        production: { target: "prod", org: "polyant", workspace: "platform" },
+      },
+    };
+    loadWorkspaceConfig.mockResolvedValue(config);
+    resolveTarget.mockImplementation((options) =>
+      options.target === "prod"
+        ? { name: "prod", baseUrl: options.url ?? "https://example.polyant.ai", key: "pk_prod", prod: true }
+        : { name: "dev", baseUrl: "http://localhost:4000", key: "pk_dev", prod: false },
+    );
+
+    await apiCommand.run(["GET", "/health", "--url", "http://localhost:4400"], {
+      path: ["api"],
+      global: { context: "production", json: false, yes: false, dryRun: false },
+    });
+
+    expect(resolveTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ config, target: "prod", url: "http://localhost:4400" }),
+    );
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "prod", baseUrl: "http://localhost:4400", key: "pk_prod", prod: true }),
+      expect.anything(),
+    );
+  });
 });

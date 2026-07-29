@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { parseArgs } from "node:util";
 import { ConfigError } from "../exit.js";
-import { loadWorkspaceConfig, resolveTarget, type ResolvedTarget } from "../config.js";
+import { loadWorkspaceConfig, type ResolvedTarget } from "../config.js";
 import { request } from "../api/client.js";
 import type { HealthResponse, ListAgentsResponse } from "../api/types.js";
 import type { Command, CommandContext } from "../command.js";
+import { resolveScope } from "../runtime/scope.js";
+import type { GlobalOptions } from "../runtime/global-options.js";
 
 export const WHOAMI_USAGE = `Usage: polyant-cli whoami [options]
 
@@ -135,6 +137,13 @@ function parseWhoamiArgs(argv: string[]): { json: boolean; target?: string; url?
   }
 }
 
+/** Lets direct command callers retain local --target parsing while the runtime owns global flags. */
+function globalForScope(context: CommandContext | undefined, target: string | undefined): GlobalOptions {
+  const global = context?.global;
+  if (global === undefined) return { json: false, yes: false, dryRun: false, ...(target === undefined ? {} : { target }) };
+  return global.target === undefined && target !== undefined ? { ...global, target } : global;
+}
+
 async function run(argv: string[], context?: CommandContext): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(`${WHOAMI_USAGE}\n`);
@@ -143,13 +152,13 @@ async function run(argv: string[], context?: CommandContext): Promise<void> {
 
   const args = parseWhoamiArgs(argv);
   const config = await loadWorkspaceConfig();
-  const targetName = context?.global.target ?? args.target;
-  const target = resolveTarget({
+  const target = resolveScope({
     config,
     env: process.env,
-    ...(targetName === undefined ? {} : { target: targetName }),
+    global: globalForScope(context, args.target),
     ...(args.url === undefined ? {} : { url: args.url }),
-  });
+    required: ["target"],
+  }).target;
 
   const report = await collectWhoami(target);
 

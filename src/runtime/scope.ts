@@ -22,6 +22,8 @@ export interface ResolveScopeOptions {
   config?: WorkspaceConfig;
   env: Record<string, string | undefined>;
   global: GlobalOptions;
+  /** A command-local base URL override, validated by resolveTarget. */
+  url?: string;
   required?: readonly ScopeRequirement[];
 }
 
@@ -54,7 +56,9 @@ function requireComponents(scope: ResolvedScope, requirements: readonly ScopeReq
     workspace: scope.workspace,
   };
   for (const component of ["target", "org", "workspace"] as const) {
-    if (required.has(component) && values[component] === undefined) {
+    const value = values[component];
+    const isPresent = component === "target" ? value !== undefined : typeof value === "string" && value.trim().length > 0;
+    if (required.has(component) && !isPresent) {
       throw new ConfigError(`Missing required scope component "${component}".`);
     }
   }
@@ -71,6 +75,7 @@ export function resolveScope(options: ResolveScopeOptions): ResolvedScope {
       config: options.config,
       env: options.env,
       target: options.global.target ?? selected?.spec.target,
+      ...(options.url === undefined ? {} : { url: options.url }),
     }),
     ...(selected === undefined ? {} : { context: selected.name }),
     ...(options.global.org === undefined && selected === undefined

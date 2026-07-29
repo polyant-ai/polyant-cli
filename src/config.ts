@@ -50,10 +50,10 @@ function normaliseBaseUrl(value: string): string {
 }
 
 /** A literal secret in a versioned file is the one mistake worth refusing outright. */
-function rejectLiteralKey(name: string, raw: Record<string, unknown>): void {
+function rejectLiteralKey(location: string, raw: Record<string, unknown>): void {
   if (!("key" in raw)) return;
   throw new ConfigError(
-    `${CONFIG_FILE}: target "${name}" declares "key". ${CONFIG_FILE} is versioned — ` +
+    `${CONFIG_FILE}: ${location} declares "key". ${CONFIG_FILE} is versioned — ` +
       `use "keyEnv: <ENV_VAR_NAME>" and keep the value in .env.`,
   );
 }
@@ -95,7 +95,7 @@ function optionalProd(name: string, value: unknown): boolean | undefined {
 
 function validateTarget(name: string, raw: unknown): TargetSpec {
   if (!isRecord(raw)) throw new ConfigError(`${CONFIG_FILE}: target "${name}" must be a mapping.`);
-  rejectLiteralKey(name, raw);
+  rejectLiteralKey(`target "${name}"`, raw);
   const prod = optionalProd(name, raw.prod);
   return {
     baseUrl: requireBaseUrl(name, raw.baseUrl),
@@ -113,6 +113,7 @@ function requireContextString(name: string, field: "org" | "workspace", value: u
 
 function validateContext(name: string, raw: unknown, targets: Record<string, TargetSpec>): ContextSpec {
   if (!isRecord(raw)) throw new ConfigError(`${CONFIG_FILE}: context "${name}" must be a mapping.`);
+  rejectLiteralKey(`context "${name}"`, raw);
 
   const target = raw.target;
   if (typeof target !== "string" || !Object.hasOwn(targets, target)) {
