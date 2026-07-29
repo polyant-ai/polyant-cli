@@ -18,6 +18,8 @@ export interface Command {
   readonly usage: string;
   /** Children for resource families such as `agent`. */
   readonly children?: Record<string, Command>;
+  /** Whether this command owns dry-run semantics and may receive `--dry-run`. */
+  readonly supportsDryRun?: boolean;
   /**
    * `argv` with the resolved command path and global flags removed. The
    * optional context keeps direct command tests and callers source-compatible

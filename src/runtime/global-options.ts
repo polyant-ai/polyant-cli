@@ -50,6 +50,19 @@ function splitFlag(token: string): { spelling: string; value?: string } {
   return equals === -1 ? { spelling: token } : { spelling: token.slice(0, equals), value: token.slice(equals + 1) };
 }
 
+function valueFlag(spelling: string): ValueFlag | undefined {
+  return Object.hasOwn(VALUE_FLAGS, spelling) ? VALUE_FLAGS[spelling as keyof typeof VALUE_FLAGS] : undefined;
+}
+
+function booleanFlag(spelling: string): BooleanFlag | undefined {
+  return Object.hasOwn(BOOLEAN_FLAGS, spelling) ? BOOLEAN_FLAGS[spelling as keyof typeof BOOLEAN_FLAGS] : undefined;
+}
+
+function childCommand(command: CommandNode, name: string): CommandNode | undefined {
+  const children = command.children;
+  return children !== undefined && Object.hasOwn(children, name) ? children[name] : undefined;
+}
+
 function consumeGlobalOptions(argv: string[]): { tokens: string[]; global: GlobalOptions } {
   const global = defaults();
   const seen = new Set<GlobalFlag>();
@@ -57,19 +70,16 @@ function consumeGlobalOptions(argv: string[]): { tokens: string[]; global: Globa
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
-    const { spelling, value: inlineValue } = splitFlag(token);
-    const valueKey = VALUE_FLAGS[spelling as keyof typeof VALUE_FLAGS];
-    const booleanKey = BOOLEAN_FLAGS[spelling as keyof typeof BOOLEAN_FLAGS];
-    if (valueKey === undefined && booleanKey === undefined) {
-      tokens.push(token);
-      continue;
+    if (token === "--") {
+      tokens.push(...argv.slice(index));
+      break;
     }
-
-    const key = valueKey ?? booleanKey;
-    if (seen.has(key)) throw new ConfigError(`Duplicate global option ${spelling}.`);
-    seen.add(key);
-
+    const { spelling, value: inlineValue } = splitFlag(token);
+    const valueKey = valueFlag(spelling);
+    const booleanKey = booleanFlag(spelling);
     if (valueKey !== undefined) {
+      if (seen.has(valueKey)) throw new ConfigError(`Duplicate global option ${spelling}.`);
+      seen.add(valueKey);
       const value = inlineValue ?? argv[index + 1];
       if (value === undefined || value.startsWith("--")) throw new ConfigError(`Missing value for ${spelling}.`);
       global[valueKey] = value;
@@ -77,8 +87,15 @@ function consumeGlobalOptions(argv: string[]): { tokens: string[]; global: Globa
       continue;
     }
 
-    if (inlineValue !== undefined) throw new ConfigError(`${spelling} does not take a value.`);
-    global[booleanKey] = true;
+    if (booleanKey !== undefined) {
+      if (seen.has(booleanKey)) throw new ConfigError(`Duplicate global option ${spelling}.`);
+      seen.add(booleanKey);
+      if (inlineValue !== undefined) throw new ConfigError(`${spelling} does not take a value.`);
+      global[booleanKey] = true;
+      continue;
+    }
+
+    tokens.push(token);
   }
 
   return { tokens, global };
@@ -98,14 +115,14 @@ export function parseInvocation(argv: string[], commands: CommandTree): Invocati
   }
   if (rootName.startsWith("--")) throw new ConfigError(`Unknown global option "${rootName}".`);
 
-  const root = commands[rootName];
+  const root = Object.hasOwn(commands, rootName) ? commands[rootName] : undefined;
   if (root === undefined) throw new ConfigError(`Unknown command "${rootName}".`);
 
   const path = [rootName];
   let command = root;
   let index = 0;
   while (index < rest.length) {
-    const child = command.children?.[rest[index]];
+    const child = childCommand(command, rest[index]);
     if (child === undefined) break;
     path.push(rest[index]);
     command = child;

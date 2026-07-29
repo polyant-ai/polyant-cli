@@ -33,11 +33,23 @@ export const COMMANDS: Record<string, Command> = {
   whoami: whoamiCommand,
 };
 
+function childCommand(command: Command, name: string): Command | undefined {
+  const children = command.children;
+  return children !== undefined && Object.hasOwn(children, name) ? children[name] : undefined;
+}
+
+function rootCommand(name: string): Command | undefined {
+  return Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
+}
+
 function renderChildren(command: Command, heading: string): string[] {
   const names = Object.keys(command.children ?? {}).sort();
   const lines = [heading];
   if (names.length === 0) lines.push("  (none registered)");
-  for (const name of names) lines.push(`  ${name.padEnd(10)} ${command.children![name].summary}`);
+  for (const name of names) {
+    const child = childCommand(command, name);
+    if (child !== undefined) lines.push(`  ${name.padEnd(10)} ${child.summary}`);
+  }
   return lines;
 }
 
@@ -63,12 +75,12 @@ function renderCommandHelp(command: Command, path: string[]): string {
 }
 
 function resolveCommand(path: string[]): Command {
-  const root = COMMANDS[path[0]];
+  const root = rootCommand(path[0]);
   if (root === undefined) throw new ConfigError(`Unknown command "${path[0]}".`);
 
   let command = root;
   for (const segment of path.slice(1)) {
-    const child = command.children?.[segment];
+    const child = childCommand(command, segment);
     if (child === undefined) throw new ConfigError(`Unknown command "${path.join(" ")}".`);
     command = child;
   }
@@ -77,6 +89,10 @@ function resolveCommand(path: string[]): Command {
 
 function isHelpRequested(args: string[]): boolean {
   return args.includes("--help") || args.includes("-h") || args[0] === "help";
+}
+
+function isGroupHelpRequest(args: string[]): boolean {
+  return args[0] === "--help" || args[0] === "-h" || args[0] === "help";
 }
 
 function reportError(error: unknown): ExitCodeValue {
@@ -114,6 +130,12 @@ export async function run(argv: string[]): Promise<ExitCodeValue> {
     }
 
     const command = resolveCommand(invocation.path);
+    if (command.children !== undefined && invocation.args.length > 0 && !isGroupHelpRequest(invocation.args)) {
+      return reportMissingAction(invocation, command);
+    }
+    if (invocation.global.dryRun && command.supportsDryRun !== true) {
+      throw new ConfigError(`--dry-run is not supported by "polyant-cli ${invocation.path.join(" ")}".`);
+    }
     if (isHelpRequested(invocation.args)) {
       process.stdout.write(`${renderCommandHelp(command, invocation.path)}\n`);
       return ExitCode.Ok;

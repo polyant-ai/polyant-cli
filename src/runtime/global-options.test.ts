@@ -62,4 +62,12 @@ describe("parseInvocation", () => {
       "10",
     ]);
   });
+
+  it("should_preserve_the_end_of_options_marker_and_the_remaining_tokens", () => {
+    expect(parseInvocation(["agent", "list", "--", "--context", "dev", "--json"], COMMANDS)).toEqual({
+      path: ["agent", "list"],
+      args: ["--", "--context", "dev", "--json"],
+      global: { json: false, yes: false, dryRun: false },
+    });
+  });
 });

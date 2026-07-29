@@ -3,6 +3,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { COMMANDS, renderHelp, run } from "./cli.js";
 import { ConfigError, ExitCode, RemoteError } from "./exit.js";
 
+const apiMocks = vi.hoisted(() => ({
+  request: vi.fn(),
+  loadWorkspaceConfig: vi.fn(),
+  resolveTarget: vi.fn(),
+}));
+
+vi.mock("./api/client.js", () => ({ request: apiMocks.request }));
+vi.mock("./config.js", () => ({
+  loadWorkspaceConfig: apiMocks.loadWorkspaceConfig,
+  resolveTarget: apiMocks.resolveTarget,
+}));
+
 const BUILT_IN = Object.keys(COMMANDS);
 
 let out: string[];
@@ -11,6 +23,14 @@ let err: string[];
 beforeEach(() => {
   out = [];
   err = [];
+  apiMocks.request.mockResolvedValue({ status: 200, raw: "{}", body: {} });
+  apiMocks.loadWorkspaceConfig.mockResolvedValue(undefined);
+  apiMocks.resolveTarget.mockReturnValue({
+    name: "dev",
+    baseUrl: "http://localhost:4000",
+    key: "pk_uuid_secret",
+    prod: false,
+  });
   // The cast is needed because `write` is overloaded; without it the one-arg
   // implementation does not match the declared type under `strict`.
   vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
@@ -25,6 +45,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  apiMocks.request.mockReset();
+  apiMocks.loadWorkspaceConfig.mockReset();
+  apiMocks.resolveTarget.mockReset();
   for (const name of Object.keys(COMMANDS)) {
     if (!BUILT_IN.includes(name)) delete COMMANDS[name];
   }
@@ -39,6 +62,11 @@ describe("run", () => {
   it("should_exit_2_when_the_command_is_unknown", async () => {
     expect(await run(["nope"])).toBe(ExitCode.Config);
     expect(err.join("")).toContain('Unknown command "nope"');
+  });
+
+  it("should_exit_2_when_a_prototype_property_is_used_as_a_command", async () => {
+    expect(await run(["constructor"])).toBe(ExitCode.Config);
+    expect(err.join("")).toContain('Unknown command "constructor"');
   });
 
   it("should_exit_0_and_forward_argv_when_the_command_succeeds", async () => {
@@ -101,9 +129,25 @@ describe("run", () => {
     expect(out.join("")).not.toContain("raw passthrough");
   });
 
+  it("should_show_agent_help_when_help_is_its_action", async () => {
+    expect(await run(["agent", "help"])).toBe(ExitCode.Ok);
+    expect(out.join("")).toContain("Usage: polyant-cli agent <action>");
+  });
+
+  it("should_exit_2_for_an_unknown_agent_action_even_when_help_follows", async () => {
+    expect(await run(["agent", "nonexistent", "--help"])).toBe(ExitCode.Config);
+    expect(err.join("")).toContain('Unknown command "agent nonexistent"');
+  });
+
   it("should_exit_2_when_a_placeholder_agent_action_is_invoked", async () => {
     expect(await run(["agent", "list"])).toBe(ExitCode.Config);
     expect(err.join("")).toContain("not implemented");
+  });
+
+  it("should_reject_dry_run_before_an_api_request_is_dispatched", async () => {
+    expect(await run(["api", "PATCH", "/api/instances/acme", "--dry-run"])).toBe(ExitCode.Config);
+    expect(err.join("")).toContain("--dry-run");
+    expect(apiMocks.request).not.toHaveBeenCalled();
   });
 
   it("should_dispatch_api_and_whoami_with_their_global_context", async () => {
