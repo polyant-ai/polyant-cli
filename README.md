@@ -108,9 +108,18 @@ reports a missing variable name, never the value.
 
 ### `polyant-cli agent`
 
-Manage agents inside one workspace. Every agent action needs an organisation and
-a workspace, so select a context (or pass `--org` and `--workspace`) first — the
-CLI never guesses which workspace a write lands in.
+Manage agents inside one workspace.
+
+**Writes** require an explicit organisation and workspace: select a context, or
+pass `--org` and `--workspace`. The CLI never guesses which workspace a change
+lands in.
+
+**Reads** may run without one. A management key has no route that lists the
+workspaces it may use (`/api/organizations/…` serves human principals only), so
+a read without a selection sends no `x-workspace-id`, the engine resolves the
+organisation's default workspace, and the CLI says so on stderr. This is a
+workaround for a missing engine contract (`GET /api/service-context`), not the
+intended end state.
 
 ```bash
 polyant-cli --context engineering agent list
@@ -160,8 +169,8 @@ or not, are never echoed.
 
 ### `polyant-cli monitor`
 
-Current state and live activity. Like `agent`, it needs an organisation and a
-workspace.
+Current state and live activity. Read-only, so it follows the same workspace
+rule as the `agent` reads above.
 
 ```bash
 polyant-cli --context engineering monitor status

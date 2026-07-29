@@ -315,18 +315,33 @@ describe("monitor events as agent logs", () => {
 });
 
 describe("monitor scope", () => {
-  it("refuses to run when no context or flag selects a workspace", async () => {
-    const request = vi.fn();
+  // Monitoring is read-only, and a management key cannot discover its workspaces,
+  // so it falls back to the engine's default resolution and says so.
+  it("reads the default workspace and says so when none is selected", async () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const calls: RequestOptions[] = [];
+    const queue = [response({ status: "ok", service: "polyant" }), response(AGENTS)];
     const monitor = createMonitorCommand({
-      request,
+      request: async (_target, opts) => {
+        calls.push(opts);
+        return queue.shift()!;
+      },
       loadConfig: async () => ({ default: "dev", targets: CONFIG.targets }),
       env: ENV,
-      io: { stdout: () => {}, stderr: () => {}, input: { isTTY: false, readLine: async () => "" } },
+      io: {
+        stdout: (text) => out.push(text),
+        stderr: (text) => err.push(text),
+        input: { isTTY: false, readLine: async () => "" },
+      },
     });
     const child = monitor.command.children?.status;
     if (child?.run === undefined) throw new Error("missing status action");
 
-    await expect(child.run([], context())).rejects.toThrow(/Missing required scope component/);
-    expect(request).not.toHaveBeenCalled();
+    await child.run([], context());
+
+    expect(calls.every((c) => c.workspaceId === undefined)).toBe(true);
+    expect(err.join("")).toContain("no workspace selected");
+    expect(out.join("")).toContain("ok (polyant)");
   });
 });

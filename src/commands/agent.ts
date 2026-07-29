@@ -72,7 +72,7 @@ function requireSlug(args: readonly string[], action: string): string {
 
 async function list(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   assertKnown(args, {}, "agent list option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, { path: "/api/instances" });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
@@ -89,7 +89,7 @@ async function list(args: string[], context: CommandContext | undefined, deps: A
 async function show(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "show");
   assertKnown(args.slice(1), {}, "agent show option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}` });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
@@ -207,7 +207,7 @@ async function promptShow(args: string[], context: CommandContext | undefined, d
   const options = args.slice(1);
   assertKnown(options, { value: ["--section"] }, "agent prompt show option");
   const section = takeValue(options, "--section");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}/prompts` });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
@@ -269,7 +269,7 @@ async function promptSet(args: string[], context: CommandContext | undefined, de
 async function toolsShow(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "tools show");
   assertKnown(args.slice(1), { boolean: ["--enabled-only"] }, "agent tools show option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}/tools` });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
@@ -339,7 +339,7 @@ async function toolsSet(args: string[], context: CommandContext | undefined, dep
 async function channelsShow(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "channels show");
   assertKnown(args.slice(1), {}, "agent channels show option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}/channels` });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
@@ -444,7 +444,7 @@ async function channelsRemove(args: string[], context: CommandContext | undefine
 async function hooksShow(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "hooks show");
   assertKnown(args.slice(1), {}, "agent hooks show option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}/hooks` });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
@@ -561,7 +561,7 @@ async function conversationsList(args: string[], context: CommandContext | undef
   const slug = requireSlug(args, "conversations list");
   const options = args.slice(1);
   assertKnown(options, { value: ["--limit", "--offset", "--search", "--source"] }, "agent conversations list option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const query = {
     // instanceId carries the agent slug: the engine resolves it through
     // asInstanceSlug, not as a UUID.
@@ -600,7 +600,7 @@ async function conversationsShow(args: string[], context: CommandContext | undef
   if (id === undefined || id.startsWith("--")) throw new ConfigError("polyant-cli agent conversations show needs a conversation id.");
   const options = args.slice(2);
   assertKnown(options, { value: ["--limit"] }, "agent conversations show option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const encoded = encodeURIComponent(id);
   const conversation = await call(deps, scope, { path: `/api/conversations/${encoded}`, query: { instanceId: slug } });
   const messages = await call(deps, scope, {

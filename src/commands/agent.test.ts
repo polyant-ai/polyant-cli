@@ -118,10 +118,36 @@ describe("agent list", () => {
     expect(h.out.join("")).toBe(JSON.stringify(body));
   });
 
-  it("refuses to run when no context or flag selects a workspace", async () => {
+  // A management key has no route that lists its workspaces, so a read falls
+  // back to the engine's own default resolution — but says so.
+  it("reads the default workspace and says so when none is selected", async () => {
+    const h = harness([response({ instances: [AGENT] })], {
+      loadConfig: async () => ({ default: "dev", targets: CONFIG.targets }),
+    });
+
+    await leaf(h.command, ["list"])([], context());
+
+    expect(h.calls[0].workspaceId).toBeUndefined();
+    expect(h.err.join("")).toContain("no workspace selected");
+  });
+});
+
+describe("agent write scope", () => {
+  // The read fallback must not extend to writes: landing a change in a workspace
+  // the operator never chose is the failure worth refusing.
+  it("refuses a write when no context or flag selects a workspace", async () => {
     const h = harness([], { loadConfig: async () => ({ default: "dev", targets: CONFIG.targets }) });
 
-    await expect(leaf(h.command, ["list"])([], context())).rejects.toThrow(ConfigError);
+    await expect(leaf(h.command, ["create"])(["acme", "--name", "Acme"], context({ yes: true })))
+      .rejects.toThrow(ConfigError);
+    expect(h.request).not.toHaveBeenCalled();
+  });
+
+  it("refuses a delete when no context or flag selects a workspace", async () => {
+    const h = harness([], { loadConfig: async () => ({ default: "dev", targets: CONFIG.targets }) });
+
+    await expect(leaf(h.command, ["delete"])(["acme", "--confirm", "acme"], context({ yes: true })))
+      .rejects.toThrow(/Missing required scope component/);
     expect(h.request).not.toHaveBeenCalled();
   });
 });

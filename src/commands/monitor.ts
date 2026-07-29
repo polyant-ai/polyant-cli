@@ -51,7 +51,7 @@ async function probe(deps: ServiceDependencies, scope: ResolvedScope, path: stri
 
 async function status(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   assertKnown(args, {}, "monitor status option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const health = await probe(deps, scope, "/health");
   const agents = await probe(deps, scope, "/api/instances");
 
@@ -189,7 +189,7 @@ async function events(
 ): Promise<void> {
   const options = forcedInstance === undefined ? args : args.slice(1);
   assertKnown(options, { value: [...EVENT_FILTERS], boolean: ["--follow"] }, "monitor events option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
 
   if (options.includes("--follow")) return follow(options, context, deps, scope, forcedInstance);
 
@@ -218,7 +218,7 @@ async function events(
 
 async function stats(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   assertKnown(args, { value: ["--instance", "--from", "--to"] }, "monitor stats option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, {
     path: "/api/audit-logs/stats",
     query: {

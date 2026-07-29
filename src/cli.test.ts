@@ -146,9 +146,9 @@ describe("run", () => {
     expect(err.join("")).toContain('Unknown command "agent nonexistent"');
   });
 
-  it("should_exit_2_when_an_agent_action_runs_without_a_selected_workspace", async () => {
-    expect(await run(["agent", "list"])).toBe(ExitCode.Config);
-    expect(err.join("")).toContain('Missing required scope component "org"');
+  it("should_exit_2_when_an_agent_write_runs_without_a_selected_workspace", async () => {
+    expect(await run(["agent", "create", "acme", "--name", "Acme", "--yes"])).toBe(ExitCode.Config);
+    expect(err.join("")).toContain("Missing required scope component");
     expect(apiMocks.request).not.toHaveBeenCalled();
   });
 

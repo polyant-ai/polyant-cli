@@ -116,6 +116,23 @@ describe("analytics overview", () => {
     expect(text).not.toContain("0 / 0 / 0");
   });
 
+  // Found by smoking a real agent with no traffic: percentiles over an empty
+  // sample are zeros, which read as "instant" rather than "nothing measured".
+  it("names an empty latency sample instead of printing a p95 of zero", async () => {
+    const h = harness([
+      response({
+        ...OVERVIEW,
+        latency: { overview: { p50: 0, p95: 0, p99: 0, avgTotal: 0, avgTtfb: null, sampleCount: 0 }, slowestTools: [] },
+      }),
+    ]);
+
+    await action(h.command, "overview")([], context());
+
+    const text = h.out.join("");
+    expect(text).toMatch(/latency p50\/p95\/p99: +no samples in this range/);
+    expect(text).not.toContain("0 / 0 / 0");
+  });
+
   it("names the empty range instead of rendering a bare table", async () => {
     const h = harness([response({ overview: OVERVIEW.overview, latency: OVERVIEW.latency })]);
 

@@ -45,18 +45,42 @@ export const processServiceDependencies: ServiceDependencies = {
   readPayload: (source) => (source === "-" ? readStdin() : readFile(source, "utf8")),
 };
 
-/** Resolves the scope a command family requires; none of them may guess it. */
+/**
+ * A write must name its workspace; a read need not.
+ *
+ * A management key has no route that lists the workspaces it may use
+ * (`/api/organizations/…` serves human principals only), so requiring one for
+ * every read would make the CLI unusable against a real key. For a read the
+ * engine's own service-principal resolver picks the organisation's default
+ * workspace — the CLI says so on stderr rather than resolving it silently. A
+ * write still refuses to proceed without an explicit selection: landing a change
+ * in a workspace the operator did not choose is the failure worth preventing.
+ */
+export type ScopeMode = "read" | "write";
+
+const REQUIRED: Record<ScopeMode, readonly ScopeRequirement[]> = {
+  read: ["target"],
+  write: ["workspace"],
+};
+
 export async function scopeFor(
   deps: ServiceDependencies,
   context: CommandContext | undefined,
-  required: readonly ScopeRequirement[] = ["workspace"],
+  mode: ScopeMode = "write",
 ): Promise<ResolvedScope> {
-  return resolveScope({
+  const scope = resolveScope({
     config: await deps.loadConfig(),
     env: deps.env,
     global: context?.global ?? { json: false, yes: false, dryRun: false },
-    required,
+    required: REQUIRED[mode],
   });
+  if (mode === "read" && scope.workspace === undefined) {
+    deps.io.stderr(
+      "note: no workspace selected — reading the organisation's default workspace. " +
+        "Pass --workspace <id> or select a context to be explicit.\n",
+    );
+  }
+  return scope;
 }
 
 /** Sends a request already bound to the resolved workspace. */

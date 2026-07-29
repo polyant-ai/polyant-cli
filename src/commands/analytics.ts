@@ -13,6 +13,14 @@ function range(options: readonly string[]): Record<string, string> {
   return { ...maybe("from", takeValue(options, "--from")), ...maybe("to", takeValue(options, "--to")) };
 }
 
+type LatencyOverview = NonNullable<AnalyticsResponse["latency"]>["overview"];
+
+function latencyPercentiles(latency: LatencyOverview | undefined): string {
+  if (latency === undefined) return "unavailable";
+  if (latency.sampleCount === 0) return "no samples in this range";
+  return `${latency.p50} / ${latency.p95} / ${latency.p99}`;
+}
+
 function report(deps: ServiceDependencies, body: Partial<AnalyticsResponse> | null, title: string): void {
   const overview = body?.overview;
   if (overview === undefined) throw new ConfigError(`${title} did not return an overview.`);
@@ -27,9 +35,10 @@ function report(deps: ServiceDependencies, body: Partial<AnalyticsResponse> | nu
     { label: "totalCost", value: text(overview.totalCost) },
     { label: "avgCostPerConversation", value: text(overview.avgCostPerConversation) },
     { label: "avgResponseTime", value: text(overview.avgResponseTime) },
-    // The engine serves latency from a separate store: when that query fails or
-    // has no samples the field must read as unavailable, not as a p95 of zero.
-    { label: "latency p50/p95/p99", value: latency === undefined ? "unavailable" : `${latency.p50} / ${latency.p95} / ${latency.p99}` },
+    // The engine serves latency from a separate store, and percentiles over an
+    // empty sample are zeros that read as "instant". Neither an absent block nor
+    // an empty one may be printed as a p95 of 0.
+    { label: "latency p50/p95/p99", value: latencyPercentiles(latency) },
     { label: "latency samples", value: latency === undefined ? "unavailable" : text(latency.sampleCount) },
   ]);
 
@@ -65,7 +74,7 @@ function report(deps: ServiceDependencies, body: Partial<AnalyticsResponse> | nu
 
 async function overview(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   assertKnown(args, RANGE_FLAGS, "analytics overview option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, { path: "/api/analytics", query: range(args) });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
@@ -92,7 +101,7 @@ async function agent(args: string[], context: CommandContext | undefined, deps: 
   if (slug === undefined || slug.startsWith("--")) throw new ConfigError("polyant-cli analytics agent needs an agent slug.");
   const options = args.slice(1);
   assertKnown(options, RANGE_FLAGS, "analytics agent option");
-  const scope = await scopeFor(deps, context);
+  const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, {
     path: `/api/instances/${encodeURIComponent(slug)}/analytics`,
     query: range(options),
