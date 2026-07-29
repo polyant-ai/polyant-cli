@@ -37,7 +37,15 @@ export function writeRawResponse(output: OutputIO, raw: string): void {
   output.stdout(raw);
 }
 
-/** Writes the original bodies from a multi-source command as one JSON object. */
-export function writeCompositeJson(output: OutputIO, bodies: Readonly<Record<string, unknown>>): void {
-  output.stdout(`${JSON.stringify(bodies, null, 2)}\n`);
+/** Raw JSON from an API response, passed through without parsing or serialising. */
+export type RawJsonFragment = string;
+
+/**
+ * Writes original JSON response fragments as a composite object. Values must
+ * already be complete JSON bodies (for example, `response.raw`), so numeric
+ * spellings and duplicate keys remain exactly as supplied by the source.
+ */
+export function writeCompositeJson(output: OutputIO, bodies: Readonly<Record<string, RawJsonFragment>>): void {
+  const entries = Object.entries(bodies).map(([source, raw]) => `${JSON.stringify(source)}:${raw}`);
+  output.stdout(`{${entries.join(",")}}\n`);
 }

@@ -49,13 +49,17 @@ describe("output writers", () => {
     expect(stderr).toEqual([]);
   });
 
-  it("writes a composite JSON object with the original source bodies", () => {
-    const { io } = captureOutput();
-    const stdout: string[] = [];
-    const body = { health: { status: "ok" }, agents: [{ slug: "acme" }] };
+  it("embeds every raw JSON source body without changing its lexemes", () => {
+    const { io, stdout } = captureOutput();
 
-    writeCompositeJson({ stdout: (text) => stdout.push(text), stderr: io.stderr }, body);
+    writeCompositeJson(io, {
+      decimal: '{"rate":1.0}',
+      unsafeInteger: '{"id":9007199254740993}',
+      duplicateKeys: '{"state":"old","state":"new"}',
+    });
 
-    expect(JSON.parse(stdout.join(""))).toEqual(body);
+    expect(stdout.join("")).toBe(
+      '{"decimal":{"rate":1.0},"unsafeInteger":{"id":9007199254740993},"duplicateKeys":{"state":"old","state":"new"}}\n',
+    );
   });
 });

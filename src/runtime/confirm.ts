@@ -17,12 +17,16 @@ export interface ConfirmationOptions {
 }
 
 /**
- * Process interaction is injected so this policy remains free of terminal and
- * network dependencies. Callers can bridge this to readline when needed.
+ * The input adapter supplies only terminal state and input. Output remains on
+ * this policy's stderr channel, so prompts never corrupt machine stdout.
  */
+export interface ConfirmationInput {
+  readonly isTTY: boolean | undefined;
+  readLine(): Promise<string>;
+}
+
 export interface ConfirmationIO extends OutputIO {
-  readonly interactive: boolean;
-  prompt(message: string): Promise<string>;
+  readonly input: ConfirmationInput;
 }
 
 /** A caller performs its write only when `shouldWrite` is true. */
@@ -69,11 +73,12 @@ export async function confirmMutation(
   }
 
   if (plan.scope.prod && !options.yes) reject(`${plan.title} targets production; --yes is required.`);
-  if (!io.interactive && !options.yes) reject(`${plan.title} is non-interactive; --yes is required.`);
+  if (io.input.isTTY !== true && !options.yes) reject(`${plan.title} is non-interactive; --yes is required.`);
   if (options.yes) return { shouldWrite: true };
 
-  const answer = await io.prompt("Proceed? [y/N] ");
-  if (answer.trim().toLowerCase() !== "y" && answer.trim().toLowerCase() !== "yes") {
+  io.stderr("Proceed? [y/N] ");
+  const answer = (await io.input.readLine()).trim().toLowerCase();
+  if (answer !== "y" && answer !== "yes") {
     reject(`${plan.title} was not confirmed.`);
   }
   return { shouldWrite: true };
