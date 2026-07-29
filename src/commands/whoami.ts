@@ -7,6 +7,7 @@ import type { HealthResponse, ListAgentsResponse } from "../api/types.js";
 import type { Command, CommandContext } from "../command.js";
 import { resolveScope } from "../runtime/scope.js";
 import type { GlobalOptions } from "../runtime/global-options.js";
+import { processOutput } from "../render/output.js";
 
 export const WHOAMI_USAGE = `Usage: polyant-cli whoami [options]
 
@@ -146,7 +147,7 @@ function globalForScope(context: CommandContext | undefined, target: string | un
 
 async function run(argv: string[], context?: CommandContext): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) {
-    process.stdout.write(`${WHOAMI_USAGE}\n`);
+    processOutput.stdout(`${WHOAMI_USAGE}\n`);
     return;
   }
 
@@ -163,12 +164,12 @@ async function run(argv: string[], context?: CommandContext): Promise<void> {
   const report = await collectWhoami(target);
 
   const json = context?.global.json ?? args.json;
-  process.stdout.write(json ? `${JSON.stringify(report, null, 2)}\n` : `${renderWhoami(report)}\n`);
+  processOutput.stdout(json ? `${JSON.stringify(report, null, 2)}\n` : `${renderWhoami(report)}\n`);
 
   // An agent with authEnabled false has completely open runtime routes: no
   // token required, no token validated. That belongs on stderr, loudly.
   for (const slug of report.openAgents) {
-    process.stderr.write(
+    processOutput.stderr(
       `warning: agent "${slug}" has authEnabled=false — its /v1/chat/completions and chat/stream routes are open to anyone.\n`,
     );
   }
