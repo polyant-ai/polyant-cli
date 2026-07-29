@@ -12,9 +12,18 @@ export interface TargetSpec {
   prod?: boolean;
 }
 
+/** A non-secret, named selection of target and management scope. */
+export interface ContextSpec {
+  target: string;
+  org: string;
+  workspace: string;
+}
+
 export interface WorkspaceConfig {
   default?: string;
+  defaultContext?: string;
   targets: Record<string, TargetSpec>;
+  contexts?: Record<string, ContextSpec>;
 }
 
 export interface ResolvedTarget {
@@ -95,6 +104,28 @@ function validateTarget(name: string, raw: unknown): TargetSpec {
   };
 }
 
+function requireContextString(name: string, field: "org" | "workspace", value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new ConfigError(`${CONFIG_FILE}: context "${name}" needs a non-empty string "${field}".`);
+  }
+  return value;
+}
+
+function validateContext(name: string, raw: unknown, targets: Record<string, TargetSpec>): ContextSpec {
+  if (!isRecord(raw)) throw new ConfigError(`${CONFIG_FILE}: context "${name}" must be a mapping.`);
+
+  const target = raw.target;
+  if (typeof target !== "string" || !Object.hasOwn(targets, target)) {
+    throw new ConfigError(`${CONFIG_FILE}: context "${name}" references unknown target ${JSON.stringify(target)}.`);
+  }
+
+  return {
+    target,
+    org: requireContextString(name, "org", raw.org),
+    workspace: requireContextString(name, "workspace", raw.workspace),
+  };
+}
+
 export function parseWorkspaceConfig(text: string): WorkspaceConfig {
   let doc: unknown;
   try {
@@ -119,7 +150,27 @@ export function parseWorkspaceConfig(text: string): WorkspaceConfig {
     );
   }
 
-  return { ...(fallback === undefined ? {} : { default: fallback }), targets };
+  let contexts: Record<string, ContextSpec> | undefined;
+  if (doc.contexts !== undefined) {
+    if (!isRecord(doc.contexts)) throw new ConfigError(`${CONFIG_FILE}: "contexts" must be a mapping.`);
+    contexts = {};
+    for (const [name, raw] of Object.entries(doc.contexts)) contexts[name] = validateContext(name, raw, targets);
+  }
+
+  const defaultContext = doc.defaultContext;
+  if (
+    defaultContext !== undefined &&
+    (typeof defaultContext !== "string" || contexts === undefined || !Object.hasOwn(contexts, defaultContext))
+  ) {
+    throw new ConfigError(`${CONFIG_FILE}: "defaultContext" must name a declared context.`);
+  }
+
+  return {
+    ...(fallback === undefined ? {} : { default: fallback }),
+    ...(defaultContext === undefined ? {} : { defaultContext }),
+    targets,
+    ...(contexts === undefined ? {} : { contexts }),
+  };
 }
 
 /** Absent file is not an error: the CLI then runs on POLYANT_URL + POLYANT_KEY alone. */

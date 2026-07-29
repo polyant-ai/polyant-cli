@@ -30,6 +30,17 @@ describe("parseWorkspaceConfig", () => {
     expect(config.targets.prod.prod).toBe(true);
   });
 
+  it("should_read_named_contexts_and_the_default_context", () => {
+    const config = parseWorkspaceConfig(
+      `targets:\n  staging:\n    baseUrl: https://staging.example.polyant.ai\n    keyEnv: POLYANT_KEY_STAGING\ncontexts:\n  engineering:\n    target: staging\n    org: polyant\n    workspace: platform\ndefaultContext: engineering\n`,
+    );
+
+    expect(config.contexts).toEqual({
+      engineering: { target: "staging", org: "polyant", workspace: "platform" },
+    });
+    expect(config.defaultContext).toBe("engineering");
+  });
+
   it("should_strip_trailing_slashes_when_the_base_url_has_them", () => {
     expect(parseWorkspaceConfig(YAML).targets.prod.baseUrl).toBe("https://example.polyant.ai");
   });
@@ -61,6 +72,36 @@ describe("parseWorkspaceConfig", () => {
   it("should_reject_a_default_that_names_no_declared_target", () => {
     const bad = `default: ghost\ntargets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\n`;
     expect(() => parseWorkspaceConfig(bad)).toThrow(/must name one of/);
+  });
+
+  it("should_reject_a_context_that_references_an_unknown_target", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\ncontexts:\n  local:\n    target: ghost\n    org: polyant\n    workspace: platform\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/context "local" references unknown target "ghost"/);
+  });
+
+  it("should_reject_a_context_with_a_non_string_org", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\ncontexts:\n  local:\n    target: dev\n    org: 1\n    workspace: platform\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/context "local" needs a non-empty string "org"/);
+  });
+
+  it("should_reject_a_context_with_an_empty_workspace", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\ncontexts:\n  local:\n    target: dev\n    org: polyant\n    workspace: ""\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/context "local" needs a non-empty string "workspace"/);
+  });
+
+  it("should_reject_contexts_when_they_are_not_a_mapping", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\ncontexts: local\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/"contexts" must be a mapping/);
+  });
+
+  it("should_reject_a_context_entry_that_is_not_a_mapping", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\ncontexts:\n  local: dev\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/context "local" must be a mapping/);
+  });
+
+  it("should_reject_a_default_context_that_is_not_declared", () => {
+    const bad = `targets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: K\ndefaultContext: ghost\ncontexts:\n  local:\n    target: dev\n    org: polyant\n    workspace: platform\n`;
+    expect(() => parseWorkspaceConfig(bad)).toThrow(/"defaultContext" must name a declared context/);
   });
 
   it("should_reject_invalid_yaml", () => {
