@@ -41,6 +41,14 @@ read only from the environment variable named by `keyEnv`, and there is no
 Precedence is flag → environment variable → `polyant.yaml`. Without a
 `polyant.yaml`, the CLI runs on `POLYANT_URL` and `POLYANT_KEY` alone.
 
+`POLYANT_URL` applies **only** in that no-workspace case. Once `polyant.yaml`
+declares a target, a stray `POLYANT_URL` in the environment is ignored: letting
+it retarget a named target would keep that target's key and its `prod` flag
+while pointing somewhere else, so a write landing on a production host could be
+labelled as staging. `--url` still overrides the host, because typing it is
+per-invocation intent — but it too keeps the target's key and `prod` flag, so
+prefer declaring a target over reaching for the flag.
+
 ## Commands
 
 ### `polyant whoami`
@@ -80,6 +88,12 @@ stderr. Every mutation prints its target host on stderr before it is sent.
 | `3` | remote: 5xx, 429, timeout, unreachable host — transient, so retryable |
 
 `429` is `3`, not `2`: it is worth retrying.
+
+Two exceptions worth knowing. `whoami` exits `0` even when the instance does not
+answer — reporting that is the command's job, so read its `reachable` field
+rather than its exit code; use `polyant api GET /health` if you want a health
+gate that can fail. And a malformed URL is a `2`, not a `3`: retrying a URL that
+can never parse is pointless.
 
 ## Development
 

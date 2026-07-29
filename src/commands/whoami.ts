@@ -17,7 +17,12 @@ Options:
   --url <baseUrl>    override the target's baseUrl
 
 A management API key cannot introspect its own permissions: /api/me/access
-only serves user principals, so permissions are reported as not verified.`;
+only serves user principals, so permissions are reported as not verified.
+
+This command exits 0 whenever it can resolve a target, even if the instance
+never answers — reporting an unreachable instance is its job, not a failure of
+its own. Read the "reachable" field. If you need a non-zero exit for a health
+gate, use "polyant api GET /health" instead.`;
 
 export interface WhoamiReport {
   target: string;
