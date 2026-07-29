@@ -158,6 +158,45 @@ Channel and hook configuration is accepted only from a named file or stdin
 history. `channels show` prints config **key names** only; stored values, masked
 or not, are never echoed.
 
+### `polyant-cli monitor`
+
+Current state and live activity. Like `agent`, it needs an organisation and a
+workspace.
+
+```bash
+polyant-cli --context engineering monitor status
+polyant-cli --context engineering monitor events --tool web_search --limit 50
+polyant-cli --context engineering monitor events --follow --instance acme
+polyant-cli --context engineering monitor stats --from 2026-07-01
+```
+
+`status` probes `/health` and the agent list **independently**: whichever one the
+engine will not serve is reported as `unavailable — <error>`, never as a zero, so
+a broken permission never reads as a healthy empty workspace. Agents with
+`authEnabled=false` are flagged on stderr.
+
+`events` reads the audit log. With `--follow` it subscribes to the live activity
+stream instead: the `--instance` filter is applied **server-side**, the request
+carries no deadline (interrupt it, or bound it with `--max <n>`), and `--json`
+switches to JSON Lines — one unmodified engine payload per line, so a consumer
+can read the stream incrementally.
+
+`polyant-cli agent logs <slug>` is the same query with the instance filter
+forced to that agent, including under `--follow`.
+
+### `polyant-cli analytics`
+
+Historical aggregates over the same workspace scope.
+
+```bash
+polyant-cli --context engineering analytics overview --from 2026-07-01 --to 2026-07-29
+polyant-cli --context engineering analytics agent acme
+```
+
+Latency comes from a separate store on the engine: when it is absent the report
+says `unavailable` rather than printing a p95 of zero. `--json` passes the
+engine's body through unchanged.
+
 ### `polyant-cli whoami`
 
 Active target, whether the instance answers, and the agents the key can see.

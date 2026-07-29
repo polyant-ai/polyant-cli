@@ -5,11 +5,16 @@ import { ConfigError, ExitCode, RemoteError } from "./exit.js";
 
 const apiMocks = vi.hoisted(() => ({
   request: vi.fn(),
+  requestStream: vi.fn(),
   loadWorkspaceConfig: vi.fn(),
   resolveTarget: vi.fn(),
 }));
 
-vi.mock("./api/client.js", () => ({ request: apiMocks.request }));
+vi.mock("./api/client.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./api/client.js")>()),
+  request: apiMocks.request,
+  requestStream: apiMocks.requestStream,
+}));
 vi.mock("./config.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./config.js")>()),
   loadWorkspaceConfig: apiMocks.loadWorkspaceConfig,

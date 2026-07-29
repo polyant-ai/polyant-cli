@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
-import { readFile } from "node:fs/promises";
-import { request as processRequest, type ApiResponse, type RequestOptions } from "../api/client.js";
+import type { ApiResponse } from "../api/client.js";
 import type {
   AgentDetail,
   AgentDetailResponse,
@@ -12,62 +11,27 @@ import type {
   ToolsResponse,
 } from "../api/types.js";
 import type { Command, CommandContext } from "../command.js";
-import { loadWorkspaceConfig, type WorkspaceConfig } from "../config.js";
 import { ConfigError } from "../exit.js";
 import { writeCompositeJson, writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
-import { confirmMutation, type ConfirmationIO, type MutationPlan } from "../runtime/confirm.js";
+import { confirmMutation, type MutationPlan } from "../runtime/confirm.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
-import { resolveScope, type ResolvedScope } from "../runtime/scope.js";
+import {
+  call,
+  expectArray,
+  maybe,
+  positiveInteger,
+  processServiceDependencies,
+  scopeFor,
+  text,
+  wantsJson,
+  type ServiceDependencies,
+} from "../runtime/service.js";
+import type { ResolvedScope } from "../runtime/scope.js";
+import { createMonitorCommand } from "./monitor.js";
 
-export interface AgentCommandDependencies {
-  request(target: ResolvedScope["target"], opts: RequestOptions): Promise<ApiResponse>;
-  loadConfig(): Promise<WorkspaceConfig | undefined>;
-  env: Record<string, string | undefined>;
-  io: ConfirmationIO;
-  /**
-   * Reads a payload from a named local file, or from stdin when the source is
-   * "-". Channel and hook configuration carries secrets, so it never arrives as
-   * a command-line flag where it would land in shell history and `ps` output.
-   */
-  readPayload(source: string): Promise<string>;
-}
-
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-const processDependencies: AgentCommandDependencies = {
-  request: processRequest,
-  loadConfig: () => loadWorkspaceConfig(),
-  env: process.env,
-  io: {
-    stdout: (text) => process.stdout.write(text),
-    stderr: (text) => process.stderr.write(text),
-    input: { isTTY: process.stdin.isTTY, readLine: readStdin },
-  },
-  readPayload: (source) => (source === "-" ? readStdin() : readFile(source, "utf8")),
-};
-
-/** Every agent action operates inside one workspace; none of them may guess it. */
-async function scopeFor(deps: AgentCommandDependencies, context: CommandContext | undefined): Promise<ResolvedScope> {
-  return resolveScope({
-    config: await deps.loadConfig(),
-    env: deps.env,
-    global: context?.global ?? { json: false, yes: false, dryRun: false },
-    required: ["workspace"],
-  });
-}
-
-function call(deps: AgentCommandDependencies, scope: ResolvedScope, opts: RequestOptions): Promise<ApiResponse> {
-  return deps.request(scope.target, { ...opts, ...(scope.workspace === undefined ? {} : { workspaceId: scope.workspace }) });
-}
-
-function wantsJson(context: CommandContext | undefined): boolean {
-  return context?.global.json === true;
-}
+/** Kept as a name of its own so the agent tests read as agent tests. */
+export type AgentCommandDependencies = ServiceDependencies;
 
 function planScope(scope: ResolvedScope): MutationPlan["scope"] {
   return {
@@ -102,15 +66,6 @@ function requireSlug(args: readonly string[], action: string): string {
   const slug = args[0];
   if (slug === undefined || slug.startsWith("--")) throw new ConfigError(`polyant-cli agent ${action} needs an agent slug.`);
   return slug;
-}
-
-function text(value: unknown): string {
-  return value === null || value === undefined ? "-" : String(value);
-}
-
-function expectArray<T>(value: unknown, source: string): T[] {
-  if (!Array.isArray(value)) throw new ConfigError(`${source} did not return the expected array.`);
-  return value as T[];
 }
 
 // --- reads -----------------------------------------------------------------
@@ -588,13 +543,19 @@ async function hooksRemove(args: string[], context: CommandContext | undefined, 
   reportWrite(deps, context, res, `Removed hook ${id} from ${slug}.`);
 }
 
-// --- conversations ---------------------------------------------------------
+// --- logs ------------------------------------------------------------------
 
-function positiveInteger(value: string | undefined, flag: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (!/^[1-9][0-9]*$/.test(value)) throw new ConfigError(`${flag} needs a positive integer.`);
-  return value;
+/**
+ * The same query `monitor events` runs, with the instance filter forced to this
+ * agent. Delegating rather than re-implementing keeps one transport path, and
+ * keeps `--follow` filtered server-side.
+ */
+async function logs(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "logs");
+  await createMonitorCommand(deps).actions.events(args, context, slug);
 }
+
+// --- conversations ---------------------------------------------------------
 
 async function conversationsList(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "conversations list");
@@ -631,10 +592,6 @@ async function conversationsList(args: string[], context: CommandContext | undef
       emptyMessage: `Agent ${slug} has no conversations.`,
     })}\n`,
   );
-}
-
-function maybe(key: string, value: string | undefined): Record<string, string> {
-  return value === undefined ? {} : { [key]: value };
 }
 
 async function conversationsShow(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
@@ -778,6 +735,13 @@ const LEAVES: Record<string, Record<string, Leaf> | Leaf> = {
       mutates: true,
     },
   },
+  logs: {
+    summary: "list or follow this agent's recorded tool events",
+    usage: `Usage: polyant-cli agent logs <slug> [--tool <name>] [--action <name>] [--search <text>]
+                                  [--from <iso>] [--to <iso>] [--limit <n>] [--offset <n>]
+       polyant-cli agent logs <slug> --follow [--max <n>]`,
+    action: logs,
+  },
   conversations: {
     list: {
       summary: "list an agent's conversations",
@@ -806,7 +770,7 @@ function isLeaf(node: Record<string, Leaf> | Leaf): node is Leaf {
 }
 
 export function createAgentCommand(overrides: Partial<AgentCommandDependencies> = {}): Command {
-  const deps = { ...processDependencies, ...overrides };
+  const deps = { ...processServiceDependencies, ...overrides };
   const children: Record<string, Command> = {};
   for (const [name, node] of Object.entries(LEAVES)) {
     if (isLeaf(node)) {

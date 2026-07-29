@@ -26,6 +26,7 @@ export interface RequestOptions {
   path: string;
   query?: Record<string, string>;
   body?: unknown;
+  /** Request deadline. `0` disables it, which only a long-lived stream needs. */
   timeoutMs?: number;
   /** Runtime routes take a per-instance key as a Bearer token instead of the management key. */
   bearer?: string;
@@ -107,7 +108,10 @@ async function send(
       method,
       headers: buildHeaders(target, opts),
       ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      // A follow stream is meant to stay open; a deadline would abort it mid-run
+      // and read as a remote failure. Such a caller passes 0 and ends the stream
+      // itself (or the operator interrupts it).
+      ...(opts.timeoutMs === 0 ? {} : { signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS) }),
       // Never follow a redirect. The fetch spec strips `Authorization` across
       // origins but NOT a custom header, so following one would re-send
       // X-Polyant-Key to whatever host the Location names. `request` turns the
@@ -121,7 +125,12 @@ async function send(
   }
 }
 
-export async function request(target: ResolvedTarget, opts: RequestOptions): Promise<ApiResponse> {
+/**
+ * The part every caller shares: identical headers, timeout, redirect refusal
+ * and status mapping. It stops short of reading the body, so a streaming caller
+ * can keep `Response.body` readable.
+ */
+async function dispatch(target: ResolvedTarget, opts: RequestOptions): Promise<{ res: Response; url: URL; method: string }> {
   const url = buildUrl(target, opts);
   const method = opts.method ?? "GET";
   const res = await send(url, method, target, opts);
@@ -137,10 +146,67 @@ export async function request(target: ResolvedTarget, opts: RequestOptions): Pro
         `Refusing to resend the management key to another host — is this target behind a login proxy?`,
     );
   }
+  return { res, url, method };
+}
+
+export async function request(target: ResolvedTarget, opts: RequestOptions): Promise<ApiResponse> {
+  const { res } = await dispatch(target, opts);
 
   const { raw, body } = await readBody(res);
   if (!res.ok) {
     throw new RemoteError(extractMessage(res.status, body), statusToExitCode(res.status), res.status);
   }
   return { status: res.status, raw, body };
+}
+
+/** One decoded `data:` payload of a Server-Sent Events stream. */
+export interface StreamEvent {
+  data: string;
+}
+
+export interface StreamResponse {
+  status: number;
+  /** Yields one entry per `data:` event; comment lines (`: ping`) are dropped. */
+  events: AsyncIterable<StreamEvent>;
+}
+
+/**
+ * Splits an SSE byte stream into events. Comment lines carry the heartbeat and
+ * the initial `: connected` marker, so they are consumed but never surfaced.
+ */
+async function* parseSse(body: ReadableStream<Uint8Array>): AsyncGenerator<StreamEvent> {
+  const decoder = new TextDecoder();
+  let buffered = "";
+  for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+    buffered += decoder.decode(chunk, { stream: true });
+    let boundary = buffered.indexOf("\n\n");
+    while (boundary !== -1) {
+      const frame = buffered.slice(0, boundary);
+      buffered = buffered.slice(boundary + 2);
+      const data = frame
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      if (data.length > 0) yield { data };
+      boundary = buffered.indexOf("\n\n");
+    }
+  }
+}
+
+/**
+ * A streaming read. An error status is still read and mapped exactly as
+ * `request` does — the engine answers a rejected subscription with JSON, not
+ * with an event stream, and reporting it as an empty stream would look like
+ * silence rather than a refusal.
+ */
+export async function requestStream(target: ResolvedTarget, opts: RequestOptions): Promise<StreamResponse> {
+  const { res } = await dispatch(target, opts);
+
+  if (!res.ok) {
+    const { body } = await readBody(res);
+    throw new RemoteError(extractMessage(res.status, body), statusToExitCode(res.status), res.status);
+  }
+  if (res.body === null) throw new RemoteError(`${opts.path} returned no stream body.`, ExitCode.Remote);
+  return { status: res.status, events: parseSse(res.body) };
 }

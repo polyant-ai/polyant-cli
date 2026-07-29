@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { KEY_HEADER, WORKSPACE_HEADER, extractMessage, request, statusToExitCode } from "./client.js";
+import { KEY_HEADER, WORKSPACE_HEADER, extractMessage, request, requestStream, statusToExitCode } from "./client.js";
 import { ExitCode, RemoteError } from "../exit.js";
 import type { ResolvedTarget } from "../config.js";
 
@@ -217,5 +217,83 @@ describe("request", () => {
     vi.stubGlobal("fetch", vi.fn());
 
     await expect(request(TARGET, { path: "api/instances" })).rejects.toThrow(/must start with "\/"/);
+  });
+});
+
+function sseResponse(text: string, status = 200): Response {
+  return new Response(text, { status, headers: { "Content-Type": "text/event-stream" } });
+}
+
+async function collect(stream: AsyncIterable<{ data: string }>): Promise<string[]> {
+  const seen: string[] = [];
+  for await (const event of stream) seen.push(event.data);
+  return seen;
+}
+
+describe("requestStream", () => {
+  it("should_yield_each_data_event_and_drop_heartbeat_comments", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => sseResponse(': connected\n\ndata: {"id":"1"}\n\n: ping\n\ndata: {"id":"2"}\n\n')),
+    );
+
+    const stream = await requestStream(TARGET, { path: "/api/activity-stream/live", timeoutMs: 0 });
+
+    expect(stream.status).toBe(200);
+    expect(await collect(stream.events)).toEqual(['{"id":"1"}', '{"id":"2"}']);
+  });
+
+  it("should_join_a_multi_line_data_payload_without_reserialising_it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => sseResponse("data: line one\ndata: line two\n\n")));
+
+    const stream = await requestStream(TARGET, { path: "/api/activity-stream/live", timeoutMs: 0 });
+
+    expect(await collect(stream.events)).toEqual(["line one\nline two"]);
+  });
+
+  it("should_send_the_same_headers_and_still_refuse_redirects", async () => {
+    const fetchMock = vi.fn(async () => sseResponse(""));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await requestStream(TARGET, { path: "/api/activity-stream/live", workspaceId: "ws-1", timeoutMs: 0 });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers[KEY_HEADER]).toBe("pk_uuid_secret");
+    expect(headers[WORKSPACE_HEADER]).toBe("ws-1");
+    expect(init.redirect).toBe("manual");
+    // A follow stream must not carry a deadline that would abort it mid-run.
+    expect(init.signal).toBeUndefined();
+  });
+
+  it("should_refuse_a_redirected_stream_before_reading_any_event", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://idp.example/login" } })),
+    );
+
+    await expect(requestStream(TARGET, { path: "/api/activity-stream/live", timeoutMs: 0 }))
+      .rejects.toThrow(/was redirected \(302 to https:\/\/idp\.example\/login\)/);
+  });
+
+  it("should_map_a_rejected_subscription_to_its_status_and_message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(503, { error: "Too many concurrent activity-stream subscribers", message: "Service Unavailable" })),
+    );
+
+    const failure = requestStream(TARGET, { path: "/api/activity-stream/live", timeoutMs: 0 });
+    await expect(failure).rejects.toThrow(RemoteError);
+    await expect(failure).rejects.toMatchObject({ code: ExitCode.Remote, status: 503 });
+  });
+
+  it("should_keep_the_default_deadline_when_no_timeout_is_requested", async () => {
+    const fetchMock = vi.fn(async () => sseResponse(""));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await requestStream(TARGET, { path: "/api/activity-stream/live" });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 });

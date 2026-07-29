@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type { Command } from "./command.js";
 import { agentCommand } from "./commands/agent.js";
+import { analyticsCommand } from "./commands/analytics.js";
 import { apiCommand } from "./commands/api.js";
 import { configCommand } from "./commands/config.js";
+import { monitorCommand } from "./commands/monitor.js";
 import { whoamiCommand } from "./commands/whoami.js";
 import { CliError, ConfigError, ExitCode, type ExitCodeValue } from "./exit.js";
 import { parseInvocation, type Invocation } from "./runtime/global-options.js";
@@ -14,8 +16,10 @@ import { parseInvocation, type Invocation } from "./runtime/global-options.js";
  */
 export const COMMANDS: Record<string, Command> = {
   agent: agentCommand,
+  analytics: analyticsCommand,
   api: apiCommand,
   config: configCommand,
+  monitor: monitorCommand,
   whoami: whoamiCommand,
 };
 

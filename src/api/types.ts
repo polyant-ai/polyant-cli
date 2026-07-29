@@ -110,3 +110,74 @@ export interface ConversationsResponse {
   conversations: ConversationSummary[];
   total: number;
 }
+
+/** GET /api/audit-logs — one recorded tool action. */
+export interface AuditLogRow {
+  id: string;
+  instanceId: string;
+  conversationId: string | null;
+  toolName: string;
+  action: string;
+  success: boolean;
+  error: string | null;
+  durationMs: number | null;
+  createdAt: string;
+}
+
+export interface AuditLogListResponse {
+  items: AuditLogRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** GET /api/audit-logs/stats. */
+export interface AuditStatsResponse {
+  totalEntries: number;
+  errorCount: number;
+  errorRate: number;
+  byTool: { toolName: string; count: number }[];
+  byAction: { action: string; count: number }[];
+}
+
+/**
+ * One event of GET /api/activity-stream/live. Only the fields the live view
+ * prints are declared; the engine caps every preview server-side.
+ */
+export interface FeedEvent {
+  id: string;
+  ts: string;
+  persona: string;
+  text: string;
+  category?: string;
+  status?: string;
+  durationMs?: number;
+  conversationId?: string;
+  instance?: { slug: string; name: string };
+  tool?: { name: string; summary: string };
+}
+
+/** GET /api/analytics and GET /api/instances/:slug/analytics. */
+export interface AnalyticsResponse {
+  overview: {
+    totalCost: number;
+    totalTokens: number;
+    promptTokens: number;
+    completionTokens: number;
+    cachedInputTokens: number;
+    totalConversations: number;
+    totalMessages: number;
+    uniqueUsers: number;
+    avgCostPerConversation: number;
+    avgResponseTime: number;
+  };
+  dailyTrend: { date: string; cost: number; tokens: number; conversations: number; messages: number }[];
+  channelDistribution: { channel: string; conversations: number; messages: number }[];
+  modelDistribution: { provider: string; model: string; calls: number; tokens: number; cost: number; avgDuration: number }[];
+  toolUsage: { tool: string; count: number }[];
+  instanceComparison?: { instanceId: string; name: string; conversations: number; cost: number; tokens: number }[];
+  latency: {
+    overview: { p50: number; p95: number; p99: number; avgTotal: number; avgTtfb: number | null; sampleCount: number };
+    slowestTools: { tool: string; avgDurationMs: number; callCount: number; p95: number; successRate: number }[];
+  };
+}
