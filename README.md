@@ -175,6 +175,11 @@ engine will not serve is reported as `unavailable — <error>`, never as a zero,
 a broken permission never reads as a healthy empty workspace. Agents with
 `authEnabled=false` are flagged on stderr.
 
+`status` prints the whole report and *then* exits non-zero if any probe failed
+(`2` for auth/permission, `3` for unreachable or 5xx), so it works as a CI health
+gate. That is the opposite of `whoami`, which reports unreachability and still
+exits `0` — use `monitor status` when you need the gate.
+
 `events` reads the audit log. With `--follow` it subscribes to the live activity
 stream instead: the `--instance` filter is applied **server-side**, the request
 carries no deadline (interrupt it, or bound it with `--max <n>`), and `--json`

@@ -114,12 +114,22 @@ describe("monitor status", () => {
       new RemoteError("Forbidden resource", ExitCode.Config, 403),
     ]);
 
-    await action(h.monitor, "status")([], context());
+    await expect(action(h.monitor, "status")([], context())).rejects.toThrow(/connect ECONNREFUSED/);
 
     const text = h.out.join("");
     expect(text).toContain("unavailable — GET /health failed: connect ECONNREFUSED");
     expect(text).toContain("agents: unavailable — Forbidden resource");
     expect(text).not.toContain("No agents in this workspace");
+  });
+
+  // Exiting 0 with a 403 in the output would make a CI health gate read a broken
+  // permission as a healthy empty workspace.
+  it("prints the whole report and then fails with the probe's own exit code", async () => {
+    const h = harness([response({ status: "ok", service: "polyant" }), new RemoteError("Invalid management API key", ExitCode.Config, 401)]);
+
+    const failure = action(h.monitor, "status")([], context());
+    await expect(failure).rejects.toMatchObject({ code: ExitCode.Config, status: 401 });
+    expect(h.out.join("")).toContain("ok (polyant)");
   });
 
   it("emits both probe bodies unchanged as a composite object", async () => {
@@ -129,6 +139,16 @@ describe("monitor status", () => {
     await action(h.monitor, "status")([], context({ json: true }));
 
     expect(h.out.join("")).toBe(`{"health":${JSON.stringify(health)},"instances":${JSON.stringify(AGENTS)}}\n`);
+  });
+
+  it("still emits the composite JSON before failing on a degraded probe", async () => {
+    const health = { status: "ok", service: "polyant" };
+    const h = harness([response(health), new RemoteError("Forbidden resource", ExitCode.Config, 403)]);
+
+    await expect(action(h.monitor, "status")([], context({ json: true }))).rejects.toThrow(/Forbidden resource/);
+
+    // stdout stays parseable so a pipeline can read the report and the exit code.
+    expect(JSON.parse(h.out.join(""))).toMatchObject({ health, instances: { unavailable: "Forbidden resource" } });
   });
 });
 

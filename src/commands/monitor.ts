@@ -35,6 +35,8 @@ interface Probe {
   raw: string;
   body: unknown;
   error?: string;
+  /** Kept so the command can report the whole picture and still fail. */
+  cause?: unknown;
 }
 
 async function probe(deps: ServiceDependencies, scope: ResolvedScope, path: string): Promise<Probe> {
@@ -43,7 +45,7 @@ async function probe(deps: ServiceDependencies, scope: ResolvedScope, path: stri
     return { raw: res.raw, body: res.body };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { raw: JSON.stringify({ unavailable: reason }), body: null, error: reason };
+    return { raw: JSON.stringify({ unavailable: reason }), body: null, error: reason, cause: error };
   }
 }
 
@@ -53,7 +55,10 @@ async function status(args: string[], context: CommandContext | undefined, deps:
   const health = await probe(deps, scope, "/health");
   const agents = await probe(deps, scope, "/api/instances");
 
-  if (wantsJson(context)) return writeCompositeJson(deps.io, { health: health.raw, instances: agents.raw });
+  if (wantsJson(context)) {
+    writeCompositeJson(deps.io, { health: health.raw, instances: agents.raw });
+    return failIfDegraded(health, agents);
+  }
 
   const service = (health.body as HealthResponse | null)?.service;
   writePrettyResource(deps.io, [
@@ -68,7 +73,7 @@ async function status(args: string[], context: CommandContext | undefined, deps:
 
   if (agents.error !== undefined) {
     deps.io.stdout(`\nagents: unavailable — ${agents.error}\n`);
-    return;
+    return failIfDegraded(health, agents);
   }
   const instances = expectArray<AgentDetail>((agents.body as Partial<ListAgentsResponse> | null)?.instances, "GET /api/instances");
   deps.io.stdout(
@@ -91,6 +96,18 @@ async function status(args: string[], context: CommandContext | undefined, deps:
   for (const open of instances.filter((agent) => !agent.authEnabled)) {
     deps.io.stderr(`warning: agent "${open.slug}" has authEnabled=false — its runtime routes are open to anyone.\n`);
   }
+  failIfDegraded(health, agents);
+}
+
+/**
+ * The whole report is printed first, then the command fails. `whoami` exits 0
+ * on an unreachable instance by design, but `monitor status` is the health gate:
+ * exiting 0 with a 403 in the output would make CI read a broken permission as a
+ * healthy empty workspace.
+ */
+function failIfDegraded(...probes: readonly Probe[]): void {
+  const failed = probes.find((entry) => entry.cause !== undefined);
+  if (failed !== undefined) throw failed.cause;
 }
 
 const EVENT_FILTERS = ["--instance", "--tool", "--action", "--search", "--from", "--to", "--limit", "--offset", "--max"] as const;
