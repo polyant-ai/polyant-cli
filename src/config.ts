@@ -49,13 +49,23 @@ function rejectLiteralKey(name: string, raw: Record<string, unknown>): void {
   );
 }
 
-function requireBaseUrl(name: string, value: unknown): string {
+/**
+ * Shared so a URL from a flag or an env var is validated exactly like one from
+ * the config file. Skipping this for the flag path meant a malformed URL failed
+ * as a network error — exit 3, which the contract defines as retryable, so an
+ * agent would retry a permanently broken URL forever.
+ */
+function requireHttpUrl(context: string, value: unknown): string {
   if (typeof value !== "string" || !/^https?:\/\//.test(value)) {
     throw new ConfigError(
-      `${CONFIG_FILE}: target "${name}" needs a "baseUrl" starting with http:// or https://.`,
+      `${context} must be a URL starting with http:// or https:// (got ${JSON.stringify(value)}).`,
     );
   }
   return normaliseBaseUrl(value);
+}
+
+function requireBaseUrl(name: string, value: unknown): string {
+  return requireHttpUrl(`${CONFIG_FILE}: target "${name}" baseUrl`, value);
 }
 
 function requireKeyEnv(name: string, value: unknown): string {
@@ -154,7 +164,12 @@ function resolveFromEnvOnly(opts: ResolveOptions): ResolvedTarget {
   const key = opts.env.POLYANT_KEY;
   if (!url) throw new ConfigError(`No ${CONFIG_FILE} found and POLYANT_URL is unset. ${hint}`);
   if (!key) throw new ConfigError(`No ${CONFIG_FILE} found and POLYANT_KEY is unset. ${hint}`);
-  return { name: "env", baseUrl: normaliseBaseUrl(url), key, prod: false };
+  return {
+    name: "env",
+    baseUrl: requireHttpUrl(opts.url === undefined ? "POLYANT_URL" : "--url", url),
+    key,
+    prod: false,
+  };
 }
 
 export function resolveTarget(opts: ResolveOptions): ResolvedTarget {
@@ -176,7 +191,12 @@ export function resolveTarget(opts: ResolveOptions): ResolvedTarget {
 
   return {
     name,
-    baseUrl: normaliseBaseUrl(opts.url ?? env.POLYANT_URL ?? spec.baseUrl),
+    // POLYANT_URL is deliberately NOT consulted here. It exists for the
+    // no-config case. Letting a stray export retarget a *named* target would
+    // keep that target's key and its `prod` flag while pointing somewhere else,
+    // so a write reaching a production host could be labelled `prod: false`.
+    // An explicit `--url` is per-invocation intent, so it is honoured.
+    baseUrl: opts.url === undefined ? spec.baseUrl : requireHttpUrl("--url", opts.url),
     key,
     prod: spec.prod === true,
   };

@@ -103,6 +103,28 @@ describe("resolveTarget", () => {
     expect(t.baseUrl).toBe("http://localhost:4000");
   });
 
+  // A stray POLYANT_URL export must not retarget a named target: it would keep
+  // that target's key and prod flag while pointing at another host.
+  it("should_ignore_polyant_url_when_a_config_file_declares_the_target", () => {
+    const t = resolveTarget({
+      config,
+      env: { POLYANT_KEY_STAGING: "pk_1_a", POLYANT_URL: "http://elsewhere.invalid" },
+    });
+    expect(t.baseUrl).toBe("https://staging.example.polyant.ai");
+  });
+
+  it("should_reject_a_url_flag_without_a_scheme", () => {
+    expect(() =>
+      resolveTarget({ config, env: { POLYANT_KEY_STAGING: "pk_1_a" }, url: "localhost:4000" }),
+    ).toThrow(/--url must be a URL starting with http/);
+  });
+
+  it("should_reject_an_env_url_without_a_scheme_when_there_is_no_config_file", () => {
+    expect(() =>
+      resolveTarget({ env: { POLYANT_URL: "localhost:4000", POLYANT_KEY: "pk_3_c" } }),
+    ).toThrow(/POLYANT_URL must be a URL starting with http/);
+  });
+
   it("should_fail_when_the_named_target_is_not_declared", () => {
     expect(() => resolveTarget({ config, env: {}, target: "ghost" })).toThrow(/Unknown target "ghost"/);
   });
