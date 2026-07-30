@@ -10,12 +10,90 @@ here would guarantee drift.
 
 ## Install
 
-Pin it per workspace rather than installing it globally — the CLI's version
-should follow the API version of the instance you talk to.
+Requires **Node 20 or newer** (`engines` enforces it). The package ships
+TypeScript sources and compiles on install: `prepare` runs `tsc`, so every route
+below builds `dist/` for you — there is no committed build to go stale.
+
+### From the repository, for one workspace
+
+The recommended way. The CLI's version should follow the API version of the
+instance it talks to, so pin it per project rather than installing one globally:
 
 ```bash
-npm i -D git+ssh://git@github.com/polyant-ai/polyant-cli.git#v0.1.0
+npm i -D git+ssh://git@github.com/polyant-ai/polyant-cli.git#main
 ```
+
+`#main` is what resolves today: **no release tag has been cut yet.** Once one is,
+pin to it instead — `#v0.1.0` — so a project's CLI does not move under it on the
+next push to `main`.
+
+That puts the executable in `node_modules/.bin`, which npm scripts and `npx`
+already have on their PATH:
+
+```bash
+npx polyant-cli --version
+```
+
+Inside `package.json` scripts, plain `polyant-cli` works with no prefix:
+
+```json
+{ "scripts": { "agents": "polyant-cli agent list" } }
+```
+
+### On your PATH, globally
+
+When you want `polyant-cli` in any shell without `npx` — a local operator
+console rather than a project dependency:
+
+```bash
+npm i -g git+ssh://git@github.com/polyant-ai/polyant-cli.git#main
+```
+
+Then `polyant-cli --version` works anywhere. Bear in mind the trade this makes:
+one global version now talks to every instance, including ones whose API has
+moved on.
+
+### From a local clone
+
+For working on the CLI itself, or installing an unreleased revision:
+
+```bash
+git clone git@github.com:polyant-ai/polyant-cli.git && cd polyant-cli && npm install && npm run build
+```
+
+`npm install` already builds through `prepare`; the explicit `npm run build` is
+there for the rebuild after each edit. Then pick one:
+
+```bash
+npm link
+```
+
+Links `polyant-cli` onto your PATH pointing **at the clone**, so a `npm run
+build` is enough to pick up a change — no reinstall. This is the one to use while
+developing.
+
+```bash
+npm i -g .
+```
+
+Installs a copy instead: a snapshot that does not follow your edits.
+
+If neither appeals, or `npm link` wants permissions you would rather not give it,
+an alias needs nothing installed at all:
+
+```bash
+alias polyant-cli='node /absolute/path/to/polyant-cli/dist/bin.js'
+```
+
+### Check it landed
+
+```bash
+polyant-cli --version
+```
+
+Prints the package version and the Node version. If the command is not found
+after a global install, `npm bin -g` names the directory that has to be on your
+PATH.
 
 ## Configuration
 
@@ -376,3 +454,6 @@ npm test
 npm run typecheck
 npm run build
 ```
+
+`npm link` puts the working copy on your PATH — see [Install](#from-a-local-clone)
+for the difference between that and `npm i -g .`.
