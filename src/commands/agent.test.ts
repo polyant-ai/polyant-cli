@@ -388,6 +388,125 @@ describe("agent channels", () => {
   });
 });
 
+describe("agent secrets", () => {
+  const secrets = {
+    secrets: [
+      { key: "openai_api_key", configured: true },
+      { key: "anthropic_api_key", configured: false },
+      { key: "aws_provider_region", configured: false },
+    ],
+  };
+
+  it("reports presence only, never a value", async () => {
+    const h = harness([response(secrets)]);
+
+    await leaf(h.command, ["secrets", "show"])(["acme"], context());
+
+    expect(h.calls[0].path).toBe("/api/instances/acme/secrets");
+    const table = h.out.join("");
+    expect(table).toMatch(/openai_api_key\s+yes/);
+    expect(table).toMatch(/anthropic_api_key\s+no/);
+    expect(table).toContain("CONFIGURED");
+  });
+
+  it("filters to what is configured on request", async () => {
+    const h = harness([response(secrets)]);
+
+    await leaf(h.command, ["secrets", "show"])(["acme", "--configured-only"], context());
+
+    expect(h.out.join("")).toContain("openai_api_key");
+    expect(h.out.join("")).not.toContain("anthropic_api_key");
+  });
+
+  it("takes the value from stdin and keeps it out of the recap", async () => {
+    const h = harness([response(secrets), response(secrets)], { readPayload: async () => "sk-super-secret-value\n" });
+
+    await leaf(h.command, ["secrets", "set"])(["acme", "--key", "openai_api_key", "--file", "-"], context({ yes: true }));
+
+    const recap = h.err.join("");
+    expect(recap).toContain("Replace the stored openai_api_key.");
+    expect(recap).toContain("21 characters from stdin, never shown");
+    // The one thing this command must never do.
+    expect(recap).not.toContain("sk-super-secret-value");
+    expect(h.out.join("")).not.toContain("sk-super-secret-value");
+    expect(h.calls[1]).toMatchObject({
+      method: "PUT",
+      path: "/api/instances/acme/secrets",
+      body: { secrets: [{ key: "openai_api_key", value: "sk-super-secret-value" }] },
+    });
+  });
+
+  it("says when a key is being set for the first time", async () => {
+    const h = harness([response(secrets), response(secrets)], { readPayload: async () => "eu-west-1" });
+
+    await leaf(h.command, ["secrets", "set"])(["acme", "--key", "aws_provider_region", "--file", "-"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain("which is not configured yet");
+  });
+
+  // A typo would otherwise be accepted by the engine as a brand-new key, leaving
+  // the real credential untouched while the command reported success.
+  it("refuses a key the agent does not declare, naming the declared ones", async () => {
+    const h = harness([response(secrets)], { readPayload: async () => "x" });
+
+    await expect(
+      leaf(h.command, ["secrets", "set"])(["acme", "--key", "openai_api_kye", "--file", "-"], context({ yes: true })),
+    ).rejects.toThrow(/declares no secret named "openai_api_kye". Declared: openai_api_key, anthropic/);
+    expect(h.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an empty value instead of storing one", async () => {
+    const h = harness([], { readPayload: async () => "  \n " });
+
+    await expect(
+      leaf(h.command, ["secrets", "set"])(["acme", "--key", "openai_api_key", "--file", "creds.txt"], context({ yes: true })),
+    ).rejects.toThrow(/creds\.txt contained no value/);
+    expect(h.request).not.toHaveBeenCalled();
+  });
+
+  it("has no inline value flag at all", async () => {
+    const h = harness([]);
+
+    await expect(
+      leaf(h.command, ["secrets", "set"])(["acme", "--key", "openai_api_key", "--value", "sk-oops"], context({ yes: true })),
+    ).rejects.toThrow(/Unknown agent secrets set option --value/);
+  });
+
+  describe("unset", () => {
+    it("requires --confirm with the key name", async () => {
+      const h = harness([response(secrets)]);
+
+      await expect(leaf(h.command, ["secrets", "unset"])(["acme", "--key", "openai_api_key"], context({ yes: true })))
+        .rejects.toThrow(/--confirm openai_api_key is required/);
+    });
+
+    it("removes a configured secret once confirmed", async () => {
+      const h = harness([response(secrets), response({ deleted: true })]);
+
+      await leaf(h.command, ["secrets", "unset"])(
+        ["acme", "--key", "openai_api_key", "--confirm", "openai_api_key"],
+        context({ yes: true }),
+      );
+
+      expect(h.calls[1]).toMatchObject({ method: "DELETE", path: "/api/instances/acme/secrets/openai_api_key" });
+      expect(h.out.join("")).toContain("Removed secret openai_api_key");
+    });
+
+    // The engine answers 200 for a key it never held, so the check has to be here.
+    it("refuses a key that is not configured rather than reporting a success", async () => {
+      const h = harness([response(secrets)]);
+
+      await expect(
+        leaf(h.command, ["secrets", "unset"])(
+          ["acme", "--key", "anthropic_api_key", "--confirm", "anthropic_api_key"],
+          context({ yes: true }),
+        ),
+      ).rejects.toThrow(/not configured on acme; there is nothing to remove/);
+      expect(h.request).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
 describe("agent hooks", () => {
   const hooks = {
     hooks: [

@@ -8,6 +8,7 @@ import type {
   HooksResponse,
   ListAgentsResponse,
   PromptsResponse,
+  SecretsResponse,
   ToolsResponse,
 } from "../api/types.js";
 import type { Command, CommandContext } from "../command.js";
@@ -441,6 +442,121 @@ async function channelsRemove(args: string[], context: CommandContext | undefine
   reportWrite(deps, context, res, `Removed channel ${type} from ${slug}.`);
 }
 
+// --- secrets ---------------------------------------------------------------
+
+function secretsPath(slug: string, key?: string): string {
+  const base = `/api/instances/${encodeURIComponent(slug)}/secrets`;
+  return key === undefined ? base : `${base}/${encodeURIComponent(key)}`;
+}
+
+/**
+ * The declared key set, read rather than assumed: it varies per agent with the
+ * tools and channels it has, so a hardcoded list would drift and would reject
+ * keys the engine accepts.
+ */
+async function secretsOf(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<SecretsResponse["secrets"]> {
+  const res = await call(deps, scope, { path: secretsPath(slug) });
+  return expectArray<SecretsResponse["secrets"][number]>(
+    (res.body as Partial<SecretsResponse> | null)?.secrets,
+    `GET ${secretsPath(slug)}`,
+  );
+}
+
+async function secretsShow(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "secrets show");
+  assertKnown(args.slice(1), { boolean: ["--configured-only"] }, "agent secrets show option");
+  const scope = await scopeFor(deps, context, "read");
+  const res = await call(deps, scope, { path: secretsPath(slug) });
+  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+
+  const all = expectArray<SecretsResponse["secrets"][number]>(
+    (res.body as Partial<SecretsResponse> | null)?.secrets,
+    `GET ${secretsPath(slug)}`,
+  );
+  const secrets = args.includes("--configured-only") ? all.filter((secret) => secret.configured) : all;
+  // Presence only. The engine never serves the value, and this command must never
+  // become the place where one is printed.
+  deps.io.stdout(
+    `${renderTable({
+      headers: ["KEY", "CONFIGURED"],
+      rows: secrets.map((secret) => [secret.key, secret.configured ? "yes" : "no"]),
+      emptyMessage: `Agent ${slug} declares no secrets.`,
+    })}\n`,
+  );
+}
+
+function requireKey(options: readonly string[], action: string): string {
+  const key = takeValue(options, "--key");
+  if (key === undefined) throw new ConfigError(`polyant-cli agent ${action} needs --key <name>.`);
+  return key;
+}
+
+function assertDeclared(secrets: readonly SecretsResponse["secrets"][number][], key: string, slug: string): SecretsResponse["secrets"][number] {
+  const found = secrets.find((secret) => secret.key === key);
+  if (found !== undefined) return found;
+  // A typo would otherwise be accepted as a new key by the engine, so the real
+  // credential would stay untouched while the command reported success.
+  throw new ConfigError(
+    `Agent ${slug} declares no secret named ${JSON.stringify(key)}. Declared: ${secrets.map((secret) => secret.key).join(", ")}.`,
+  );
+}
+
+async function secretsSet(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "secrets set");
+  const options = args.slice(1);
+  assertKnown(options, { value: ["--key", "--file", "--confirm"] }, "agent secrets set option");
+  const key = requireKey(options, "secrets set");
+  const file = takeValue(options, "--file");
+  if (file === undefined) throw new ConfigError('polyant-cli agent secrets set needs --file <path> (or --file - for stdin).');
+
+  // Read the value before the recap, but never put it in one: a secret passed as
+  // a flag would land in shell history and in `ps`, and printed in a recap it
+  // would land on the terminal and in whatever captures it.
+  const value = (await deps.readPayload(file)).trim();
+  if (value.length === 0) throw new ConfigError(`${file === "-" ? "stdin" : file} contained no value.`);
+
+  const scope = await scopeFor(deps, context);
+  const secrets = await secretsOf(deps, scope, slug);
+  const existing = assertDeclared(secrets, key, slug);
+
+  const changes = [
+    existing.configured ? `Replace the stored ${key}.` : `Set ${key}, which is not configured yet.`,
+    `Value: ${value.length} characters from ${file === "-" ? "stdin" : file}, never shown.`,
+  ];
+  if (!(await preflight(deps, scope, context, options, { title: `Set secret ${key} on ${slug}`, changes }))) return;
+
+  // The engine merges rather than replaces, so sending one key leaves the others
+  // configured — verified against a live instance.
+  const res = await call(deps, scope, { method: "PUT", path: secretsPath(slug), body: { secrets: [{ key, value }] } });
+  reportWrite(deps, context, res, `Set secret ${key} on ${slug}.`);
+}
+
+async function secretsUnset(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "secrets unset");
+  const options = args.slice(1);
+  assertKnown(options, { value: ["--key", "--confirm"] }, "agent secrets unset option");
+  const key = requireKey(options, "secrets unset");
+
+  const scope = await scopeFor(deps, context);
+  const secrets = await secretsOf(deps, scope, slug);
+  const existing = assertDeclared(secrets, key, slug);
+  if (!existing.configured) {
+    // The engine answers 200 for a key it never held, so without this a mistyped
+    // or already-removed key would report success while the real one stayed put.
+    throw new ConfigError(`Secret ${key} is not configured on ${slug}; there is nothing to remove.`);
+  }
+
+  const plan = {
+    title: `Remove secret ${key} from ${slug}`,
+    changes: [`Delete the stored ${key}. Anything on ${slug} that needs it stops working until it is set again.`],
+    destructive: { confirm: key },
+  };
+  if (!(await preflight(deps, scope, context, options, plan))) return;
+
+  const res = await call(deps, scope, { method: "DELETE", path: secretsPath(slug, key) });
+  reportWrite(deps, context, res, `Removed secret ${key} from ${slug}.`);
+}
+
 // --- hooks -----------------------------------------------------------------
 
 async function hooksShow(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
@@ -713,6 +829,33 @@ const LEAVES: Record<string, Record<string, Leaf> | Leaf> = {
       summary: "delete one channel's configuration and secrets",
       usage: "Usage: polyant-cli agent channels remove <slug> <type> --yes --confirm <type>",
       action: channelsRemove,
+      mutates: true,
+    },
+  },
+  secrets: {
+    show: {
+      summary: "list which secrets an agent has configured",
+      usage: "Usage: polyant-cli agent secrets show <slug> [--configured-only]",
+      action: secretsShow,
+    },
+    set: {
+      summary: "set one secret from a file or stdin",
+      usage: `Usage: polyant-cli agent secrets set <slug> --key <name> --file <path|->
+
+The value is read from a file or stdin, never from a flag: an inline secret lands
+in shell history and in \`ps\`. It is never printed, not even in the recap — only
+its length and where it came from.`,
+      action: secretsSet,
+      mutates: true,
+    },
+    unset: {
+      summary: "remove one configured secret",
+      usage: `Usage: polyant-cli agent secrets unset <slug> --key <name> --yes --confirm <name>
+
+Refuses a key the agent does not declare, and one that is not configured: the
+engine answers 200 either way, so without the check a typo would report success
+while the real secret stayed in place.`,
+      action: secretsUnset,
       mutates: true,
     },
   },

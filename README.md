@@ -232,6 +232,10 @@ polyant-cli --context engineering agent channels show acme
 polyant-cli --context engineering agent channels set acme telegram --file telegram.json
 polyant-cli --context engineering agent channels remove acme telegram --yes --confirm telegram
 
+polyant-cli --context engineering agent secrets show acme --configured-only
+printf %s "$OPENAI_KEY" | polyant-cli --context engineering agent secrets set acme --key openai_api_key --file - --yes
+polyant-cli --context engineering agent secrets unset acme --key openai_api_key --yes --confirm openai_api_key
+
 polyant-cli --context engineering agent hooks show acme
 polyant-cli --context engineering agent hooks add acme --file hook.json
 polyant-cli --context engineering agent hooks update acme <hookId> --file patch.json
@@ -276,6 +280,20 @@ It never uses `/api/instances/:slug/chat/stream`. That route is `@Public()`,
 authenticates a per-instance bearer key, and returns early when the agent has
 `authEnabled` false — a management console must hold no runtime key and must not
 depend on an agent being open.
+
+`agent secrets` is how an agent's provider credentials are set — `openai_api_key`,
+`anthropic_api_key`, the `aws_provider_*` trio, and whatever else its tools and
+channels declare. The key set is read from the engine per agent, never assumed, so
+`secrets show` lists exactly what that agent accepts.
+
+The value comes only from a file or stdin, and **is never printed** — not in the
+recap, which reports its length and where it came from, and not on stdout. There
+is no `--value` flag: an inline secret lands in shell history and in `ps`.
+
+Both writes refuse a key the agent does not declare, naming the ones it does, and
+`unset` additionally refuses a key that is not configured. The engine answers
+`200` either way, so without those checks a typo would report success while the
+real credential stayed in place.
 
 Channel and hook configuration is accepted only from a named file or stdin
 (`--file -`), never from an inline flag where a secret would land in shell

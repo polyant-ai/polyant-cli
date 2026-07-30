@@ -95,6 +95,20 @@ export interface ChannelsResponse {
   channels: ChannelEntry[];
 }
 
+/**
+ * GET/PUT /api/instances/:slug/secrets. The engine reports presence, never the
+ * value — the same discipline the CLI applies to channel configuration. The key
+ * set varies per agent with its tools and channels, so it is read, not assumed.
+ */
+export interface AgentSecret {
+  key: string;
+  configured: boolean;
+}
+
+export interface SecretsResponse {
+  secrets: AgentSecret[];
+}
+
 /** GET /api/instances/:slug/hooks — the store row, returned unwrapped per hook. */
 export interface HookEntry {
   id: string;
