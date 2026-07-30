@@ -243,6 +243,50 @@ Latency comes from a separate store on the engine: when it is absent the report
 says `unavailable` rather than printing a p95 of zero. `--json` passes the
 engine's body through unchanged.
 
+### `polyant-cli org` · `workspace` · `member` · `role`
+
+Organisation administration. These are organisation-scoped, not workspace-scoped:
+the organisation is a path segment, and a management key belongs to exactly one,
+so `--org` is a way to be explicit rather than something to look up — without it
+the CLI reads the slug from `GET /api/service-context`.
+
+```bash
+polyant-cli org list
+polyant-cli org rename --name "Acme Inc" --yes
+
+polyant-cli workspace list
+polyant-cli workspace create labs --name Labs --yes
+polyant-cli workspace update labs --name "Labs v2" --yes
+polyant-cli workspace delete labs --yes --confirm labs
+
+polyant-cli member list
+polyant-cli member show ada@example.com
+
+polyant-cli role permissions
+polyant-cli role list
+polyant-cli role show auditor
+polyant-cli role create auditor --permissions audit_log:read,analytics:read --yes
+polyant-cli role delete <roleId> --yes --confirm <roleId>
+```
+
+Workspaces are addressed by **slug**, including in the path of an update or a
+delete: the engine keeps workspace ids off the wire. Deletion is final — the
+engine exposes no archive — so it needs `--yes` plus `--confirm <slug>`.
+
+`org list` is also `org show`: a management key sees one organisation and the
+engine serves no per-organisation detail route. `member show` selects locally over
+the member list for the same reason, so it costs no extra request.
+
+`role create` checks every permission against `GET …/roles/permissions` before
+sending, so a typo fails naming the offending key instead of arriving as an
+opaque `400`. `role list` distinguishes "no **custom** roles" from "no roles" —
+the system roles are built in and are not listed here.
+
+Two limits worth knowing. `member remove` needs a **user** principal: the engine
+grants a management key no rank in the role hierarchy, so with a key it answers
+`403`; the recap says so before anything is sent. And role *assignment* is not
+exposed at all, for the same reason.
+
 ### `polyant-cli whoami`
 
 Active target, whether the instance answers, and the agents the key can see.

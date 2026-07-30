@@ -126,6 +126,62 @@ export interface ConversationsResponse {
   total: number;
 }
 
+/** GET /api/organizations — a management key sees only its own organisation. */
+export interface OrganizationSummary {
+  id: string;
+  slug: string;
+  name: string;
+  isDefault?: boolean;
+}
+
+export interface OrganizationsResponse {
+  organizations: OrganizationSummary[];
+}
+
+/** GET /api/organizations/:orgSlug/workspaces. */
+export interface WorkspaceSummary {
+  id: string;
+  slug: string;
+  name: string;
+  isDefault: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface WorkspacesResponse {
+  workspaces: WorkspaceSummary[];
+}
+
+/** GET /api/organizations/:orgSlug/members. */
+export interface MemberSummary {
+  userId: string;
+  email: string;
+  name: string | null;
+  roleKey: string | null;
+}
+
+export interface MembersResponse {
+  members: MemberSummary[];
+}
+
+/** GET /api/organizations/:orgSlug/roles — custom roles; the system roles are separate. */
+export interface RoleSummary {
+  id: string;
+  key: string;
+  name: string;
+  description?: string | null;
+  permissions?: string[];
+}
+
+export interface RolesResponse {
+  roles: RoleSummary[];
+}
+
+/** GET /api/organizations/:orgSlug/roles/permissions — the grantable permission keys. */
+export interface RolePermissionsResponse {
+  permissions: string[];
+}
+
 /** GET /api/audit-logs — one recorded tool action. */
 export interface AuditLogRow {
   id: string;

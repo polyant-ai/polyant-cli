@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type { Command } from "./command.js";
 import { agentCommand } from "./commands/agent.js";
+import { adminCommands } from "./commands/admin.js";
 import { analyticsCommand } from "./commands/analytics.js";
 import { apiCommand } from "./commands/api.js";
 import { configCommand } from "./commands/config.js";
@@ -20,6 +21,9 @@ export const COMMANDS: Record<string, Command> = {
   api: apiCommand,
   config: configCommand,
   monitor: monitorCommand,
+  // org, workspace, member, role — organisation administration, which the design
+  // spec exposes as top-level families rather than under one `admin` prefix.
+  ...adminCommands,
   whoami: whoamiCommand,
 };
 
