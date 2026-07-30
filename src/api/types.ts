@@ -33,6 +33,17 @@ export interface ListAgentsResponse {
 export interface AgentDetail extends AgentSummary {
   id: string;
   name: string;
+  /**
+   * The workspace the agent actually lives in, on the detail route only. A slug,
+   * never an id. The list route omits it on purpose: every row there is already
+   * in the workspace the request resolved.
+   *
+   * It exists so a read can correct a wrong assumption. `instances.slug` is
+   * unique per deployment, so `/api/instances/<slug>` is a complete address and
+   * `--workspace` cannot change which agent comes back — without this field the
+   * CLI could only echo the flag the operator typed.
+   */
+  workspaceSlug?: string;
   description: string | null;
   provider: string | null;
   model: string | null;

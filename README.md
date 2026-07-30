@@ -118,6 +118,15 @@ lands in.
 engine keeps workspace ids off the wire on purpose, so the slug is the only
 external identifier; `polyant-cli whoami` lists the slugs the key may address.
 
+The header is sent on every scoped request, and the engine validates it
+everywhere: an unknown or inaccessible slug is refused with `403`, so a typo fails
+instead of quietly reading somewhere else. It *selects* the result set only where
+the workspace is a coordinate — lists, analytics, audit, conversations, the
+activity stream. Agent slugs are unique per deployment, so `agent show <slug>`
+addresses one agent regardless of the flag; that response reports the workspace
+the agent actually lives in, which is how a wrong `--workspace` gets corrected
+rather than echoed back.
+
 **Reads** may run without one: the request then carries no workspace header, the
 engine resolves the organisation's default workspace, and the CLI says so on
 stderr rather than resolving it silently.

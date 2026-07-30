@@ -23,6 +23,7 @@ const ENV = { POLYANT_KEY_DEV: "pk_dev_secret", POLYANT_KEY_PROD: "pk_prod_secre
 const AGENT = {
   id: "11111111-1111-4111-8111-111111111111",
   slug: "acme",
+  workspaceSlug: "general",
   name: "Acme",
   description: "Support agent",
   status: "active",
@@ -161,6 +162,28 @@ describe("agent show", () => {
     expect(h.calls[0].path).toBe("/api/instances/acme");
     expect(h.out.join("")).toContain("model:");
     expect(h.out.join("")).toContain("claude-sonnet-4");
+  });
+
+  // `instances.slug` is unique per deployment, so --workspace cannot change which
+  // agent comes back. The detail route reports where the agent actually lives, so
+  // a wrong assumption is corrected by the data instead of surviving the read.
+  it("reports the workspace the agent actually lives in, not the one requested", async () => {
+    const h = harness([response({ instance: { ...AGENT, workspaceSlug: "general" } })]);
+
+    await leaf(h.command, ["show"])(["acme"], context({ workspace: "sales", org: "acme" }));
+
+    expect(h.calls[0].workspaceSlug).toBe("sales");
+    expect(h.out.join("")).toMatch(/workspace: +general/);
+  });
+
+  it("shows the workspace as absent when the engine does not report one", async () => {
+    const { workspaceSlug: _omitted, ...withoutWorkspace } = AGENT;
+    const h = harness([response({ instance: withoutWorkspace })]);
+
+    await leaf(h.command, ["show"])(["acme"], context());
+
+    expect(h.out.join("")).toMatch(/workspace: +-/);
+    expect(h.out.join("")).not.toContain("undefined");
   });
 
   it("reports a missing slug as a usage error", async () => {

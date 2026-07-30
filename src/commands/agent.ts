@@ -98,6 +98,7 @@ async function show(args: string[], context: CommandContext | undefined, deps: A
   if (agent === undefined) throw new ConfigError(`GET /api/instances/${slug} did not return an instance.`);
   writePrettyResource(deps.io, [
     { label: "slug", value: agent.slug },
+    { label: "workspace", value: text(agent.workspaceSlug) },
     { label: "name", value: text(agent.name) },
     { label: "description", value: text(agent.description) },
     { label: "status", value: text(agent.status) },
