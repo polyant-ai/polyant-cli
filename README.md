@@ -220,9 +220,14 @@ Permissions come from `GET /api/service-context` when the engine serves it: the
 report then names the key's organisation, its effective permission keys, and the
 workspaces it may address. That route is a pending engine contract, so until it
 lands permissions read `not verified` rather than being guessed — `/api/me/access`
-serves user principals only. A malformed introspection answer is also treated as
-unverified: an empty list would claim the key can do nothing, which is a
-different statement.
+serves user principals only.
+
+The CLI reads exactly that path, and requires a top-level `permissions` array of
+strings; the organisation is read from `principal.organization` and the workspace
+list from `workspaces`. An answer it cannot read is reported as unverified — an
+empty list would claim the key can do nothing, which is a different statement —
+but a `200` with an unrecognised shape also prints a warning on stderr, so a
+contract mismatch is never mistaken for a missing route.
 
 Any agent with `authEnabled: false` is flagged on stderr: its runtime routes
 require no token and validate none.

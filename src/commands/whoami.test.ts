@@ -120,6 +120,47 @@ describe("collectWhoami", () => {
     expect((await collectWhoami(TARGET)).permissions).toBe("unverified");
   });
 
+  it("warns when the route answers but its shape is not the expected one", async () => {
+    const warnings: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      warnings.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (url.pathname === "/health") return jsonResponse(200, { status: "ok", service: "polyant" });
+        if (url.pathname === "/api/service-context") return jsonResponse(200, { scopes: ["org:read"] });
+        return jsonResponse(200, { instances: [] });
+      }),
+    );
+
+    await collectWhoami(TARGET);
+
+    // Silence here would make a contract mismatch look like a missing route.
+    expect(warnings.join("")).toContain("/api/service-context answered 200 but its shape was not recognised");
+  });
+
+  it("stays silent when the route is simply absent", async () => {
+    const warnings: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      warnings.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (url.pathname === "/health") return jsonResponse(200, { status: "ok", service: "polyant" });
+        if (url.pathname === "/api/service-context") return jsonResponse(404, { message: "Cannot GET" });
+        return jsonResponse(200, { instances: [] });
+      }),
+    );
+
+    await collectWhoami(TARGET);
+
+    expect(warnings.join("")).not.toContain("service-context");
+  });
+
   it("should_report_unreachable_without_throwing_when_health_fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new TypeError("fetch failed");

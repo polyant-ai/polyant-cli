@@ -106,6 +106,30 @@ describe("config init", () => {
   });
 });
 
+describe("config write reporting", () => {
+  const INIT = ["init", "--url", "http://localhost:4000", "--key-env", "POLYANT_KEY_DEV"];
+
+  // Every other write in the CLI reports what it did. Silence after a confirmed
+  // change cannot be told apart from a change that never happened.
+  it("confirms the written path after a change is accepted", async () => {
+    const { command, stdout, rename } = capture();
+
+    await command.run?.(INIT, { path: ["config", "init"], global: { target: "dev", json: false, yes: true, dryRun: false } });
+
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(stdout.join("")).toContain("Wrote /workspace/polyant.yaml.");
+  });
+
+  it("stays silent about writing on a dry run", async () => {
+    const { command, stdout, rename } = capture();
+
+    await command.run?.(INIT, { path: ["config", "init"], global: { target: "dev", json: false, yes: false, dryRun: true } });
+
+    expect(rename).not.toHaveBeenCalled();
+    expect(stdout.join("")).not.toContain("Wrote");
+  });
+});
+
 describe("config validate", () => {
   it("validates the local YAML without requiring a management key", async () => {
     const { command, stdout } = capture({

@@ -78,6 +78,10 @@ async function writeYaml(deps: ConfigCommandDependencies, previous: string | und
   }
   await deps.fs.writeFile(temporary, next, "utf8");
   await deps.fs.rename(temporary, deps.configPath);
+  // Every other write in the CLI reports what it did; silence after a confirmed
+  // change is indistinguishable from a change that never happened. The recap
+  // above already names it, so this only has to confirm the file was written.
+  deps.io.stdout(`Wrote ${deps.configPath}.\n`);
 }
 
 const BOOLEAN_FLAGS = ["--prod", "--force", "--no-prod"] as const;

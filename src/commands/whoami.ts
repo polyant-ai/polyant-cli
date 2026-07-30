@@ -87,6 +87,9 @@ async function loadAgents(target: ResolvedTarget): Promise<Partial<WhoamiReport>
   }
 }
 
+/** The route the CLI expects; named once so the report can point at it. */
+const SERVICE_CONTEXT_PATH = "/api/service-context";
+
 /**
  * Introspection is optional by design: the route is a pending engine contract,
  * so a 404 or 403 is an expected answer and must leave the report honest rather
@@ -94,12 +97,19 @@ async function loadAgents(target: ResolvedTarget): Promise<Partial<WhoamiReport>
  */
 async function probeServiceContext(target: ResolvedTarget): Promise<Partial<WhoamiReport>> {
   try {
-    const res = await request(target, { path: "/api/service-context" });
+    const res = await request(target, { path: SERVICE_CONTEXT_PATH });
     const body = res.body as
       | { permissions?: unknown; principal?: { organization?: unknown }; workspaces?: unknown }
       | null;
     const permissions = body?.permissions;
     if (!Array.isArray(permissions) || !permissions.every((entry) => typeof entry === "string")) {
+      // A 200 the CLI cannot read is a contract mismatch, not an absent route.
+      // Staying silent here makes the two indistinguishable, which is exactly
+      // the case an operator wiring the endpoint up needs to tell apart.
+      processOutput.stderr(
+        `warning: GET ${SERVICE_CONTEXT_PATH} answered ${res.status} but its shape was not recognised — ` +
+          `expected a top-level "permissions" array of strings. Reporting permissions as unverified.\n`,
+      );
       return {};
     }
     const organization = body?.principal?.organization;
@@ -147,7 +157,7 @@ export function renderWhoami(report: WhoamiReport): string {
     `reachable:   ${report.reachable ? `yes (${report.service ?? "unknown service"})` : `no${report.unreachableReason ? ` — ${report.unreachableReason}` : ""}`}`,
     Array.isArray(report.permissions)
       ? `permissions: ${report.permissions.length === 0 ? "(none granted)" : report.permissions.join(", ")}`
-      : `permissions: not verified — the engine serves no introspection route for a management API key`,
+      : `permissions: not verified — no usable GET ${SERVICE_CONTEXT_PATH} for a management API key`,
     ...(report.organization === undefined ? [] : [`org:         ${report.organization.slug} (${report.organization.id})`]),
   ];
 

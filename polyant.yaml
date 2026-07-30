@@ -1,0 +1,5 @@
+default: local
+targets:
+  local:
+    baseUrl: http://localhost:4000
+    keyEnv: POLYANT_KEY_LOCAL
