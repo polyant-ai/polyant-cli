@@ -50,9 +50,8 @@ export interface WhoamiReport {
    */
   organization?: { id?: string; slug: string; name?: string };
   /**
-   * Workspaces the key may address. `id` is optional for the same reason — and
-   * until it is present a scoped write cannot be addressed by this list, since
-   * `x-workspace-id` takes an id, not a slug.
+   * Workspaces the key may address. The slug is what `--workspace` sends, so this
+   * list is directly usable; `id` is optional and shown only when reported.
    */
   workspaces?: { id?: string; slug: string; name?: string; isDefault: boolean }[];
   /** Entitlements the engine reports for the key's organisation. */
@@ -212,13 +211,6 @@ export function renderWhoami(report: WhoamiReport): string {
       // "undefined" is worse than an id column that is simply not there.
       const parts = [workspace.slug, ...(workspace.id === undefined ? [] : [workspace.id])];
       lines.push(`  ${parts.join("  ")}${workspace.isDefault ? "  (default)" : ""}`);
-    }
-    if (report.workspaces.every((workspace) => workspace.id === undefined)) {
-      // --workspace sends x-workspace-id, so a list without ids cannot address a
-      // write. Saying so here is the difference between a puzzle and a next step.
-      lines.push(
-        "  note: no workspace id reported — a scoped write needs one, since --workspace sends x-workspace-id.",
-      );
     }
   }
 

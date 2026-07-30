@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 
 /**
- * Response shapes, in one module on purpose: when the engine serves an OpenAPI
- * spec (phase 0b) this file is regenerated and no command has to change.
- * Only the fields the CLI actually reads are declared.
+ * Response shapes, in one module on purpose: every command reads them from here,
+ * so the blast radius of an engine change is one file.
+ *
+ * Hand-written, and staying that way. The engine's OpenAPI document
+ * (`/api/openapi.json`) declares no schemas — it is hand-built without
+ * @nestjs/swagger — so generating from it would produce `unknown` for every body
+ * and response. Only the fields the CLI actually reads are declared.
  */
 
 /** GET /health — public, not throttled. */

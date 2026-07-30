@@ -114,14 +114,16 @@ Manage agents inside one workspace.
 pass `--org` and `--workspace`. The CLI never guesses which workspace a change
 lands in.
 
-**Reads** may run without one. A management key has no route that lists the
-workspaces it may use (`/api/organizations/…` serves human principals only), so
-a read without a selection sends no `x-workspace-id`, the engine resolves the
-organisation's default workspace, and the CLI says so on stderr. This is a
-workaround for a missing engine contract (`GET /api/service-context`), not the
-intended end state.
+`--workspace` takes a workspace **slug** and is sent as `x-workspace-slug`. The
+engine keeps workspace ids off the wire on purpose, so the slug is the only
+external identifier; `polyant-cli whoami` lists the slugs the key may address.
+
+**Reads** may run without one: the request then carries no workspace header, the
+engine resolves the organisation's default workspace, and the CLI says so on
+stderr rather than resolving it silently.
 
 ```bash
+polyant-cli --org acme --workspace platform agent list
 polyant-cli --context engineering agent list
 polyant-cli --context engineering agent show acme
 polyant-cli --context engineering agent create acme --name Acme --model claude-sonnet-4
@@ -226,10 +228,6 @@ The CLI reads exactly that path and requires a top-level `permissions` array of
 strings. The organisation is read from `organization` (or `principal.organization`),
 and the workspace list, features and key identity are shown when reported. Fields
 the engine omits are left out rather than printed as `undefined`.
-
-When the reported workspaces carry no `id`, the report says so: `--workspace`
-sends `x-workspace-id`, which takes an id, so a list of slugs alone cannot address
-a scoped write.
 
 An answer the CLI cannot read is reported as unverified — an empty list would
 claim the key can do nothing, which is a different statement — but a `200` with an

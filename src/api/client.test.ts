@@ -92,7 +92,7 @@ describe("request", () => {
     const fetchMock = vi.fn(async () => jsonResponse(200, {}));
     vi.stubGlobal("fetch", fetchMock);
 
-    await request(TARGET, { path: "/api/instances", workspaceId: "ws-1" });
+    await request(TARGET, { path: "/api/instances", workspaceSlug: "ws-1" });
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect((init.headers as Record<string, string>)[WORKSPACE_HEADER]).toBe("ws-1");
@@ -255,7 +255,7 @@ describe("requestStream", () => {
     const fetchMock = vi.fn(async () => sseResponse(""));
     vi.stubGlobal("fetch", fetchMock);
 
-    await requestStream(TARGET, { path: "/api/activity-stream/live", workspaceId: "ws-1", timeoutMs: 0 });
+    await requestStream(TARGET, { path: "/api/activity-stream/live", workspaceSlug: "ws-1", timeoutMs: 0 });
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     const headers = init.headers as Record<string, string>;

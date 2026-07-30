@@ -100,7 +100,7 @@ describe("agent list", () => {
 
     await leaf(h.command, ["list"])([], context());
 
-    expect(h.calls[0]).toMatchObject({ path: "/api/instances", workspaceId: "ws-1" });
+    expect(h.calls[0]).toMatchObject({ path: "/api/instances", workspaceSlug: "ws-1" });
     const table = h.out.join("");
     expect(table).toContain("SLUG");
     expect(table).toContain("acme");
@@ -127,7 +127,7 @@ describe("agent list", () => {
 
     await leaf(h.command, ["list"])([], context());
 
-    expect(h.calls[0].workspaceId).toBeUndefined();
+    expect(h.calls[0].workspaceSlug).toBeUndefined();
     expect(h.err.join("")).toContain("no workspace selected");
   });
 });
@@ -181,7 +181,7 @@ describe("agent create", () => {
       method: "POST",
       path: "/api/instances",
       body: { slug: "acme", name: "Acme", model: "claude-sonnet-4" },
-      workspaceId: "ws-1",
+      workspaceSlug: "ws-1",
     });
   });
 
@@ -421,7 +421,7 @@ describe("agent conversations", () => {
 
     await leaf(h.command, ["conversations", "list"])(["acme", "--limit", "10"], context());
 
-    expect(h.calls[0]).toMatchObject({ path: "/api/conversations", query: { instanceId: "acme", limit: "10" }, workspaceId: "ws-1" });
+    expect(h.calls[0]).toMatchObject({ path: "/api/conversations", query: { instanceId: "acme", limit: "10" }, workspaceSlug: "ws-1" });
     expect(h.out.join("")).toContain("Refund request");
 
     const bad = harness([]);

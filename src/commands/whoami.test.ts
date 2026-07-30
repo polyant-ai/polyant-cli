@@ -91,8 +91,9 @@ describe("collectWhoami", () => {
     expect(text).toContain("default (Default Organization)");
     expect(text).toContain("ci-runner-2 (no expiry)");
     expect(text).not.toContain("undefined");
-    // Without an id the list cannot address a write; whoami has to say so.
-    expect(text).toContain("no workspace id reported");
+    // The slug is what --workspace sends, so the list is directly usable.
+    expect(text).toContain("sales");
+    expect(text).toContain("general  (default)");
   });
 
   it("should_report_effective_permissions_when_service_context_is_served", async () => {
@@ -121,7 +122,7 @@ describe("collectWhoami", () => {
     expect(report.workspaces?.map((w) => w.slug)).toEqual(["general", "labs"]);
     expect(renderWhoami(report)).toContain("agent:read, org:read");
     expect(renderWhoami(report)).toContain("general  ws-1  (default)");
-    expect(renderWhoami(report)).not.toContain("no workspace id reported");
+
   });
 
   it("should_keep_permissions_unverified_when_service_context_is_absent", async () => {

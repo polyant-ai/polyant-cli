@@ -12,8 +12,12 @@ export const KEY_HEADER = "X-Polyant-Key";
  * Selects the workspace a management route operates in. A service principal is
  * org-scoped, so without it the engine picks its own default workspace and the
  * caller silently reads or writes the wrong one.
+ *
+ * The slug, not an id: the engine deliberately keeps workspace ids off the wire,
+ * so the slug is the only external identifier. Sending an id here would be a
+ * second, unauthoritative name for the same thing.
  */
-export const WORKSPACE_HEADER = "x-workspace-id";
+export const WORKSPACE_HEADER = "x-workspace-slug";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -37,8 +41,8 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** Runtime routes take a per-instance key as a Bearer token instead of the management key. */
   bearer?: string;
-  /** Selects the active workspace for management routes that resolve one. */
-  workspaceId?: string;
+  /** Slug of the active workspace, for management routes that resolve one. */
+  workspaceSlug?: string;
 }
 
 export interface ApiResponse {
@@ -89,7 +93,7 @@ function buildHeaders(target: ResolvedTarget, opts: RequestOptions): Record<stri
     ? { Authorization: `Bearer ${opts.bearer}` }
     : { [KEY_HEADER]: target.key };
   if (opts.body !== undefined || opts.rawBody !== undefined) headers["Content-Type"] = "application/json";
-  if (opts.workspaceId !== undefined) headers[WORKSPACE_HEADER] = opts.workspaceId;
+  if (opts.workspaceSlug !== undefined) headers[WORKSPACE_HEADER] = opts.workspaceSlug;
   return headers;
 }
 

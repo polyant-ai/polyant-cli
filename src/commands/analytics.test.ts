@@ -85,7 +85,7 @@ describe("analytics overview", () => {
 
     expect(h.calls[0]).toMatchObject({
       path: "/api/analytics",
-      workspaceId: "ws-1",
+      workspaceSlug: "ws-1",
       query: { from: "2026-07-01", to: "2026-07-29" },
     });
   });

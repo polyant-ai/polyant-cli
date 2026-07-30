@@ -91,7 +91,7 @@ export async function call(deps: ServiceDependencies, scope: ResolvedScope, opts
 function explainWorkspaceRefusal(error: unknown, scope: ResolvedScope): unknown {
   if (!(error instanceof RemoteError) || error.status !== 403 || scope.workspace === undefined) return error;
   return new RemoteError(
-    `${error.message} — workspace ${JSON.stringify(scope.workspace)} was sent as x-workspace-id. ` +
+    `${error.message} — workspace ${JSON.stringify(scope.workspace)} was sent as x-workspace-slug. ` +
       `Run "polyant-cli whoami" to list the workspaces this key may address.`,
     error.code,
     error.status,
@@ -103,7 +103,7 @@ export function callStream(deps: ServiceDependencies, scope: ResolvedScope, opts
 }
 
 function withWorkspace(scope: ResolvedScope, opts: RequestOptions): RequestOptions {
-  return { ...opts, ...(scope.workspace === undefined ? {} : { workspaceId: scope.workspace }) };
+  return { ...opts, ...(scope.workspace === undefined ? {} : { workspaceSlug: scope.workspace }) };
 }
 
 export function wantsJson(context: CommandContext | undefined): boolean {

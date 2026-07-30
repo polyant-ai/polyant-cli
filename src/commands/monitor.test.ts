@@ -92,7 +92,7 @@ describe("monitor status", () => {
     await action(h.monitor, "status")([], context());
 
     expect(h.calls.map((c) => c.path)).toEqual(["/health", "/api/instances"]);
-    expect(h.calls[1].workspaceId).toBe("ws-1");
+    expect(h.calls[1].workspaceSlug).toBe("ws-1");
     const text = h.out.join("");
     expect(text).toContain("health:");
     expect(text).toContain("ok (polyant)");
@@ -148,7 +148,7 @@ describe("monitor status", () => {
     await expect(action(h.monitor, "status")([], context({ json: true }))).rejects.toThrow(/Forbidden resource/);
     // A bare 403 cannot be told from a missing permission, so the workspace that
     // was actually sent is named alongside it.
-    expect(h.out.join("")).toContain("was sent as x-workspace-id");
+    expect(h.out.join("")).toContain("was sent as x-workspace-slug");
 
     // stdout stays parseable so a pipeline can read the report and the exit code.
     const composite = JSON.parse(h.out.join("")) as { health: unknown; instances: { unavailable: string } };
@@ -187,7 +187,7 @@ describe("monitor events", () => {
 
     expect(h.calls[0]).toMatchObject({
       path: "/api/audit-logs",
-      workspaceId: "ws-1",
+      workspaceSlug: "ws-1",
       query: {
         instanceId: "acme",
         toolName: "web_search",
@@ -240,7 +240,7 @@ describe("monitor events --follow", () => {
     expect(h.streamCalls[0]).toMatchObject({
       path: "/api/activity-stream/live",
       query: { instance: "acme" },
-      workspaceId: "ws-1",
+      workspaceSlug: "ws-1",
       timeoutMs: 0,
     });
     const lines = h.out.join("").trimEnd().split("\n");
@@ -345,7 +345,7 @@ describe("monitor scope", () => {
 
     await child.run([], context());
 
-    expect(calls.every((c) => c.workspaceId === undefined)).toBe(true);
+    expect(calls.every((c) => c.workspaceSlug === undefined)).toBe(true);
     expect(err.join("")).toContain("no workspace selected");
     expect(out.join("")).toContain("ok (polyant)");
   });
