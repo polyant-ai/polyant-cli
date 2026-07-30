@@ -29,6 +29,8 @@ interface Turn {
   /** Everything the agent said, in order, as it arrived. */
   readonly text: string;
   readonly toolCalls: readonly string[];
+  /** The conversation the engine recorded the turn in, when `done` reports it. */
+  readonly conversationId?: string;
 }
 
 function describe(name: string, payload: Record<string, unknown>): string | undefined {
@@ -60,6 +62,7 @@ async function consume(
   json: boolean,
 ): Promise<Turn> {
   let text = "";
+  let conversationId: string | undefined;
   const toolCalls: string[] = [];
 
   for await (const frame of events) {
@@ -84,7 +87,13 @@ async function consume(
       // turn never completed, so it must not exit 0 or 1.
       throw new RemoteError(`agent chat failed: ${message}`, ExitCode.Remote);
     }
-    if (name === "done") break;
+    if (name === "done") {
+      // The engine reports the conversation it recorded the turn in. Naming it
+      // turns a one-shot reply into something the operator can follow up on with
+      // `agent conversations show`, or continue with --conversation.
+      if (typeof payload.conversationId === "string") conversationId = payload.conversationId;
+      break;
+    }
     if (name === "text-delta" && typeof payload.text === "string") {
       text += payload.text;
       if (!json) deps.io.stdout(payload.text);
@@ -98,7 +107,8 @@ async function consume(
   }
 
   if (!json && text.length > 0 && !text.endsWith("\n")) deps.io.stdout("\n");
-  return { text, toolCalls };
+  if (!json && conversationId !== undefined) deps.io.stderr(`· conversation ${conversationId}\n`);
+  return { text, toolCalls, ...(conversationId === undefined ? {} : { conversationId }) };
 }
 
 /** Keeps an unparsable frame in the JSON Lines output instead of dropping it. */

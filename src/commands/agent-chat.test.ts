@@ -24,7 +24,7 @@ const TURN: [string, unknown][] = [
   ["text-delta", { text: "Hello, " }],
   ["text-delta", { text: "world." }],
   ["step-finish", { index: 0, finishReason: "stop" }],
-  ["done", { usage: { totalTokens: 42 } }],
+  ["done", { usage: { totalTokens: 42 }, conversationId: "assistant:web:api-5048619a" }],
 ];
 
 function framesOf(pairs: [string, unknown][]): AsyncGenerator<StreamEvent> {
@@ -92,6 +92,16 @@ describe("agent chat", () => {
     expect(progress).toContain("tool web_search");
     expect(progress).toContain('thinking: weighing the options');
     expect(progress).not.toContain("Hello");
+  });
+
+  // Verified against a real engine stream: `done` carries the conversation id,
+  // which is what makes a one-shot turn followable.
+  it("names the conversation the engine recorded the turn in", async () => {
+    const h = harness();
+
+    await chat(["acme", "--message", "hi"], context(), h.deps);
+
+    expect(h.err.join("")).toContain("conversation assistant:web:api-5048619a");
   });
 
   it("emits JSON Lines of the original frames under --json", async () => {

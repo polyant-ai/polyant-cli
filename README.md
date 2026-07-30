@@ -176,11 +176,14 @@ original payload. `--expect <text>` exits `1` when the assembled reply does not
 contain that text: the tool worked, the scenario did not hold. An `error` frame
 exits `3`, because the turn never completed.
 
+When the turn ends, the conversation the engine recorded it in is named on
+stderr, so it can be inspected with `agent conversations show` or continued with
+`--conversation <id>`.
+
 It never uses `/api/instances/:slug/chat/stream`. That route is `@Public()`,
 authenticates a per-instance bearer key, and returns early when the agent has
 `authEnabled` false — a management console must hold no runtime key and must not
-depend on an agent being open. **The playground route is a pending engine
-contract**, so this command answers `404` until it lands.
+depend on an agent being open.
 
 Channel and hook configuration is accepted only from a named file or stdin
 (`--file -`), never from an inline flag where a secret would land in shell
