@@ -1,14 +1,28 @@
 {
   "name": "@polyant-ai/cli",
   "version": "0.1.0",
-  "private": true,
   "description": "Configure a Polyant instance as code",
+  "license": "LicenseRef-Polyant-Enterprise",
   "type": "module",
-  "bin": { "polyant-cli": "dist/bin.js" },
+  "bin": {
+    "polyant-cli": "dist/bin.js"
+  },
   "main": "dist/cli.js",
   "types": "dist/cli.d.ts",
-  "files": ["dist", "src", "README.md"],
-  "engines": { "node": ">=20" },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "AGENTS.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",

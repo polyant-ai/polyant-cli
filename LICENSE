@@ -1,0 +1,20 @@
+Polyant Enterprise Licence
+==========================
+
+Copyright (c) Exelab S.r.l. / Polyant. All rights reserved.
+
+This software is proprietary. Its use, copying, modification and distribution are
+governed by the Polyant Enterprise licence agreement between Exelab S.r.l. and the
+licensee.
+
+The operative terms are NOT reproduced in this file. They are held by the
+licensor; request them from Exelab S.r.l. before use. The SPDX identifier
+`LicenseRef-Polyant-Enterprise`, which appears at the top of every source file,
+refers to that agreement.
+
+Absent such an agreement, no licence is granted.
+
+-------------------------------------------------------------------------------
+NOTE FOR MAINTAINERS: this file is a pointer, not a licence. It was deliberately
+written without substantive terms, because drafting them is a legal decision, not
+an engineering one. Replace it with the agreement text your legal owner approves.

@@ -95,6 +95,21 @@ Prints the package version and the Node version. If the command is not found
 after a global install, `npm bin -g` names the directory that has to be on your
 PATH.
 
+## Compatibility
+
+The CLI talks to the engine's management API, so its version has to follow the
+instance's. There is no negotiation: a route the engine has not shipped answers
+`404`, which the CLI reports as a usage error.
+
+| CLI | Engine | Notes |
+|---|---|---|
+| 0.1.x | the management API as of 2026-07-30 | needs `GET /api/service-context`, `x-workspace-slug`, and `POST /api/instances/:slug/playground/chat/stream` for `agent chat` |
+
+`polyant-cli whoami` is the check: it reports whether the instance answers, the
+permissions the key actually holds, and the workspaces it may address. A command
+failing with `404` against a reachable instance means that route is older or newer
+than this CLI.
+
 ## Configuration
 
 `polyant.yaml` at the workspace root is versioned; `.env` is not.
@@ -147,6 +162,12 @@ while pointing somewhere else, so a write landing on a production host could be
 labelled as staging. `--url` still overrides the host, because typing it is
 per-invocation intent — but it too keeps the target's key and `prod` flag, so
 prefer declaring a target over reaching for the flag.
+
+Driving it from a coding agent? Read [AGENTS.md](AGENTS.md) — the exit-code
+contract, the `--json` discipline and the confirmation rules — and let the agent
+discover the surface with `polyant-cli --json`, which prints the whole command
+tree, the global flags and the exit codes as JSON, derived from the dispatcher
+rather than maintained by hand.
 
 `polyant-cli --version` prints the installed version and the Node version it runs
 on — the two things a bug report needs. `-v` and `version` do the same. It reads

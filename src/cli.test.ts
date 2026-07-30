@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { COMMANDS, renderHelp, renderVersion, run } from "./cli.js";
+import { COMMANDS, renderCatalogue, renderHelp, renderVersion, run } from "./cli.js";
 import { ConfigError, ExitCode, RemoteError } from "./exit.js";
 
 const apiMocks = vi.hoisted(() => ({
@@ -215,6 +215,88 @@ describe("--version", () => {
   it("sends the version to stdout and nothing to stderr", async () => {
     await run(["--version"]);
     expect(err.join("")).toBe("");
+  });
+});
+
+describe("--help --json", () => {
+  interface Node {
+    path: string;
+    summary: string;
+    usage: string;
+    supportsDryRun: boolean;
+    children?: Node[];
+  }
+  interface Catalogue {
+    name: string;
+    version: string;
+    globalOptions: { flag: string }[];
+    exitCodes: { code: number; meaning: string }[];
+    commands: Node[];
+  }
+
+  const parse = () => JSON.parse(renderCatalogue()) as Catalogue;
+  const flatten = (nodes: Node[]): Node[] => nodes.flatMap((n) => [n, ...flatten(n.children ?? [])]);
+
+  it("emits valid JSON on stdout and exits 0", async () => {
+    expect(await run(["--help", "--json"])).toBe(ExitCode.Ok);
+    expect(() => JSON.parse(out.join(""))).not.toThrow();
+    expect(err.join("")).toBe("");
+  });
+
+  it("accepts the two flags in either order", async () => {
+    expect(await run(["--json", "--help"])).toBe(ExitCode.Ok);
+    expect(() => JSON.parse(out.join(""))).not.toThrow();
+  });
+
+  // Derived from the dispatcher's own tree, so it cannot describe a command that
+  // does not exist, nor miss one that does.
+  it("describes exactly the registered commands", () => {
+    const catalogue = parse();
+    expect(catalogue.commands.map((c) => c.path)).toEqual(Object.keys(COMMANDS).sort());
+
+    const paths = new Set(flatten(catalogue.commands).map((n) => n.path));
+    for (const expected of ["agent chat", "agent secrets set", "monitor events", "role permissions", "workspace delete"]) {
+      expect(paths).toContain(expected);
+    }
+  });
+
+  it("carries the contract a caller needs to act on the output", () => {
+    const catalogue = parse();
+    expect(catalogue.exitCodes.map((e) => e.code)).toEqual([0, 1, 2, 3]);
+    expect(catalogue.globalOptions.map((o) => o.flag)).toContain("--workspace");
+    expect(catalogue.globalOptions.map((o) => o.flag)).toContain("--dry-run");
+    expect(catalogue.version).toBe(renderVersion());
+  });
+
+  it("marks which commands own dry-run, so an agent can rehearse a write", () => {
+    const byPath = new Map(flatten(parse().commands).map((n) => [n.path, n]));
+    expect(byPath.get("agent secrets set")?.supportsDryRun).toBe(true);
+    expect(byPath.get("agent list")?.supportsDryRun).toBe(false);
+  });
+
+  it("gives every node a usage string, so no command is undocumented", () => {
+    for (const node of flatten(parse().commands)) {
+      expect(node.usage.length, node.path).toBeGreaterThan(0);
+      expect(node.summary.length, node.path).toBeGreaterThan(0);
+    }
+  });
+
+  // With no command the output is help, so --json alone is the same request.
+  // Printing prose to a caller that asked for JSON is a trap a pipe finds first.
+  it("answers --json alone with the catalogue, not with prose", async () => {
+    expect(await run(["--json"])).toBe(ExitCode.Ok);
+    expect(() => JSON.parse(out.join(""))).not.toThrow();
+  });
+
+  // Root position only: a per-command catalogue would be a second shape to learn.
+  it("leaves --json after a command to that command", async () => {
+    const agentRun = vi.spyOn(COMMANDS.agent.children!.list, "run").mockResolvedValue(undefined);
+    expect(await run(["agent", "list", "--json"])).toBe(ExitCode.Ok);
+    expect(agentRun).toHaveBeenCalled();
+  });
+
+  it("offers it in the root help", () => {
+    expect(renderHelp()).toContain("--help --json");
   });
 });
 

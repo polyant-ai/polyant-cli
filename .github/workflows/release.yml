@@ -1,0 +1,35 @@
+name: release
+
+# Publishes to GitHub Packages on a version tag. The package is proprietary and
+# `publishConfig` pins the registry, so a misfire cannot reach public npm.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: https://npm.pkg.github.com
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Refuse to publish a tag that disagrees with the manifest: `--version`
+      # reads package.json, so a mismatch would ship a build that misreports
+      # itself.
+      - name: Check the tag matches the manifest version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          test "$TAG" = "$PKG" || { echo "tag $TAG != package.json $PKG"; exit 1; }
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

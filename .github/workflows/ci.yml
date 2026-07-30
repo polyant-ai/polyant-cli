@@ -1,0 +1,28 @@
+name: ci
+
+# Every push and every pull request: 303 tests nobody runs automatically are 303
+# tests that will rot.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # The floor declared in `engines`, so CI fails on anything the package
+          # claims to support but does not.
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # `npm ci` already builds through `prepare`; this proves the build script
+      # works on its own, which is what a consumer's install depends on.
+      - run: npm run build
+      # The bin has to be runnable, not merely compiled.
+      - run: node dist/bin.js --version

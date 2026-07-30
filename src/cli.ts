@@ -58,6 +58,7 @@ export function renderHelp(): string {
     "Usage: polyant-cli <command> [args]",
     "",
     "  --version    print the version and exit",
+    "  --help --json  print the whole command tree as JSON, for an agent",
     "",
     ...renderChildren({ summary: "root", usage: "", children: COMMANDS }, "Commands:"),
     "",
@@ -88,9 +89,82 @@ export function renderVersion(): string {
   }
 }
 
+function isCatalogueRequest(argv: readonly string[]): boolean {
+  // With no command the output is help, and `--json` makes it machine-readable —
+  // the same rule as everywhere else, so `--json` alone counts too. Without this
+  // `polyant-cli --json` printed prose to a caller that asked for JSON, which a
+  // pipe discovers as a parse error.
+  //
+  // Root position only: a per-command catalogue would be a second shape to learn.
+  const flags = new Set(argv);
+  if (argv.length === 1 && flags.has("--json")) return true;
+  return argv.length === 2 && flags.has("--json") && (flags.has("--help") || flags.has("-h"));
+}
+
 function isVersionRequest(argv: readonly string[]): boolean {
   // Root position only: `agent --version` is not a question about the agent.
   return argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v" || argv[0] === "version");
+}
+
+/** One node of the machine-readable catalogue. */
+interface CommandDescriptor {
+  readonly path: string;
+  readonly summary: string;
+  readonly usage: string;
+  readonly supportsDryRun: boolean;
+  readonly children?: CommandDescriptor[];
+}
+
+function describeCommand(name: string, command: Command, prefix: readonly string[]): CommandDescriptor {
+  const path = [...prefix, name];
+  const children = Object.keys(command.children ?? {})
+    .sort()
+    .map((child) => describeCommand(child, (command.children as Record<string, Command>)[child], path));
+  return {
+    path: path.join(" "),
+    summary: command.summary,
+    usage: command.usage,
+    supportsDryRun: command.supportsDryRun === true,
+    ...(children.length === 0 ? {} : { children }),
+  };
+}
+
+/**
+ * The whole command tree as data, for an agent that has to discover the surface
+ * rather than guess it. Derived from the same `COMMANDS` the dispatcher uses, so
+ * it cannot describe a command that does not exist, or miss one that does.
+ *
+ * The global flags and exit codes travel with it: they are the contract a caller
+ * needs to act on the output, and a catalogue without them would still leave an
+ * agent parsing prose.
+ */
+export function renderCatalogue(): string {
+  return `${JSON.stringify(
+    {
+      name: "polyant-cli",
+      version: renderVersion(),
+      globalOptions: [
+        { flag: "--target", value: "name", summary: "target from polyant.yaml" },
+        { flag: "--context", value: "name", summary: "named target/org/workspace shortcut" },
+        { flag: "--org", value: "slug", summary: "organisation to act in" },
+        { flag: "--workspace", value: "slug", summary: "workspace to act in; sent as x-workspace-slug" },
+        { flag: "--json", value: null, summary: "machine-readable output; response bodies pass through unchanged" },
+        { flag: "--yes", value: null, summary: "accept a mutation recap without prompting" },
+        { flag: "--dry-run", value: null, summary: "print the recap and send nothing" },
+      ],
+      exitCodes: [
+        { code: ExitCode.Ok, meaning: "success" },
+        { code: ExitCode.Difference, meaning: "a difference or a failed assertion, not a tool error" },
+        { code: ExitCode.Config, meaning: "configuration, usage or authentication; 4xx except 429" },
+        { code: ExitCode.Remote, meaning: "remote failure; 5xx, 429, timeout, unreachable. retryable" },
+      ],
+      commands: Object.keys(COMMANDS)
+        .sort()
+        .map((name) => describeCommand(name, COMMANDS[name], [])),
+    },
+    null,
+    2,
+  )}\n`;
 }
 
 function renderCommandHelp(command: Command, path: string[]): string {
@@ -152,6 +226,10 @@ export async function run(argv: string[]): Promise<ExitCodeValue> {
   try {
     if (isVersionRequest(argv)) {
       process.stdout.write(`${renderVersion()}\n`);
+      return ExitCode.Ok;
+    }
+    if (isCatalogueRequest(argv)) {
+      process.stdout.write(renderCatalogue());
       return ExitCode.Ok;
     }
     const invocation = parseInvocation(argv, COMMANDS);
