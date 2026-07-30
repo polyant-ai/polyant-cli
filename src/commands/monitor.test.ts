@@ -146,9 +146,14 @@ describe("monitor status", () => {
     const h = harness([response(health), new RemoteError("Forbidden resource", ExitCode.Config, 403)]);
 
     await expect(action(h.monitor, "status")([], context({ json: true }))).rejects.toThrow(/Forbidden resource/);
+    // A bare 403 cannot be told from a missing permission, so the workspace that
+    // was actually sent is named alongside it.
+    expect(h.out.join("")).toContain("was sent as x-workspace-id");
 
     // stdout stays parseable so a pipeline can read the report and the exit code.
-    expect(JSON.parse(h.out.join(""))).toMatchObject({ health, instances: { unavailable: "Forbidden resource" } });
+    const composite = JSON.parse(h.out.join("")) as { health: unknown; instances: { unavailable: string } };
+    expect(composite.health).toMatchObject(health);
+    expect(composite.instances.unavailable).toContain("Forbidden resource");
   });
 });
 

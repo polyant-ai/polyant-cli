@@ -59,8 +59,42 @@ describe("collectWhoami", () => {
     expect(report.permissions).toBe("unverified");
   });
 
-  // /api/service-context is a pending engine contract: absent today, expected
-  // later. Both answers must leave the report honest.
+  // The shape the engine actually serves: organisation at the top level, and
+  // neither the organisation nor the workspaces carrying an id.
+  it("should_read_the_engine_shape_and_never_print_a_missing_id_as_undefined", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        if (url.pathname === "/health") return jsonResponse(200, { status: "ok", service: "polyant" });
+        if (url.pathname === "/api/service-context") {
+          return jsonResponse(200, {
+            principalType: "service",
+            key: { id: "key-1", name: "ci-runner-2", expiresAt: null },
+            organization: { slug: "default", name: "Default Organization" },
+            permissions: ["org:read", "agent:read"],
+            features: ["workspace_scoped_rbac"],
+            workspaces: [
+              { slug: "sales", name: "Sales", isDefault: false },
+              { slug: "general", name: "General", isDefault: true },
+            ],
+          });
+        }
+        return jsonResponse(200, { instances: [] });
+      }),
+    );
+
+    const report = await collectWhoami(TARGET);
+    const text = renderWhoami(report);
+
+    expect(report.organization).toMatchObject({ slug: "default" });
+    expect(report.features).toEqual(["workspace_scoped_rbac"]);
+    expect(text).toContain("default (Default Organization)");
+    expect(text).toContain("ci-runner-2 (no expiry)");
+    expect(text).not.toContain("undefined");
+    // Without an id the list cannot address a write; whoami has to say so.
+    expect(text).toContain("no workspace id reported");
+  });
+
   it("should_report_effective_permissions_when_service_context_is_served", async () => {
     vi.stubGlobal(
       "fetch",
@@ -87,6 +121,7 @@ describe("collectWhoami", () => {
     expect(report.workspaces?.map((w) => w.slug)).toEqual(["general", "labs"]);
     expect(renderWhoami(report)).toContain("agent:read, org:read");
     expect(renderWhoami(report)).toContain("general  ws-1  (default)");
+    expect(renderWhoami(report)).not.toContain("no workspace id reported");
   });
 
   it("should_keep_permissions_unverified_when_service_context_is_absent", async () => {

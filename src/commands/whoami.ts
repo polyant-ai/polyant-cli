@@ -43,10 +43,22 @@ export interface WhoamiReport {
    * array would claim the key can do nothing, which is a different statement.
    */
   permissions: "unverified" | string[];
-  /** The key's own organisation, when service-context reports it. */
-  organization?: { id: string; slug: string; name: string };
-  /** Workspaces the key may address, when service-context reports them. */
-  workspaces?: { id: string; slug: string; isDefault: boolean }[];
+  /**
+   * The key's own organisation, when service-context reports it. `id` is
+   * optional because the engine currently reports slug and name only; the CLI
+   * shows what it is given rather than printing `undefined`.
+   */
+  organization?: { id?: string; slug: string; name?: string };
+  /**
+   * Workspaces the key may address. `id` is optional for the same reason — and
+   * until it is present a scoped write cannot be addressed by this list, since
+   * `x-workspace-id` takes an id, not a slug.
+   */
+  workspaces?: { id?: string; slug: string; name?: string; isDefault: boolean }[];
+  /** Entitlements the engine reports for the key's organisation. */
+  features?: string[];
+  /** The management key's own identity, as the engine reports it. */
+  key?: { id?: string; name?: string; expiresAt?: string | null };
   /** Why /health did not answer, when it did not. */
   unreachableReason?: string;
   /** Why the agent list is empty, when it is. */
@@ -99,7 +111,14 @@ async function probeServiceContext(target: ResolvedTarget): Promise<Partial<Whoa
   try {
     const res = await request(target, { path: SERVICE_CONTEXT_PATH });
     const body = res.body as
-      | { permissions?: unknown; principal?: { organization?: unknown }; workspaces?: unknown }
+      | {
+          permissions?: unknown;
+          features?: unknown;
+          key?: unknown;
+          organization?: unknown;
+          principal?: { organization?: unknown };
+          workspaces?: unknown;
+        }
       | null;
     const permissions = body?.permissions;
     if (!Array.isArray(permissions) || !permissions.every((entry) => typeof entry === "string")) {
@@ -112,12 +131,20 @@ async function probeServiceContext(target: ResolvedTarget): Promise<Partial<Whoa
       );
       return {};
     }
-    const organization = body?.principal?.organization;
+    // The engine reports the organisation at the top level; the contract draft
+    // nested it under `principal`. Reading both costs one `??` and keeps whoami
+    // working whichever way the two converge.
+    const organization = body?.organization ?? body?.principal?.organization;
     const workspaces = body?.workspaces;
+    const features = body?.features;
     return {
       permissions: [...permissions].sort(),
       ...(isOrganization(organization) ? { organization } : {}),
       ...(Array.isArray(workspaces) ? { workspaces: workspaces as WhoamiReport["workspaces"] } : {}),
+      ...(Array.isArray(features) && features.every((f) => typeof f === "string")
+        ? { features: [...(features as string[])].sort() }
+        : {}),
+      ...(isKey(body?.key) ? { key: body.key } : {}),
     };
   } catch {
     // Not reported as an error: the absence of the route is the current state of
@@ -126,8 +153,13 @@ async function probeServiceContext(target: ResolvedTarget): Promise<Partial<Whoa
   }
 }
 
+/** `slug` is the only field the CLI needs; `id` and `name` are shown when present. */
 function isOrganization(value: unknown): value is NonNullable<WhoamiReport["organization"]> {
-  return value !== null && typeof value === "object" && "slug" in value && "id" in value;
+  return value !== null && typeof value === "object" && "slug" in value;
+}
+
+function isKey(value: unknown): value is NonNullable<WhoamiReport["key"]> {
+  return value !== null && typeof value === "object" && ("id" in value || "name" in value);
 }
 
 export async function collectWhoami(target: ResolvedTarget): Promise<WhoamiReport> {
@@ -150,6 +182,16 @@ export async function collectWhoami(target: ResolvedTarget): Promise<WhoamiRepor
   };
 }
 
+function describeOrg(org: NonNullable<WhoamiReport["organization"]>): string {
+  const detail = [org.name, org.id].filter((value) => value !== undefined && value !== "");
+  return detail.length === 0 ? org.slug : `${org.slug} (${detail.join(", ")})`;
+}
+
+function describeKey(key: NonNullable<WhoamiReport["key"]>): string {
+  const name = key.name ?? key.id ?? "(unnamed)";
+  return key.expiresAt === undefined || key.expiresAt === null ? `${name} (no expiry)` : `${name} (expires ${key.expiresAt})`;
+}
+
 export function renderWhoami(report: WhoamiReport): string {
   const lines = [
     `target:      ${report.target}${report.prod ? " (PROD)" : ""}`,
@@ -158,13 +200,25 @@ export function renderWhoami(report: WhoamiReport): string {
     Array.isArray(report.permissions)
       ? `permissions: ${report.permissions.length === 0 ? "(none granted)" : report.permissions.join(", ")}`
       : `permissions: not verified — no usable GET ${SERVICE_CONTEXT_PATH} for a management API key`,
-    ...(report.organization === undefined ? [] : [`org:         ${report.organization.slug} (${report.organization.id})`]),
+    ...(report.organization === undefined ? [] : [`org:         ${describeOrg(report.organization)}`]),
+    ...(report.key === undefined ? [] : [`key:         ${describeKey(report.key)}`]),
+    ...(report.features === undefined ? [] : [`features:    ${report.features.length === 0 ? "(none)" : report.features.join(", ")}`]),
   ];
 
   if (report.workspaces !== undefined) {
     lines.push("", `workspaces (${report.workspaces.length}):`);
     for (const workspace of report.workspaces) {
-      lines.push(`  ${workspace.slug}  ${workspace.id}${workspace.isDefault ? "  (default)" : ""}`);
+      // Only what the engine actually reported: an absent id printed as
+      // "undefined" is worse than an id column that is simply not there.
+      const parts = [workspace.slug, ...(workspace.id === undefined ? [] : [workspace.id])];
+      lines.push(`  ${parts.join("  ")}${workspace.isDefault ? "  (default)" : ""}`);
+    }
+    if (report.workspaces.every((workspace) => workspace.id === undefined)) {
+      // --workspace sends x-workspace-id, so a list without ids cannot address a
+      // write. Saying so here is the difference between a puzzle and a next step.
+      lines.push(
+        "  note: no workspace id reported — a scoped write needs one, since --workspace sends x-workspace-id.",
+      );
     }
   }
 

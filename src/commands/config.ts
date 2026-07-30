@@ -137,7 +137,10 @@ async function doctor(deps: ConfigCommandDependencies): Promise<void> {
     const keyEnv = config.targets[name].keyEnv;
     // A presence check is deliberately the only interaction with the secret:
     // diagnostic output may name the expected variable but must never carry it.
-    lines.push(`target ${name}: ${keyEnv} is ${deps.env[keyEnv] ? "set" : "unset"}`);
+    // `VAR=value` without `export` sets a shell variable a child never sees, so
+    // the most common cause of "unset" is named rather than left to be guessed.
+    const hint = deps.env[keyEnv] ? "set" : "unset — is it exported?";
+    lines.push(`target ${name}: ${keyEnv} is ${hint}`);
   }
   deps.io.stdout(`${lines.join("\n")}\n`);
 }

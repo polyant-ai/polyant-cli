@@ -178,6 +178,23 @@ describe("config show", () => {
 });
 
 describe("config doctor", () => {
+  it("suggests export when a key environment variable is unset", async () => {
+    const { command, stdout } = capture({
+      env: {},
+      fs: {
+        readFile: vi.fn(async () => "targets:\n  dev:\n    baseUrl: http://localhost:4000\n    keyEnv: POLYANT_KEY_DEV\n"),
+        writeFile: vi.fn(async () => {}),
+        rename: vi.fn(async () => {}),
+      },
+    });
+
+    await command.run?.(["doctor"], { path: ["config", "doctor"], global: { json: false, yes: false, dryRun: false } });
+
+    // `VAR=value` without `export` is the usual cause, and invisible otherwise.
+    expect(stdout.join("")).toContain("POLYANT_KEY_DEV is unset — is it exported?");
+    expect(stdout.join("")).not.toContain("secret");
+  });
+
   it("names an unset key environment variable without leaking its value", async () => {
     const secret = "pk_do_not_print_me";
     const { command, stdout } = capture({

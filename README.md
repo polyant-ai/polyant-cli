@@ -222,12 +222,19 @@ workspaces it may address. That route is a pending engine contract, so until it
 lands permissions read `not verified` rather than being guessed — `/api/me/access`
 serves user principals only.
 
-The CLI reads exactly that path, and requires a top-level `permissions` array of
-strings; the organisation is read from `principal.organization` and the workspace
-list from `workspaces`. An answer it cannot read is reported as unverified — an
-empty list would claim the key can do nothing, which is a different statement —
-but a `200` with an unrecognised shape also prints a warning on stderr, so a
-contract mismatch is never mistaken for a missing route.
+The CLI reads exactly that path and requires a top-level `permissions` array of
+strings. The organisation is read from `organization` (or `principal.organization`),
+and the workspace list, features and key identity are shown when reported. Fields
+the engine omits are left out rather than printed as `undefined`.
+
+When the reported workspaces carry no `id`, the report says so: `--workspace`
+sends `x-workspace-id`, which takes an id, so a list of slugs alone cannot address
+a scoped write.
+
+An answer the CLI cannot read is reported as unverified — an empty list would
+claim the key can do nothing, which is a different statement — but a `200` with an
+unrecognised shape also prints a warning on stderr, so a contract mismatch is
+never mistaken for a missing route.
 
 Any agent with `authEnabled: false` is flagged on stderr: its runtime routes
 require no token and validate none.

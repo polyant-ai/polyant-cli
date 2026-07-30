@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { request as processRequest, requestStream as processRequestStream, type ApiResponse, type RequestOptions, type StreamResponse } from "../api/client.js";
 import type { CommandContext } from "../command.js";
 import { loadWorkspaceConfig, type WorkspaceConfig } from "../config.js";
-import { ConfigError } from "../exit.js";
+import { ConfigError, RemoteError } from "../exit.js";
 import type { ConfirmationIO } from "./confirm.js";
 import { processConfirmationIO, readStdin } from "./process-io.js";
 import { resolveScope, type ResolvedScope, type ScopeRequirement } from "./scope.js";
@@ -75,8 +75,27 @@ export async function scopeFor(
 }
 
 /** Sends a request already bound to the resolved workspace. */
-export function call(deps: ServiceDependencies, scope: ResolvedScope, opts: RequestOptions): Promise<ApiResponse> {
-  return deps.request(scope.target, withWorkspace(scope, opts));
+export async function call(deps: ServiceDependencies, scope: ResolvedScope, opts: RequestOptions): Promise<ApiResponse> {
+  try {
+    return await deps.request(scope.target, withWorkspace(scope, opts));
+  } catch (error) {
+    throw explainWorkspaceRefusal(error, scope);
+  }
+}
+
+/**
+ * The engine answers an unknown or foreign workspace with a bare 403 — the same
+ * answer it gives for a missing permission. Without the distinction an operator
+ * cannot tell a wrong id from a wrong key, so the hint names where to look.
+ */
+function explainWorkspaceRefusal(error: unknown, scope: ResolvedScope): unknown {
+  if (!(error instanceof RemoteError) || error.status !== 403 || scope.workspace === undefined) return error;
+  return new RemoteError(
+    `${error.message} — workspace ${JSON.stringify(scope.workspace)} was sent as x-workspace-id. ` +
+      `Run "polyant-cli whoami" to list the workspaces this key may address.`,
+    error.code,
+    error.status,
+  );
 }
 
 export function callStream(deps: ServiceDependencies, scope: ResolvedScope, opts: RequestOptions): Promise<StreamResponse> {
