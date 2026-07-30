@@ -17,12 +17,16 @@ export interface ConfirmationOptions {
 }
 
 /**
- * The input adapter supplies only terminal state and input. Output remains on
- * this policy's stderr channel, so prompts never corrupt machine stdout.
+ * The input adapter supplies terminal state and one line of input. The prompt is
+ * passed *into* `readLine` rather than written to stderr first: a readline
+ * interface repaints its line when it opens, which erased a separately written
+ * prompt and left the operator answering an invisible question. Returning an
+ * empty string is the contract for a closed stdin, so an interrupted prompt
+ * becomes a clean refusal instead of an unhandled error.
  */
 export interface ConfirmationInput {
   readonly isTTY: boolean | undefined;
-  readLine(): Promise<string>;
+  readLine(prompt: string): Promise<string>;
 }
 
 export interface ConfirmationIO extends OutputIO {
@@ -76,8 +80,7 @@ export async function confirmMutation(
   if (io.input.isTTY !== true && !options.yes) reject(`${plan.title} is non-interactive; --yes is required.`);
   if (options.yes) return { shouldWrite: true };
 
-  io.stderr("Proceed? [y/N] ");
-  const answer = (await io.input.readLine()).trim().toLowerCase();
+  const answer = (await io.input.readLine("Proceed? [y/N] ")).trim().toLowerCase();
   if (answer !== "y" && answer !== "yes") {
     reject(`${plan.title} was not confirmed.`);
   }

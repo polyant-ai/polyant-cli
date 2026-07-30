@@ -74,8 +74,25 @@ describe("confirmMutation", () => {
     const { io, readLine, stdout, stderr } = captureConfirmation({ answer: "n" });
 
     await expect(confirmMutation(PLAN, { yes: false, dryRun: false }, io)).rejects.toThrow(ConfigError);
-    expect(readLine).toHaveBeenCalledWith();
     expect(stdout).toEqual([]);
-    expect(stderr.join("")).toContain("Proceed? [y/N] ");
+    // The prompt is handed to the reader, never written to stderr first: a
+    // readline interface repaints its line on open and erased it, leaving the
+    // operator answering a question they could not see.
+    expect(readLine).toHaveBeenCalledWith("Proceed? [y/N] ");
+    expect(stderr.join("")).not.toContain("Proceed?");
+  });
+
+  it("treats a closed prompt as a refusal rather than an error of its own", async () => {
+    // Ctrl+D: the reader's contract is an empty string, which must read as "no".
+    const { io } = captureConfirmation({ answer: "" });
+
+    await expect(confirmMutation(PLAN, { yes: false, dryRun: false }, io)).rejects.toThrow(/was not confirmed/);
+  });
+
+  it("accepts an answer with surrounding whitespace and any casing", async () => {
+    for (const answer of ["y", "  y  ", "Y", "yes", "YES\n"]) {
+      const { io } = captureConfirmation({ answer });
+      await expect(confirmMutation(PLAN, { yes: false, dryRun: false }, io)).resolves.toEqual({ shouldWrite: true });
+    }
   });
 });

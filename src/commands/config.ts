@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { createInterface } from "node:readline/promises";
 import type { Command, CommandContext } from "../command.js";
 import { CONFIG_FILE, parseWorkspaceConfig, serializeWorkspaceConfig, type WorkspaceConfig } from "../config.js";
 import { ConfigError } from "../exit.js";
 import { confirmMutation, type ConfirmationIO } from "../runtime/confirm.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
+import { askLine, processConfirmationIO } from "../runtime/process-io.js";
 
 export interface ConfigFileSystem {
   readFile(path: string, encoding: "utf8"): Promise<string>;
@@ -25,24 +25,14 @@ export interface ConfigCommandDependencies {
   temporaryName(): string;
 }
 
-function processPrompt(question: string): Promise<string> {
-  const terminal = createInterface({ input: process.stdin, output: process.stderr });
-  return terminal.question(question).finally(() => terminal.close());
-}
-
 const processDependencies: ConfigCommandDependencies = {
   configPath: CONFIG_FILE,
   env: process.env,
   fs: { readFile, writeFile, rename },
-  io: {
-    stdout: (text) => process.stdout.write(text),
-    stderr: (text) => process.stderr.write(text),
-    input: {
-      isTTY: process.stdin.isTTY,
-      readLine: async () => processPrompt(""),
-    },
-  },
-  prompt: processPrompt,
+  // The shared terminal adapter, not a second one: a local copy is how the
+  // confirmation prompt came to be written and then erased.
+  io: processConfirmationIO,
+  prompt: askLine,
   temporaryName: () => join(dirname(CONFIG_FILE), `.${basename(CONFIG_FILE)}.${process.pid}.${Date.now()}.tmp`),
 };
 
