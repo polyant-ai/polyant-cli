@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { COMMANDS, renderHelp, run } from "./cli.js";
+import { COMMANDS, renderHelp, renderVersion, run } from "./cli.js";
 import { ConfigError, ExitCode, RemoteError } from "./exit.js";
 
 const apiMocks = vi.hoisted(() => ({
@@ -179,6 +180,41 @@ describe("run", () => {
       [],
       expect.objectContaining({ path: ["whoami"], global: expect.objectContaining({ json: true }) }),
     );
+  });
+});
+
+describe("--version", () => {
+  it("reports the version from the package manifest, not a duplicated constant", async () => {
+    const { version, name } = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string; name: string };
+
+    expect(await run(["--version"])).toBe(ExitCode.Ok);
+    expect(out.join("")).toBe(`${name} ${version} (node ${process.version})\n`);
+  });
+
+  it("accepts -v and the bare `version` command too", async () => {
+    for (const argv of [["-v"], ["version"]]) {
+      out.length = 0;
+      expect(await run(argv)).toBe(ExitCode.Ok);
+      expect(out.join("")).toContain(renderVersion());
+    }
+  });
+
+  // Root position only: `agent --version` is not a question about the agent, and
+  // must not be swallowed as one.
+  it("does not answer a version flag after a command", async () => {
+    expect(await run(["agent", "--version"])).toBe(ExitCode.Config);
+    expect(out.join("")).not.toContain("node ");
+  });
+
+  it("offers it in the root help", () => {
+    expect(renderHelp()).toContain("--version");
+  });
+
+  it("sends the version to stdout and nothing to stderr", async () => {
+    await run(["--version"]);
+    expect(err.join("")).toBe("");
   });
 });
 

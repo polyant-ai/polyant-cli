@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+import { readFileSync } from "node:fs";
 import type { Command } from "./command.js";
 import { agentCommand } from "./commands/agent.js";
 import { adminCommands } from "./commands/admin.js";
@@ -56,11 +57,40 @@ export function renderHelp(): string {
     "",
     "Usage: polyant-cli <command> [args]",
     "",
+    "  --version    print the version and exit",
+    "",
     ...renderChildren({ summary: "root", usage: "", children: COMMANDS }, "Commands:"),
     "",
     "Run `polyant-cli <command> --help` for a command's usage.",
   ];
   return lines.join("\n");
+}
+
+/**
+ * Read from the package manifest rather than duplicated in a constant: a second
+ * copy is one release away from disagreeing with the one npm installed.
+ *
+ * `../package.json` resolves the same way from `src/cli.ts` and from
+ * `dist/cli.js`, and npm always ships the manifest, so the built and installed
+ * paths read the file the version actually came from.
+ */
+export function renderVersion(): string {
+  const manifest = new URL("../package.json", import.meta.url);
+  try {
+    const { name, version } = JSON.parse(readFileSync(manifest, "utf8")) as { name?: unknown; version?: unknown };
+    const label = typeof version === "string" && version.length > 0 ? version : "unknown";
+    // The Node version belongs here: it is the first thing a bug report needs and
+    // the last thing anyone remembers to include.
+    return `${typeof name === "string" ? name : "@polyant-ai/cli"} ${label} (node ${process.version})`;
+  } catch {
+    // A missing or unreadable manifest must not turn `--version` into a crash.
+    return `@polyant-ai/cli unknown (node ${process.version})`;
+  }
+}
+
+function isVersionRequest(argv: readonly string[]): boolean {
+  // Root position only: `agent --version` is not a question about the agent.
+  return argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v" || argv[0] === "version");
 }
 
 function renderCommandHelp(command: Command, path: string[]): string {
@@ -120,6 +150,10 @@ function reportMissingAction(invocation: Invocation, command: Command): never {
  */
 export async function run(argv: string[]): Promise<ExitCodeValue> {
   try {
+    if (isVersionRequest(argv)) {
+      process.stdout.write(`${renderVersion()}\n`);
+      return ExitCode.Ok;
+    }
     const invocation = parseInvocation(argv, COMMANDS);
     if (invocation.path.length === 0) {
       process.stdout.write(`${renderHelp()}\n`);

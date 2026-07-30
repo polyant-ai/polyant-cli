@@ -70,6 +70,11 @@ labelled as staging. `--url` still overrides the host, because typing it is
 per-invocation intent — but it too keeps the target's key and `prod` flag, so
 prefer declaring a target over reaching for the flag.
 
+`polyant-cli --version` prints the installed version and the Node version it runs
+on — the two things a bug report needs. `-v` and `version` do the same. It reads
+the package manifest, so it cannot disagree with what npm installed, and it makes
+no network call: for the engine's version and reachability use `whoami`.
+
 ## Commands
 
 ### `polyant-cli config`
