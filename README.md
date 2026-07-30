@@ -145,6 +145,10 @@ polyant-cli --context engineering agent hooks add acme --file hook.json
 polyant-cli --context engineering agent hooks update acme <hookId> --file patch.json
 polyant-cli --context engineering agent hooks remove acme <hookId> --yes --confirm <hookId>
 
+polyant-cli --context engineering agent chat acme --message "quali sono i tuoi tool?"
+echo "riassumi la policy di reso" | polyant-cli --context engineering agent chat acme --file -
+polyant-cli --context engineering agent chat acme --message "2+2?" --expect 4
+
 polyant-cli --context engineering agent conversations list acme --limit 20
 polyant-cli --context engineering agent conversations show acme <conversationId>
 ```
@@ -163,6 +167,20 @@ value, including when a flag changes nothing.
 `delete`, `channels remove`, and `hooks remove` are destructive: they require
 `--yes` plus `--confirm <slug|type|hookId>`. `--dry-run` prints the recap and
 sends nothing.
+
+`agent chat` sends one turn through the **management playground** route and
+streams the reply. Reply text goes to stdout as it arrives; steps, reasoning and
+tool calls go to stderr, so a pipe receives the answer alone. `--json` switches to
+JSON Lines — one engine frame per line, tagged with its name and carrying the
+original payload. `--expect <text>` exits `1` when the assembled reply does not
+contain that text: the tool worked, the scenario did not hold. An `error` frame
+exits `3`, because the turn never completed.
+
+It never uses `/api/instances/:slug/chat/stream`. That route is `@Public()`,
+authenticates a per-instance bearer key, and returns early when the agent has
+`authEnabled` false — a management console must hold no runtime key and must not
+depend on an agent being open. **The playground route is a pending engine
+contract**, so this command answers `404` until it lands.
 
 Channel and hook configuration is accepted only from a named file or stdin
 (`--file -`), never from an inline flag where a secret would land in shell

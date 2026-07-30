@@ -175,8 +175,14 @@ export async function request(target: ResolvedTarget, opts: RequestOptions): Pro
   return { status: res.status, raw, body };
 }
 
-/** One decoded `data:` payload of a Server-Sent Events stream. */
+/** One decoded frame of a Server-Sent Events stream. */
 export interface StreamEvent {
+  /**
+   * The `event:` name when the producer sent one. The activity stream emits bare
+   * `data:` frames; the chat stream names every frame, and dropping the name
+   * would make an error indistinguishable from a token of the reply.
+   */
+  event?: string;
   data: string;
 }
 
@@ -199,12 +205,13 @@ async function* parseSse(body: ReadableStream<Uint8Array>): AsyncGenerator<Strea
     while (boundary !== -1) {
       const frame = buffered.slice(0, boundary);
       buffered = buffered.slice(boundary + 2);
-      const data = frame
-        .split("\n")
+      const lines = frame.split("\n");
+      const name = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+      const data = lines
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).trimStart())
         .join("\n");
-      if (data.length > 0) yield { data };
+      if (data.length > 0) yield { ...(name === undefined || name === "" ? {} : { event: name }), data };
       boundary = buffered.indexOf("\n\n");
     }
   }

@@ -230,6 +230,12 @@ async function collect(stream: AsyncIterable<{ data: string }>): Promise<string[
   return seen;
 }
 
+async function collectNamed(stream: AsyncIterable<{ event?: string; data: string }>): Promise<[string | undefined, string][]> {
+  const seen: [string | undefined, string][] = [];
+  for await (const event of stream) seen.push([event.event, event.data]);
+  return seen;
+}
+
 describe("requestStream", () => {
   it("should_yield_each_data_event_and_drop_heartbeat_comments", async () => {
     vi.stubGlobal(
@@ -241,6 +247,25 @@ describe("requestStream", () => {
 
     expect(stream.status).toBe(200);
     expect(await collect(stream.events)).toEqual(['{"id":"1"}', '{"id":"2"}']);
+  });
+
+  // The chat stream names every frame; an unnamed error would be printed as if
+  // it were a token of the reply.
+  it("should_carry_the_event_name_when_the_producer_sends_one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse('event: text-delta\ndata: {"text":"hi"}\n\nevent: error\ndata: {"message":"boom"}\n\ndata: {"bare":true}\n\n'),
+      ),
+    );
+
+    const stream = await requestStream(TARGET, { path: "/api/instances/acme/playground/chat/stream", timeoutMs: 0 });
+
+    expect(await collectNamed(stream.events)).toEqual([
+      ["text-delta", '{"text":"hi"}'],
+      ["error", '{"message":"boom"}'],
+      [undefined, '{"bare":true}'],
+    ]);
   });
 
   it("should_join_a_multi_line_data_payload_without_reserialising_it", async () => {

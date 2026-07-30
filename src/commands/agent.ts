@@ -28,6 +28,7 @@ import {
   type ServiceDependencies,
 } from "../runtime/service.js";
 import type { ResolvedScope } from "../runtime/scope.js";
+import { chat, CHAT_USAGE } from "./agent-chat.js";
 import { createMonitorCommand } from "./monitor.js";
 
 /** Kept as a name of its own so the agent tests read as agent tests. */
@@ -734,6 +735,11 @@ const LEAVES: Record<string, Record<string, Leaf> | Leaf> = {
       action: hooksRemove,
       mutates: true,
     },
+  },
+  chat: {
+    summary: "send one turn to an agent and stream the reply",
+    usage: CHAT_USAGE,
+    action: chat,
   },
   logs: {
     summary: "list or follow this agent's recorded tool events",
