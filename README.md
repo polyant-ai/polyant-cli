@@ -114,11 +114,17 @@ The engine publishes the contract it actually serves at `GET /api/openapi.json`
 command starts answering `404` or `403`.
 
 One family is deliberately absent. Every `/api/platform/*` route — platform
-plugins, platform skills, deployment-wide analytics and audit logs — accepts a
-**session** credential only, never `X-Polyant-Key`. A management key is org-scoped
-by construction and can never be a platform admin, so those surfaces are
-unreachable from any CLI, not merely unimplemented. They are administered from the
-web console.
+plugins, platform skills, deployment-wide analytics and audit logs — is declared
+`@RequireRole("platform_admin")`, and a management key carries no role at all: it
+is org-scoped by construction, and `ServicePrincipal` has no `role` field for the
+engine's `RoleGuard` to match.
+
+The key is not rejected at the door. `AuthGuard` validates it and resolves the
+principal exactly as it does everywhere else; the guard immediately after it
+refuses the route. So the answer is **`403 "Insufficient role"`** — exit code `2`,
+not `401` — and no key, however permissioned, can change it. Those surfaces are
+unreachable from any CLI rather than unimplemented here, and are administered from
+the web console.
 
 `polyant-cli whoami` is the check: it reports whether the instance answers, the
 permissions the key actually holds, and the workspaces it may address. A command
