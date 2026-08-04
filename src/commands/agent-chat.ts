@@ -5,11 +5,18 @@ import { assertKnown, takeValue } from "../runtime/flags.js";
 import { callStream, scopeFor, type ServiceDependencies } from "../runtime/service.js";
 
 /**
- * The management-key playground stream. It is deliberately NOT
- * `/api/instances/:slug/chat/stream`: that route is `@Public()`, authenticates a
- * per-instance bearer key, and returns early when the agent has `authEnabled`
- * false. A management console must not hold a runtime key, and must not depend on
- * an agent being open.
+ * The playground stream. It is an ALIAS of `/api/instances/:slug/chat/stream`,
+ * not a management lane beside it: the engine marks both `@Public()` and both
+ * authenticate the same way — a per-instance bearer key, gated on the agent's own
+ * `authEnabled` flag. The management key is not consulted here.
+ *
+ * The consequence, and it is the opposite of what this comment used to claim:
+ * against an agent with `authEnabled` true, `agent chat` gets a 401, because the
+ * CLI holds no runtime key. Against one with the flag off the turn is admitted by
+ * the ABSENCE of auth, not by the management key. The alias is still the path to
+ * address — the engine documents it for exactly this consumer — but it grants
+ * nothing the other path does not. `RequestOptions.bearer` is the seam for a
+ * runtime key if `agent chat` ever needs to reach a closed agent.
  */
 export const PLAYGROUND_PATH = (slug: string) => `/api/instances/${encodeURIComponent(slug)}/playground/chat/stream`;
 
@@ -187,9 +194,9 @@ export async function chat(args: string[], context: CommandContext | undefined, 
 
 export const CHAT_USAGE = `Usage: polyant-cli agent chat <slug> (--message <text> | --file <path|->) [options]
 
-Sends one turn to the agent's playground with the management key and streams the
-reply. Reply text goes to stdout as it arrives; steps, reasoning and tool calls
-go to stderr, so a pipe receives the answer alone.
+Sends one turn to the agent's playground stream. Reply text goes to stdout as it
+arrives; steps, reasoning and tool calls go to stderr, so a pipe receives the
+answer alone.
 
 Options:
   --message <text>       the user message
@@ -199,9 +206,9 @@ Options:
   --temperature <n>      override the agent's temperature for this turn
   --json                 emit JSON Lines: one engine frame per line, unmodified
 
-This uses the management playground route, never the per-instance chat route:
-the CLI holds no runtime agent key and must not depend on an agent having
-authEnabled false.`;
+The playground route is an alias of the per-instance chat route, with the same
+per-agent authentication: it does NOT honour the management key. An agent with
+authEnabled true answers 401 here, because the CLI holds no runtime agent key.`;
 
 export function chatCommand(deps: ServiceDependencies): Command {
   return {

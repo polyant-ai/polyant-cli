@@ -15,7 +15,6 @@ import type { Command, CommandContext } from "../command.js";
 import { ConfigError } from "../exit.js";
 import { writeCompositeJson, writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
-import { confirmMutation, type MutationPlan } from "../runtime/confirm.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
 import {
   call,
@@ -28,47 +27,15 @@ import {
   wantsJson,
   type ServiceDependencies,
 } from "../runtime/service.js";
+import { buildNode, type Node } from "../runtime/tree.js";
+import { preflight, reportWrite, requireSlug } from "../runtime/workspace.js";
 import type { ResolvedScope } from "../runtime/scope.js";
+import { AGENT_FAMILY_EXTRAS } from "./agent-ops.js";
 import { chat, CHAT_USAGE } from "./agent-chat.js";
 import { createMonitorCommand } from "./monitor.js";
 
 /** Kept as a name of its own so the agent tests read as agent tests. */
 export type AgentCommandDependencies = ServiceDependencies;
-
-function planScope(scope: ResolvedScope): MutationPlan["scope"] {
-  return {
-    target: scope.target.name,
-    prod: scope.target.prod,
-    ...(scope.org === undefined ? {} : { org: scope.org }),
-    ...(scope.workspace === undefined ? {} : { workspace: scope.workspace }),
-  };
-}
-
-async function preflight(
-  deps: AgentCommandDependencies,
-  scope: ResolvedScope,
-  context: CommandContext | undefined,
-  args: readonly string[],
-  plan: Omit<MutationPlan, "scope">,
-): Promise<boolean> {
-  const confirm = takeValue(args, "--confirm");
-  const decision = await confirmMutation(
-    { ...plan, scope: planScope(scope) },
-    {
-      yes: context?.global.yes ?? false,
-      dryRun: context?.global.dryRun ?? false,
-      ...(confirm === undefined ? {} : { confirm }),
-    },
-    deps.io,
-  );
-  return decision.shouldWrite;
-}
-
-function requireSlug(args: readonly string[], action: string): string {
-  const slug = args[0];
-  if (slug === undefined || slug.startsWith("--")) throw new ConfigError(`polyant-cli agent ${action} needs an agent slug.`);
-  return slug;
-}
 
 // --- reads -----------------------------------------------------------------
 
@@ -196,11 +163,6 @@ async function remove(args: string[], context: CommandContext | undefined, deps:
 
   const res = await call(deps, scope, { method: "DELETE", path: `/api/instances/${encodeURIComponent(slug)}` });
   reportWrite(deps, context, res, `Deleted agent ${slug}.`);
-}
-
-function reportWrite(deps: AgentCommandDependencies, context: CommandContext | undefined, res: ApiResponse, message: string): void {
-  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
-  deps.io.stdout(`${message}\n`);
 }
 
 // --- prompts ---------------------------------------------------------------
@@ -757,16 +719,7 @@ async function conversationsShow(args: string[], context: CommandContext | undef
 
 // --- command tree ----------------------------------------------------------
 
-type Action = (args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies) => Promise<void>;
-
-interface Leaf {
-  readonly summary: string;
-  readonly usage: string;
-  readonly action: Action;
-  readonly mutates?: boolean;
-}
-
-const LEAVES: Record<string, Record<string, Leaf> | Leaf> = {
+const LEAVES: Record<string, Node> = {
   list: { summary: "list the agents in the workspace", usage: "Usage: polyant-cli agent list", action: list },
   show: { summary: "show one agent's configuration", usage: "Usage: polyant-cli agent show <slug>", action: show },
   create: {
@@ -906,40 +859,33 @@ while the real secret stayed in place.`,
   },
 };
 
-function toCommand(leaf: Leaf, deps: AgentCommandDependencies): Command {
-  return {
-    summary: leaf.summary,
-    usage: leaf.usage,
-    ...(leaf.mutates === true ? { supportsDryRun: true } : {}),
-    run: (args, context) => leaf.action(args, context, deps),
-  };
-}
+const AGENT_SUMMARIES: Record<string, string> = {
+  agent: "manage agents, their configuration and their conversations",
+  "agent channels": "manage an agent's channels",
+  "agent compliance": "an agent's model card, snapshots and reports",
+  "agent conversations": "manage an agent's conversations",
+  "agent events": "manage an agent's event sources",
+  "agent governance": "assign and inspect an agent's governance policies",
+  "agent hooks": "manage an agent's hooks",
+  "agent knowledge": "manage an agent's knowledge documents",
+  "agent prompt": "manage an agent's prompt",
+  "agent retention": "manage an agent's data retention",
+  "agent secrets": "manage an agent's secrets",
+  "agent skills": "manage the skills an agent has enabled",
+  "agent skills env": "manage a skill's environment on one agent",
+  "agent tasks": "manage an agent's scheduled tasks",
+  "agent tools": "manage an agent's tools",
+};
 
-function isLeaf(node: Record<string, Leaf> | Leaf): node is Leaf {
-  return "action" in node;
-}
-
+/**
+ * The families this file defines, plus the ones `agent-ops.ts` adds. Merged into
+ * ONE tree rather than registered as a second top-level command: `agent skills`
+ * and `agent tools` are the same kind of thing to whoever runs them, and which
+ * file they happen to live in is not their business.
+ */
 export function createAgentCommand(overrides: Partial<AgentCommandDependencies> = {}): Command {
   const deps = { ...processServiceDependencies, ...overrides };
-  const children: Record<string, Command> = {};
-  for (const [name, node] of Object.entries(LEAVES)) {
-    if (isLeaf(node)) {
-      children[name] = toCommand(node, deps);
-      continue;
-    }
-    const grandchildren: Record<string, Command> = {};
-    for (const [action, leaf] of Object.entries(node)) grandchildren[action] = toCommand(leaf, deps);
-    children[name] = {
-      summary: `manage an agent's ${name}`,
-      usage: `Usage: polyant-cli agent ${name} <action> [options]`,
-      children: grandchildren,
-    };
-  }
-  return {
-    summary: "manage agents, their configuration and their conversations",
-    usage: "Usage: polyant-cli agent <action> [options]",
-    children,
-  };
+  return buildNode({ ...LEAVES, ...AGENT_FAMILY_EXTRAS }, deps, ["agent"], AGENT_SUMMARIES);
 }
 
 export const agentCommand = createAgentCommand();

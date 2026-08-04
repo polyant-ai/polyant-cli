@@ -153,17 +153,28 @@ describe("workspace", () => {
     });
   });
 
-  // The engine keeps workspace ids off the wire, so the path segment is a slug.
-  it("addresses an update by slug, not by id", async () => {
-    const h = harness([response({ workspace: { slug: "labs" } })]);
+  // PATCH /workspaces/:workspaceId matches on the uuid, so the slug the user
+  // typed has to be resolved off the list before the path can be assembled.
+  it("resolves the slug to an id before addressing an update", async () => {
+    const h = harness([
+      response({ workspaces: [{ id: "ws-1", slug: "labs", name: "Labs", isDefault: false }] }),
+      response({ workspace: { slug: "labs" } }),
+    ]);
 
     await leaf(h.commands, "workspace", "update")(["labs", "--name", "Labs"], context({ org: "default", yes: true }));
 
-    expect(h.calls[0]).toMatchObject({
+    expect(h.calls[1]).toMatchObject({
       method: "PATCH",
-      path: "/api/organizations/default/workspaces/labs",
+      path: "/api/organizations/default/workspaces/ws-1",
       body: { name: "Labs" },
     });
+  });
+
+  it("names the workspace the organisation does not have", async () => {
+    const h = harness([response({ workspaces: [] })]);
+
+    await expect(leaf(h.commands, "workspace", "update")(["labs", "--name", "Labs"], context({ org: "default", yes: true })))
+      .rejects.toThrow(/has no workspace "labs"/);
   });
 
   it("refuses an update with nothing to change", async () => {
@@ -184,11 +195,14 @@ describe("workspace", () => {
   });
 
   it("deletes once --yes and --confirm agree", async () => {
-    const h = harness([response({ deleted: true })]);
+    const h = harness([
+      response({ workspaces: [{ id: "ws-1", slug: "labs", name: "Labs", isDefault: false }] }),
+      response({ deleted: true }),
+    ]);
 
     await leaf(h.commands, "workspace", "delete")(["labs", "--confirm", "labs"], context({ org: "default", yes: true }));
 
-    expect(h.calls[0]).toMatchObject({ method: "DELETE", path: "/api/organizations/default/workspaces/labs" });
+    expect(h.calls[1]).toMatchObject({ method: "DELETE", path: "/api/organizations/default/workspaces/ws-1" });
     expect(h.out.join("")).toContain("Deleted workspace labs.");
   });
 
@@ -312,6 +326,18 @@ describe("role", () => {
 
     await expect(leaf(h.commands, "role", "delete")(["r-1"], context({ org: "default", yes: true })))
       .rejects.toThrow(/--confirm r-1 is required/);
+  });
+
+  // DELETE /roles/:roleId matches on the uuid, so the key gets resolved first.
+  it("resolves the role key to an id before deleting", async () => {
+    const h = harness([
+      response({ roles: [{ id: "r-1", key: "auditor", name: "Auditor", permissions: [] }] }),
+      response({ deleted: true }),
+    ]);
+
+    await leaf(h.commands, "role", "delete")(["auditor", "--confirm", "auditor"], context({ org: "default", yes: true }));
+
+    expect(h.calls[1]).toMatchObject({ method: "DELETE", path: "/api/organizations/default/roles/r-1" });
   });
 });
 

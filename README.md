@@ -4,9 +4,12 @@
 It resolves a target and its credential, forwards requests to the management
 API, and reports results with stable exit codes.
 
-It is deliberately thin: it does not wrap the API's routes, and it does not
-validate request bodies. The engine owns those schemas, and duplicating them
-here would guarantee drift.
+It wraps the management API's routes as commands, but stops short of the request
+bodies: a structured payload arrives as `--file <path|->` and is forwarded as
+given. The engine owns those schemas, and duplicating them here would guarantee
+drift. What the CLI does own is everything around the call — resolving the target
+and the credential, recapping a write before it happens, and turning the answer
+into an exit code.
 
 ## Install
 
@@ -103,7 +106,19 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 
 | CLI | Engine | Notes |
 |---|---|---|
-| 0.1.x | the management API as of 2026-07-30 | needs `GET /api/service-context`, `x-workspace-slug`, and `POST /api/instances/:slug/playground/chat/stream` for `agent chat` |
+| 0.1.x | the management API as of 2026-08-04 | needs `GET /api/service-context`, `x-workspace-slug`, and `POST /api/instances/:slug/playground/chat/stream` for `agent chat` |
+
+The engine publishes the contract it actually serves at `GET /api/openapi.json`
+(and `packages/engine/api-index.md` in its repo), with `x-permission` and
+`x-requires-feature` on every operation. That is the thing to diff against when a
+command starts answering `404` or `403`.
+
+One family is deliberately absent. Every `/api/platform/*` route — platform
+plugins, platform skills, deployment-wide analytics and audit logs — accepts a
+**session** credential only, never `X-Polyant-Key`. A management key is org-scoped
+by construction and can never be a platform admin, so those surfaces are
+unreachable from any CLI, not merely unimplemented. They are administered from the
+web console.
 
 `polyant-cli whoami` is the check: it reports whether the instance answers, the
 permissions the key actually holds, and the workspaces it may address. A command
@@ -285,7 +300,7 @@ value, including when a flag changes nothing.
 `--yes` plus `--confirm <slug|type|hookId>`. `--dry-run` prints the recap and
 sends nothing.
 
-`agent chat` sends one turn through the **management playground** route and
+`agent chat` sends one turn through the **playground** route and
 streams the reply. Reply text goes to stdout as it arrives; steps, reasoning and
 tool calls go to stderr, so a pipe receives the answer alone. `--json` switches to
 JSON Lines — one engine frame per line, tagged with its name and carrying the
@@ -297,10 +312,15 @@ When the turn ends, the conversation the engine recorded it in is named on
 stderr, so it can be inspected with `agent conversations show` or continued with
 `--conversation <id>`.
 
-It never uses `/api/instances/:slug/chat/stream`. That route is `@Public()`,
-authenticates a per-instance bearer key, and returns early when the agent has
-`authEnabled` false — a management console must hold no runtime key and must not
-depend on an agent being open.
+`/api/instances/:slug/playground/chat/stream` is an **alias** of
+`/api/instances/:slug/chat/stream`, not a management lane beside it: the engine
+marks both `@Public()` and authenticates both the same way — a per-instance bearer
+key, gated on the agent's `authEnabled` flag. The management key is not consulted.
+So `agent chat` answers `2` (401) against an agent with `authEnabled` true,
+because the CLI holds no runtime agent key; against one with the flag off, the
+turn is admitted by the absence of auth rather than by the key. Turn the flag off
+on the agent you rehearse against, or drive a closed agent with its own key
+through `/v1/chat/completions`.
 
 `agent secrets` is how an agent's provider credentials are set — `openai_api_key`,
 `anthropic_api_key`, the `aws_provider_*` trio, and whatever else its tools and
@@ -320,6 +340,62 @@ Channel and hook configuration is accepted only from a named file or stdin
 (`--file -`), never from an inline flag where a secret would land in shell
 history. `channels show` prints config **key names** only; stored values, masked
 or not, are never echoed.
+
+The rest of an agent's surface follows the same shape — a read, and a write that
+takes its payload from a file:
+
+```bash
+polyant-cli agent skills show acme
+polyant-cli agent skills set acme --enable triage,billing --yes
+polyant-cli agent skills upgrade acme triage --yes
+printf %s "$TOKEN" | polyant-cli agent skills env set acme triage --key ZENDESK_TOKEN --file - --sensitive --yes
+
+polyant-cli agent knowledge list acme
+polyant-cli agent knowledge add acme --file faq.md --yes
+polyant-cli agent knowledge export acme > kb.json
+
+polyant-cli agent tasks list acme
+polyant-cli agent tasks create acme --file digest.json --yes
+polyant-cli agent tasks run acme <taskId> --yes
+
+polyant-cli agent events show acme
+polyant-cli agent events rotate acme <id> --yes --confirm <id>
+
+polyant-cli agent retention show acme
+polyant-cli agent retention run acme --count-only
+
+polyant-cli agent governance show acme
+polyant-cli agent compliance snapshots acme --take --yes
+
+polyant-cli agent models
+polyant-cli agent export acme > acme.json
+polyant-cli agent import --file acme.json --yes
+```
+
+Five of these carry a sharp edge worth stating plainly.
+
+`agent skills set` **replaces** the selection: a skill not listed is disabled, and
+the recap says so rather than reading as "enable these".
+
+`agent tasks run` is a real run — it calls the model and delivers to the task's
+outbound channel, exactly as the scheduler would.
+
+`agent events rotate` invalidates the current ingest token the moment the new one
+is issued, so every producer has to be updated first. The token appears once, in
+the response, which is why `events add` and `rotate` print the body whole instead
+of a one-line confirmation.
+
+`agent retention run` deletes permanently — the engine has no archive.
+`--count-only` is the **engine's** dry run, which really calls it and reports what
+it would remove; `--dry-run` is the CLI's, and sends nothing at all.
+
+`agent import` with a slug **overwrites** that agent — prompts, tools, channels and
+hooks are replaced, not merged — and needs `--confirm <slug>`. Without a slug it
+creates a new agent in the addressed workspace instead. Same body, opposite blast
+radius.
+
+`agent retention show` reports the deployment default when an agent has no policy
+of its own, because "no policy" is not "keep nothing".
 
 ### `polyant-cli monitor`
 
@@ -388,12 +464,34 @@ polyant-cli role permissions
 polyant-cli role list
 polyant-cli role show auditor
 polyant-cli role create auditor --permissions audit_log:read,analytics:read --yes
-polyant-cli role delete <roleId> --yes --confirm <roleId>
+polyant-cli role delete auditor --yes --confirm auditor
+
+polyant-cli member set-role u-1 --role admin --yes
+polyant-cli workspace bindings
+polyant-cli workspace member set labs u-1 --role member --yes
+
+polyant-cli org secrets show
+printf %s "$OPENAI_KEY" | polyant-cli org secrets set --key openai_api_key --file - --yes
+polyant-cli org plugins
 ```
 
-Workspaces are addressed by **slug**, including in the path of an update or a
-delete: the engine keeps workspace ids off the wire. Deletion is final — the
+Workspaces and roles are addressed by **slug** and **key** on the command line,
+but the engine's paths for an update or a delete take the row's uuid, so the CLI
+resolves the name off the collection first. Workspace deletion is final — the
 engine exposes no archive — so it needs `--yes` plus `--confirm <slug>`.
+
+`org secrets` is the organisation-level twin of `agent secrets`: an agent's own
+credential wins and this one is the fallback, so ten agents on one OpenAI account
+share one key. The engine only offers the keys that can legitimately apply at this
+level — an inbound credential like `auth_api_key` authenticates a caller to one
+agent and stays per-agent — and the CLI refuses anything outside that set rather
+than storing a value that would be silently ignored.
+
+`workspace bindings` is the read side of workspace-scoped RBAC, which is what
+actually decides a workspace-scoped permission. It resolves each workspace id back
+to its slug. Both it and `workspace member` are Enterprise: on a deployment
+without the licensed feature the engine answers `403`, the same shape as a missing
+permission — `whoami` lists the features so the two can be told apart.
 
 `org list` is also `org show`: a management key sees one organisation and the
 engine serves no per-organisation detail route. `member show` selects locally over
@@ -404,10 +502,71 @@ sending, so a typo fails naming the offending key instead of arriving as an
 opaque `400`. `role list` distinguishes "no **custom** roles" from "no roles" —
 the system roles are built in and are not listed here.
 
-Two limits worth knowing. `member remove` needs a **user** principal: the engine
-grants a management key no rank in the role hierarchy, so with a key it answers
-`403`; the recap says so before anything is sent. And role *assignment* is not
-exposed at all, for the same reason.
+One limit worth knowing: `member remove` needs a **user** principal, because the
+engine grants a management key no rank in the role hierarchy, so with a key it
+answers `403`; the recap says so before anything is sent.
+
+### `polyant-cli apikey`
+
+The credential the CLI itself authenticates with. A management key is a database
+row now, org-scoped and carrying an explicit permission set, presented as
+`pk_<id>_<secret>` in `X-Polyant-Key`.
+
+```bash
+polyant-cli apikey permissions
+polyant-cli apikey list
+polyant-cli apikey create ci --permissions agent:read,agent:write --yes > ci.key
+polyant-cli apikey update <keyId> --permissions agent:read --yes
+polyant-cli apikey delete <keyId> --yes --confirm <keyId>
+```
+
+`create` prints the token on **stdout alone**, once — the engine stores only its
+bcrypt hash and cannot show it again — while the recap and the warning go to
+stderr, so `> ci.key` captures the token and nothing else. `update --permissions`
+REPLACES the set rather than adding to it. Every permission is checked against the
+engine's issuable ceiling first. Enterprise, like the bindings above.
+
+### `polyant-cli skill`
+
+The organisation's skill catalog.
+
+```bash
+polyant-cli skill list [--owner organization|platform]
+polyant-cli skill show triage --content > triage.md
+polyant-cli skill set triage --file triage.md --changelog "tighter steps" --yes
+polyant-cli skill versions triage
+polyant-cli skill export > catalog.json
+polyant-cli skill import --file catalog.json --yes
+polyant-cli skill delete triage --yes --confirm triage
+```
+
+The catalog is the union of the organisation's own skills and the platform-owned
+ones granted to it, and two rows can share a name when an organisation
+deliberately overrides a platform skill — so `OWNER` is always printed and is not
+inferrable from anything else. `skill set` reads the catalog to decide whether it
+is creating or versioning, because the engine refuses a create for a name it
+already holds; `--description` is required only for the first case. `skill import`
+names on stderr anything the engine skipped, which the counts alone hide.
+
+### `polyant-cli governance`
+
+```bash
+polyant-cli governance overview
+polyant-cli governance analytics [--org]
+polyant-cli governance metadata
+polyant-cli governance policy list
+polyant-cli governance policy create --file policy.json --yes
+polyant-cli governance policy delete <id> --yes --confirm <id>
+```
+
+Three scopes, kept apart deliberately. The policy **catalog** is owned by the
+organisation. `overview`, `tools` and `metadata` answer for the addressed
+workspace or the deployment. **Assigning** a policy to an agent is a third thing
+again — `agent governance set`. Creating a policy assigns it to nothing.
+
+`governance analytics` covers the addressed workspace; `--org` aggregates every
+workspace in the organisation. `governance metadata` is the vocabulary for a
+policy payload, including which gate type belongs to which category.
 
 ### `polyant-cli whoami`
 

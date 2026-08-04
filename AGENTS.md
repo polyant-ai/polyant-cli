@@ -88,8 +88,12 @@ its job. Use `monitor status` when you need a gate that fails.
 | is it healthy | `monitor status` — exits non-zero when a probe fails |
 | what happened | `monitor events --limit 50`, `agent logs <slug>` |
 | watch it live | `monitor events --follow [--instance <slug>] [--max <n>]` |
-| cost and latency | `analytics overview`, `analytics agent <slug>` |
+| cost and latency | `analytics overview`, `analytics agent <slug>`, `analytics org` |
 | try an agent | `agent chat <slug> --message "…" [--expect "…"]` |
+| what an agent knows | `agent knowledge list <slug>`, `agent skills show <slug>` |
+| what governs an agent | `agent governance show <slug>`, `governance policy list` |
+| move an agent between instances | `agent export <slug>` → `agent import --file -` |
+| who may do what | `role list`, `workspace bindings`, `apikey list` |
 | anything not covered | `api <METHOD> <path>` |
 
 `--follow` has no deadline: bound it with `--max <n>` or you will wait forever.
@@ -105,8 +109,10 @@ Anything sensitive is read from a file or stdin, never from a flag:
 printf %s "$OPENAI_KEY" | polyant-cli agent secrets set acme --key openai_api_key --file - --yes
 ```
 
-That holds for `agent secrets set`, `channels set`, `hooks add|update`,
-`prompt set` and `api --data`. Recaps report a payload's **length and source**,
+That holds for `agent secrets set`, `org secrets set`, `agent skills env set`,
+`channels set`, `hooks add|update`, `prompt set` and `api --data`. Every structured
+payload — a hook, a channel, a scheduled task, a retention policy, a governance
+assignment, an import bundle — arrives the same way, as `--file <path|->`. Recaps report a payload's **length and source**,
 never its content. `secrets show` and `channels show` report key *names* and
 whether they are configured — the engine never serves a stored value and neither
 does the CLI.
@@ -131,6 +137,11 @@ product command validates arguments locally and names what it is about to change
 **Do not treat a `2` as transient.** Retrying a usage or permission error just
 repeats it. Read the message: it names the flag, the missing scope component, or
 the permission.
+
+**Do not confuse `--dry-run` with an engine dry run.** `--dry-run` is the CLI's:
+it prints the recap and sends nothing. `agent retention run --count-only` is the
+engine's: it really calls the engine, which reports what it *would* delete. Only
+the second one tells you anything about the data.
 
 **Do not reach for `--yes` to get past a refusal you have not read.** A refusal on
 a production target, or a missing `--confirm`, is the one place where the tool is

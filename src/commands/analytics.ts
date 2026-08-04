@@ -5,6 +5,7 @@ import { ConfigError } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
+import { ORG_NOTE, orgPath, readScope } from "../runtime/org.js";
 import { call, maybe, processServiceDependencies, scopeFor, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
 
 const RANGE_FLAGS = { value: ["--from", "--to"] } as const;
@@ -126,6 +127,19 @@ async function agent(args: string[], context: CommandContext | undefined, deps: 
   );
 }
 
+/**
+ * The organisation-wide aggregate, which `overview` is not: `/api/analytics`
+ * answers for the workspace the request addresses, and a deployment with several
+ * workspaces has no way to add those up from it. Passed through whole — the
+ * payload's shape is the answer, and it does not match the per-workspace one.
+ */
+async function organisation(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  assertKnown(args, RANGE_FLAGS, "analytics org option");
+  const { scope, org } = await readScope(deps, context);
+  const res = await call(deps, scope, { path: orgPath(org, "/analytics"), query: range(args) });
+  writeRawResponse(deps.io, res.raw);
+}
+
 export function createAnalyticsCommand(overrides: Partial<ServiceDependencies> = {}): Command {
   const deps = { ...processServiceDependencies, ...overrides };
   return {
@@ -141,6 +155,13 @@ export function createAnalyticsCommand(overrides: Partial<ServiceDependencies> =
         summary: "one agent's cost, usage and slowest tools",
         usage: "Usage: polyant-cli analytics agent <slug> [--from <iso>] [--to <iso>]",
         run: (args, context) => agent(args, context, deps),
+      },
+      org: {
+        summary: "every workspace in the organisation, aggregated",
+        usage: `Usage: polyant-cli analytics org [--from <iso>] [--to <iso>]
+
+\`overview\` answers for one workspace; this adds up all of them. ${ORG_NOTE}`,
+        run: (args, context) => organisation(args, context, deps),
       },
     },
   };
