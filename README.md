@@ -107,6 +107,21 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | CLI | Engine | Notes |
 |---|---|---|
 | 0.1.x | the management API as of 2026-08-04 | needs `GET /api/service-context`, `x-workspace-slug`, and `POST /api/instances/:slug/playground/chat/stream` for `agent chat` |
+| 0.2.x | 1.1.0 and 1.1.0-ee | adds `agent mcp`, `agent a2a`, `agent memory`, `agent optouts`, `agent events url` and `agent channels whatsapp`; `agent update` gains `--stt-provider` |
+
+Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
+`agent a2a enable` is a `400` — the field does not exist there. Everything else
+in 0.2.x works unchanged against 1.0.x.
+
+Three 1.1.0 changes are visible from here even without a new command:
+
+- `agent events show` no longer lists an ingest URL. The token it embedded lets
+  its holder drive the agent, so the engine withholds it from a `room:read`
+  caller; `agent events url` reveals it, and needs `room:write`.
+- `agent tools set` now refuses a tool name neither the registry nor the
+  catalogue knows, instead of answering `200` with the change silently undone.
+- An empty tool selection means **no tools**, where it used to mean "everything".
+  `agent tools set <slug> --none` is now literal.
 
 The engine publishes the contract it actually serves at `GET /api/openapi.json`
 (and `packages/engine/api-index.md` in its repo), with `x-permission` and
@@ -365,7 +380,26 @@ polyant-cli agent tasks create acme --file digest.json --yes
 polyant-cli agent tasks run acme <taskId> --yes
 
 polyant-cli agent events show acme
+polyant-cli agent events url acme <id>
 polyant-cli agent events rotate acme <id> --yes --confirm <id>
+
+polyant-cli agent mcp show acme
+polyant-cli agent mcp set acme github --file github.json --yes
+polyant-cli agent mcp test acme --file github.json --server github
+polyant-cli agent mcp remove acme github --yes --confirm github
+
+polyant-cli agent a2a show acme
+polyant-cli agent a2a enable acme --yes
+polyant-cli agent a2a card acme
+
+polyant-cli agent memory list acme --search email
+polyant-cli agent memory clear acme --yes --confirm acme
+
+polyant-cli agent optouts list acme
+polyant-cli agent optouts opt-out acme --channel whatsapp --contact +391234567890 --yes
+
+polyant-cli agent channels whatsapp url acme
+polyant-cli agent channels whatsapp rotate acme --yes --confirm acme
 
 polyant-cli agent retention show acme
 polyant-cli agent retention run acme --count-only
@@ -378,7 +412,7 @@ polyant-cli agent export acme > acme.json
 polyant-cli agent import --file acme.json --yes
 ```
 
-Five of these carry a sharp edge worth stating plainly.
+Several of these carry a sharp edge worth stating plainly.
 
 `agent skills set` **replaces** the selection: a skill not listed is disabled, and
 the recap says so rather than reading as "enable these".
@@ -402,6 +436,34 @@ radius.
 
 `agent retention show` reports the deployment default when an agent has no policy
 of its own, because "no policy" is not "keep nothing".
+
+`agent mcp set` is a **replacement**, not a patch: the payload needs `name`,
+`url`, `authMode` (`none`, `static` or `oauth`) and `config` together, and what
+it omits is not kept. The one exception is a credential re-submitted as `••••`,
+which the engine restores from what it already holds — so `mcp show --json` can
+be edited and sent back without re-typing a token. `mcp show` prints config **key
+names** only, the same rule `channels show` follows. `mcp test` persists nothing
+and asks for no confirmation, but it does dial the URL, which is why the engine
+gates it on `channel:write`; `--server <slug>` lets it borrow a saved server's
+credential instead of probing with none.
+
+`agent a2a enable` is an exposure decision, which is why it is not a flag on
+`agent update`. The agent card is served **unauthenticated** whenever A2A is on,
+and the JSON-RPC endpoint is gated by the agent's own `authEnabled` and nothing
+else — so enabling A2A on an agent with authentication off publishes an open LLM
+endpoint. The command says so before it writes.
+
+`agent memory clear` and `agent optouts opt-in` both need their subject named
+twice. The first is permanent and has no archive. The second resumes messaging
+someone who asked to stop: do it on their own request, not to tidy a list.
+
+`agent channels whatsapp url` and `rotate` exist because a channel authenticating
+to Twilio with a revocable **API Key** cannot be verified by Twilio's signature —
+Twilio signs with the account Auth Token alone — so it receives on a URL carrying
+a server-generated secret instead. That secret is bearer-equivalent: `channels
+show` withholds it, both routes need `channel:write`, and a `404` means the
+channel is not in API-Key mode rather than that the agent is missing. Rotating
+invalidates the current URL immediately; update the Twilio Console first.
 
 ### `polyant-cli monitor`
 

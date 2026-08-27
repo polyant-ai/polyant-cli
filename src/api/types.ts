@@ -49,6 +49,14 @@ export interface AgentDetail extends AgentSummary {
   model: string | null;
   memoryEnabled: boolean;
   knowledgeEnabled: boolean;
+  /**
+   * Whether the agent is exposed over A2A. Optional: an engine older than 1.1.0
+   * does not report it, and a missing field must read as "not exposed" rather
+   * than as "unknown" — the panel and the CLI both default it to false.
+   */
+  a2aEnabled?: boolean;
+  /** The speech-to-text provider, "disabled" included. Absent before 1.0.2. */
+  sttProvider?: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 }

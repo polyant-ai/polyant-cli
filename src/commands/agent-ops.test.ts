@@ -217,6 +217,17 @@ describe("agent events", () => {
     expect(h.err.join("")).toContain("Update every producer before rotating");
   });
 
+  // Since 1.1.0 the list is a DTO that deliberately omits the token, so the URL
+  // has one route of its own and the CLI needs a command for it.
+  it("reveals one source's ingest URL through the dedicated route", async () => {
+    const h = harness([response({ webhookUrl: "http://localhost:4000/webhooks/es_abc" })]);
+
+    await leaf(h.command, ["events", "url"])(["acme", "s-1"], context());
+
+    expect(h.calls[0]).toMatchObject({ path: "/api/instances/acme/event-sources/s-1/webhook-url" });
+    expect(h.out.join("")).toContain("es_abc");
+  });
+
   it("reads definitions without --file and writes with it", async () => {
     const read = harness([response({ definitions: [] })]);
     await leaf(read.command, ["events", "definitions"])(["acme", "s-1"], context());

@@ -248,6 +248,22 @@ describe("agent update", () => {
     const h = harness([]);
     await expect(leaf(h.command, ["update"])(["acme"], context({ yes: true }))).rejects.toThrow(/at least one field/);
   });
+
+  it("sets the speech-to-text provider, disabled included", async () => {
+    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+
+    await leaf(h.command, ["update"])(["acme", "--stt-provider", "disabled"], context({ yes: true }));
+
+    expect(h.calls[1]).toMatchObject({ method: "PATCH", path: "/api/instances/acme", body: { sttProvider: "disabled" } });
+  });
+
+  it("refuses a speech-to-text provider the engine does not have", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["update"])(["acme", "--stt-provider", "whisper"], context({ yes: true }))).rejects.toThrow(
+      /openai, aws, deepgram, disabled/,
+    );
+  });
 });
 
 describe("agent delete", () => {
@@ -385,6 +401,40 @@ describe("agent channels", () => {
 
     await expect(leaf(h.command, ["channels", "remove"])(["acme", "telegram"], context({ yes: true })))
       .rejects.toThrow(/--confirm telegram is required/);
+  });
+
+  // A WhatsApp channel authenticating with a Twilio API Key receives on a URL
+  // carrying a server-generated secret. It is withheld from `channels show`, so
+  // it has a reveal route of its own.
+  describe("whatsapp", () => {
+    it("reveals the inbound webhook URL", async () => {
+      const h = harness([response({ webhookUrl: "http://localhost:4000/webhooks/twilio/acme/whatsapp/s3cret" })]);
+
+      await leaf(h.command, ["channels", "whatsapp", "url"])(["acme"], context());
+
+      expect(h.calls[0]).toMatchObject({ path: "/api/instances/acme/channels/whatsapp/webhook-url" });
+      expect(h.out.join("")).toContain("s3cret");
+    });
+
+    it("warns that rotating breaks the URL Twilio currently posts to", async () => {
+      const h = harness([response({ webhookUrl: "http://localhost:4000/webhooks/twilio/acme/whatsapp/new" })]);
+
+      await leaf(h.command, ["channels", "whatsapp", "rotate"])(["acme", "--confirm", "acme"], context({ yes: true }));
+
+      expect(h.err.join("")).toContain("Twilio Console");
+      expect(h.calls[0]).toMatchObject({
+        method: "POST",
+        path: "/api/instances/acme/channels/whatsapp/rotate-webhook-secret",
+      });
+    });
+
+    it("needs the agent named twice before rotating", async () => {
+      const h = harness([]);
+
+      await expect(leaf(h.command, ["channels", "whatsapp", "rotate"])(["acme"], context({ yes: true }))).rejects.toThrow(
+        /--confirm acme/,
+      );
+    });
   });
 });
 

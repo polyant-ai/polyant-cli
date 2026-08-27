@@ -555,6 +555,21 @@ async function eventsAdd(args: string[], context: CommandContext | undefined, de
   writeRawResponse(deps.io, res.raw);
 }
 
+/**
+ * The ingest URL of one source. It has a route of its own because the list
+ * deliberately no longer carries it: the token it embeds lets its holder inject
+ * events into the agent, so listing (`room:read`) and revealing (`room:write`)
+ * are different questions with different answers.
+ */
+async function eventsUrl(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const slug = requireSlug(args, "events url");
+  const id = requireSecond(args, "events url", "event source id");
+  assertKnown(args.slice(2), {}, "agent events url option");
+  const scope = await scopeFor(deps, context, "read");
+  const res = await call(deps, scope, { path: agentPath(slug, `/event-sources/${encodeURIComponent(id)}/webhook-url`) });
+  writeRawResponse(deps.io, res.raw);
+}
+
 async function eventsUpdate(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   const slug = requireSlug(args, "events update");
   const id = requireSecond(args, "events update", "event source id");
@@ -1146,14 +1161,29 @@ A real run: it calls the model and delivers to the task's outbound channel.`,
   events: {
     show: {
       summary: "list an agent's event sources",
-      usage: "Usage: polyant-cli agent events show <slug>",
+      usage: `Usage: polyant-cli agent events show <slug>
+
+The ingest URL is NOT listed: the token it embeds lets its holder drive the
+agent, so the engine withholds it from a read-only caller. Reveal one with
+\`agent events url <slug> <id>\`.`,
       action: eventsShow,
     },
     add: {
       summary: "add an event source from a JSON file or stdin",
-      usage: "Usage: polyant-cli agent events add <slug> --file <path|->\n\nThe response carries the ingest token and is printed whole: it is the only copy.",
+      usage: `Usage: polyant-cli agent events add <slug> --file <path|->
+
+The response carries the ingest token and is printed whole. It is not the only
+copy — \`agent events url\` reveals it again — but every later look needs
+room:write, so keep this one.`,
       action: eventsAdd,
       mutates: true,
+    },
+    url: {
+      summary: "reveal one event source's ingest URL",
+      usage: `Usage: polyant-cli agent events url <slug> <id>
+
+Needs room:write, not room:read: the URL embeds a bearer-equivalent token.`,
+      action: eventsUrl,
     },
     update: {
       summary: "replace an event source from a JSON file or stdin",

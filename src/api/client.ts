@@ -22,7 +22,7 @@ export const WORKSPACE_HEADER = "x-workspace-slug";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Routes that live outside /api, which callers get wrong systematically. */
-const TOP_LEVEL_PREFIXES = "/health, /v1, /memories, /channels/http, /webhooks, /oauth";
+const TOP_LEVEL_PREFIXES = "/health, /v1, /a2a, /memories, /channels/http, /webhooks, /oauth";
 
 export interface RequestOptions {
   method?: string;

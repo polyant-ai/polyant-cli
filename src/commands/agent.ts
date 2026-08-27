@@ -31,6 +31,8 @@ import { buildNode, type Node } from "../runtime/tree.js";
 import { preflight, reportWrite, requireSlug } from "../runtime/workspace.js";
 import type { ResolvedScope } from "../runtime/scope.js";
 import { AGENT_FAMILY_EXTRAS } from "./agent-ops.js";
+import { AGENT_DATA_EXTRAS } from "./agent-data.js";
+import { AGENT_INTEROP_EXTRAS } from "./agent-interop.js";
 import { chat, CHAT_USAGE } from "./agent-chat.js";
 import { createMonitorCommand } from "./monitor.js";
 
@@ -73,6 +75,7 @@ async function show(args: string[], context: CommandContext | undefined, deps: A
     { label: "provider", value: text(agent.provider) },
     { label: "model", value: text(agent.model) },
     { label: "authEnabled", value: text(agent.authEnabled) },
+    { label: "a2aEnabled", value: agent.a2aEnabled === true ? "true" : "false" },
     { label: "memoryEnabled", value: text(agent.memoryEnabled) },
     { label: "knowledgeEnabled", value: text(agent.knowledgeEnabled) },
     { label: "updatedAt", value: text(agent.updatedAt) },
@@ -112,7 +115,25 @@ function optional(options: readonly string[], flag: string, field: string): Reco
   return value === undefined ? {} : { [field]: value };
 }
 
-const UPDATE_FLAGS = { value: ["--name", "--description", "--provider", "--model", "--status", "--confirm"] } as const;
+const UPDATE_FLAGS = {
+  value: ["--name", "--description", "--provider", "--model", "--status", "--stt-provider", "--confirm"],
+} as const;
+
+/**
+ * The engine's own union. "disabled" is the one that matters: an unrecognised
+ * value used to fall back to Whisper silently, so an operator who wanted voice
+ * messages off had no way to say so.
+ */
+const STT_PROVIDERS = ["openai", "aws", "deepgram", "disabled"] as const;
+
+function sttProvider(options: readonly string[]): Record<string, string> {
+  const value = takeValue(options, "--stt-provider");
+  if (value === undefined) return {};
+  if (!(STT_PROVIDERS as readonly string[]).includes(value)) {
+    throw new ConfigError(`--stt-provider must be one of ${STT_PROVIDERS.join(", ")}.`);
+  }
+  return { sttProvider: value };
+}
 
 async function update(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "update");
@@ -124,6 +145,7 @@ async function update(args: string[], context: CommandContext | undefined, deps:
     ...optional(options, "--provider", "provider"),
     ...optional(options, "--model", "model"),
     ...optional(options, "--status", "status"),
+    ...sttProvider(options),
   };
   if (Object.keys(body).length === 0) throw new ConfigError("polyant-cli agent update needs at least one field to change.");
 
@@ -402,6 +424,52 @@ async function channelsRemove(args: string[], context: CommandContext | undefine
     path: `/api/instances/${encodeURIComponent(slug)}/channels/${encodeURIComponent(type)}`,
   });
   reportWrite(deps, context, res, `Removed channel ${type} from ${slug}.`);
+}
+
+// --- whatsapp inbound ------------------------------------------------------
+
+/**
+ * A WhatsApp channel authenticating to Twilio with a revocable API Key cannot
+ * be verified by Twilio's signature — Twilio signs with the account Auth Token
+ * alone — so it receives on a URL carrying a server-generated secret instead.
+ * That secret is bearer-equivalent, so `channels show` withholds it and these
+ * two routes, both `channel:write`, are the only way to see or replace it.
+ *
+ * Both answer 404 when the channel is not in API-Key mode, which is the engine
+ * saying "there is no such secret here", not "there is no such agent".
+ */
+function whatsappPath(slug: string, rest: string): string {
+  return `/api/instances/${encodeURIComponent(slug)}/channels/whatsapp/${rest}`;
+}
+
+async function whatsappUrl(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "channels whatsapp url");
+  assertKnown(args.slice(1), {}, "agent channels whatsapp url option");
+  const scope = await scopeFor(deps, context, "read");
+  const res = await call(deps, scope, { path: whatsappPath(slug, "webhook-url") });
+  // Printed whole rather than summarised: the URL IS the answer, and it is the
+  // one thing the operator has to paste elsewhere verbatim.
+  writeRawResponse(deps.io, res.raw);
+}
+
+async function whatsappRotate(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "channels whatsapp rotate");
+  const options = args.slice(1);
+  assertKnown(options, { value: ["--confirm"] }, "agent channels whatsapp rotate option");
+  const scope = await scopeFor(deps, context);
+  const plan = {
+    title: `Rotate the WhatsApp inbound secret of ${slug}`,
+    changes: [
+      "The current inbound URL stops working immediately.",
+      "Paste the new URL into the Twilio Console before the next inbound message, or it is lost.",
+    ],
+    destructive: { confirm: slug },
+  };
+  if (!(await preflight(deps, scope, context, options, plan))) return;
+
+  const res = await call(deps, scope, { method: "POST", path: whatsappPath(slug, "rotate-webhook-secret") });
+  // The response carries the new URL, so it is printed whole even in text mode.
+  writeRawResponse(deps.io, res.raw);
 }
 
 // --- secrets ---------------------------------------------------------------
@@ -730,7 +798,12 @@ const LEAVES: Record<string, Node> = {
   },
   update: {
     summary: "change an agent's name, description, status, provider or model",
-    usage: "Usage: polyant-cli agent update <slug> [--name <name>] [--description <text>] [--status <status>] [--provider <name>] [--model <id>]",
+    usage: `Usage: polyant-cli agent update <slug> [--name <name>] [--description <text>] [--status <status>]
+                                 [--provider <name>] [--model <id>] [--stt-provider <p>]
+
+--stt-provider is one of openai, aws, deepgram or disabled. "disabled" is a real
+setting, not an absent one: the agent then tells a sender that voice messages
+are not supported instead of transcribing them.`,
     action: update,
     mutates: true,
   },
@@ -783,6 +856,26 @@ const LEAVES: Record<string, Node> = {
       usage: "Usage: polyant-cli agent channels remove <slug> <type> --yes --confirm <type>",
       action: channelsRemove,
       mutates: true,
+    },
+    whatsapp: {
+      url: {
+        summary: "reveal the inbound webhook URL of an API-Key WhatsApp channel",
+        usage: `Usage: polyant-cli agent channels whatsapp url <slug>
+
+The URL carries a server-generated secret and is bearer-equivalent, so it needs
+channel:write and \`channels show\` withholds it. A 404 means the channel is not
+in Twilio API-Key mode — an Auth Token channel has no such URL.`,
+        action: whatsappUrl,
+      },
+      rotate: {
+        summary: "issue a new inbound webhook secret, invalidating the current URL",
+        usage: `Usage: polyant-cli agent channels whatsapp rotate <slug> --yes --confirm <slug>
+
+The old URL stops working immediately and the new one is in the response — the
+only copy. Update the Twilio Console before the next inbound message.`,
+        action: whatsappRotate,
+        mutates: true,
+      },
     },
   },
   secrets: {
@@ -861,13 +954,18 @@ while the real secret stayed in place.`,
 
 const AGENT_SUMMARIES: Record<string, string> = {
   agent: "manage agents, their configuration and their conversations",
+  "agent a2a": "expose an agent over the Agent2Agent protocol",
   "agent channels": "manage an agent's channels",
+  "agent channels whatsapp": "reveal and rotate the WhatsApp inbound webhook secret",
   "agent compliance": "an agent's model card, snapshots and reports",
   "agent conversations": "manage an agent's conversations",
   "agent events": "manage an agent's event sources",
   "agent governance": "assign and inspect an agent's governance policies",
   "agent hooks": "manage an agent's hooks",
   "agent knowledge": "manage an agent's knowledge documents",
+  "agent mcp": "equip an agent with tools from external MCP servers",
+  "agent memory": "manage what an agent has remembered",
+  "agent optouts": "manage the contacts that have opted out of this agent",
   "agent prompt": "manage an agent's prompt",
   "agent retention": "manage an agent's data retention",
   "agent secrets": "manage an agent's secrets",
@@ -885,7 +983,7 @@ const AGENT_SUMMARIES: Record<string, string> = {
  */
 export function createAgentCommand(overrides: Partial<AgentCommandDependencies> = {}): Command {
   const deps = { ...processServiceDependencies, ...overrides };
-  return buildNode({ ...LEAVES, ...AGENT_FAMILY_EXTRAS }, deps, ["agent"], AGENT_SUMMARIES);
+  return buildNode({ ...LEAVES, ...AGENT_FAMILY_EXTRAS, ...AGENT_INTEROP_EXTRAS, ...AGENT_DATA_EXTRAS }, deps, ["agent"], AGENT_SUMMARIES);
 }
 
 export const agentCommand = createAgentCommand();
