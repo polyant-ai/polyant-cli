@@ -644,3 +644,44 @@ describe("agent conversations", () => {
     expect(text).toContain("line one line two");
   });
 });
+
+describe("agent messages", () => {
+  const messages = {
+    items: [{ id: "m1", conversationId: "conv-1", role: "user", content: "hello there", createdAt: "2026-07-20T10:00:00.000Z" }],
+    total: 1,
+    limit: 100,
+    offset: 0,
+  };
+
+  it("requests the cross-conversation route for one agent", async () => {
+    const h = harness([response(messages)]);
+
+    await leaf(h.command, ["messages"])(["acme", "--role", "user", "--limit", "100"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/messages",
+      query: { instanceId: "acme", role: "user", limit: "100" },
+      workspaceSlug: "ws-1",
+    });
+    expect(h.out.join("")).toContain("hello there");
+    expect(h.err.join("")).toContain("1 of 1 messages");
+  });
+
+  it("passes the response body through unchanged with --json", async () => {
+    const h = harness([response(messages)]);
+
+    await leaf(h.command, ["messages"])(["acme"], context({ json: true }));
+
+    expect(h.out.join("")).toBe(JSON.stringify(messages));
+  });
+
+  // Usage errors (a missing agent slug) surface as ConfigError, which the CLI's
+  // top-level dispatcher maps to exit code 2 — this test file exercises actions
+  // directly, below that mapping.
+  it("without a slug is a usage error", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["messages"])([], context())).rejects.toThrow(ConfigError);
+    expect(h.request).not.toHaveBeenCalled();
+  });
+});
