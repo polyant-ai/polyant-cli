@@ -319,6 +319,71 @@ describe("monitor events as agent logs", () => {
   });
 });
 
+describe("monitor ai-logs", () => {
+  const page = {
+    items: [
+      {
+        id: "log-1",
+        provider: "anthropic",
+        model: "claude-sonnet-4",
+        tier: "standard",
+        promptTokens: 500,
+        completionTokens: 120,
+        totalTokens: 620,
+        cachedInputTokens: 0,
+        estimatedCostUsd: 0.0123,
+        durationMs: 890,
+        conversationId: "conv-1",
+        instanceId: "acme",
+        callType: "conversation",
+        outcome: "ok",
+        errorKind: null,
+        createdAt: "2026-07-29T10:00:00.000Z",
+      },
+    ],
+    total: 42,
+    limit: 10,
+    offset: 0,
+  };
+
+  it("requests the raw route with its filters", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")(["--instance", "acme", "--call-type", "conversation", "--limit", "10"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/ai-logs",
+      query: { instanceId: "acme", callType: "conversation", limit: "10" },
+    });
+  });
+
+  it("rejects an unknown option instead of dropping it", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "ai-logs")(["--nope", "x"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+  });
+
+  it("renders the cost and cache columns and reports the page size on stderr", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")([], context());
+
+    const text = h.out.join("");
+    expect(text).toContain("claude-sonnet-4");
+    expect(text).toContain("conversation");
+    expect(h.err.join("")).toContain("1 of 42 calls.");
+    expect(h.err.join("")).toContain("analytics aggregate excludes them");
+  });
+
+  it("passes the response through unchanged with --json", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")([], context({ json: true }));
+
+    expect(h.out.join("")).toBe(JSON.stringify(page));
+  });
+});
+
 describe("monitor scope", () => {
   // Monitoring is read-only, and a management key cannot discover its workspaces,
   // so it falls back to the engine's default resolution and says so.

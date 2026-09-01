@@ -233,6 +233,70 @@ export interface AuditStatsResponse {
   byAction: { action: string; count: number }[];
 }
 
+/** GET /api/ai-logs — one row per LLM call, unfiltered by outcome. */
+export interface AiLogRow {
+  id: string;
+  provider: string;
+  model: string;
+  tier: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  estimatedCostUsd: number;
+  durationMs: number;
+  conversationId: string | null;
+  instanceId: string | null;
+  callType: string;
+  outcome: string;
+  errorKind: string | null;
+  createdAt: string;
+}
+
+export interface AiLogListResponse {
+  items: AiLogRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** GET /api/pipeline-traces — one row per turn, with its phase breakdown. */
+export interface TraceRow {
+  id: string;
+  conversationId: string;
+  instanceId: string;
+  channel: string;
+  llmCallMs: number | null;
+  totalMs: number;
+  ttfbMs: number | null;
+  model: string | null;
+  provider: string | null;
+  createdAt: string;
+}
+
+export interface TraceListResponse {
+  items: TraceRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** GET /api/messages — messages across one agent's conversations. */
+export interface MessageRow {
+  id: string;
+  conversationId: string;
+  role: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface MessageListResponse {
+  items: MessageRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 /**
  * One event of GET /api/activity-stream/live. Only the fields the live view
  * prints are declared; the engine caps every preview server-side.
