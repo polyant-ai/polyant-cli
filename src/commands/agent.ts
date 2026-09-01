@@ -7,6 +7,7 @@ import type {
   ConversationsResponse,
   HooksResponse,
   ListAgentsResponse,
+  MessageListResponse,
   PromptsResponse,
   SecretsResponse,
   ToolsResponse,
@@ -785,6 +786,52 @@ async function conversationsShow(args: string[], context: CommandContext | undef
   );
 }
 
+/**
+ * Messages across ALL of one agent's conversations, in one call.
+ *
+ * `agent conversations show` reads a single conversation; this reads the window.
+ * The engine requires the agent slug, which is why it is positional here.
+ */
+async function messages(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "messages");
+  const options = args.slice(1);
+  assertKnown(
+    options,
+    { value: ["--conversation", "--role", "--from", "--to", "--limit", "--offset"] },
+    "agent messages option",
+  );
+  const scope = await scopeFor(deps, context, "read");
+  const res = await call(deps, scope, {
+    path: "/api/messages",
+    query: {
+      instanceId: slug,
+      ...maybe("conversationId", takeValue(options, "--conversation")),
+      ...maybe("role", takeValue(options, "--role")),
+      ...maybe("from", takeValue(options, "--from")),
+      ...maybe("to", takeValue(options, "--to")),
+      ...maybe("limit", positiveInteger(takeValue(options, "--limit"), "--limit")),
+      ...maybe("offset", takeValue(options, "--offset")),
+    },
+  });
+  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+
+  const body = res.body as Partial<MessageListResponse> | null;
+  const items = expectArray<MessageListResponse["items"][number]>(body?.items, "GET /api/messages");
+  deps.io.stdout(
+    `${renderTable({
+      headers: ["CREATED", "CONVERSATION", "ROLE", "CONTENT"],
+      rows: items.map((item) => [
+        text(item.createdAt),
+        text(item.conversationId),
+        text(item.role),
+        text(item.content).replaceAll("\n", " ").slice(0, 80),
+      ]),
+      emptyMessage: `Agent ${slug} has no messages in this window.`,
+    })}\n`,
+  );
+  deps.io.stderr(`${items.length} of ${text(body?.total)} messages. Use --json for the untruncated content.\n`);
+}
+
 // --- command tree ----------------------------------------------------------
 
 const LEAVES: Record<string, Node> = {
@@ -949,6 +996,12 @@ while the real secret stayed in place.`,
       usage: "Usage: polyant-cli agent conversations show <slug> <conversationId> [--limit <n>]",
       action: conversationsShow,
     },
+  },
+  messages: {
+    summary: "list messages across all of an agent's conversations",
+    usage: `Usage: polyant-cli agent messages <slug> [--conversation <id>] [--role <user|assistant|system>]
+                                      [--from <iso>] [--to <iso>] [--limit <n>] [--offset <n>]`,
+    action: messages,
   },
 };
 

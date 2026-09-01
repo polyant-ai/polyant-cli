@@ -644,3 +644,78 @@ describe("agent conversations", () => {
     expect(text).toContain("line one line two");
   });
 });
+
+describe("agent messages", () => {
+  const messages = {
+    items: [{ id: "m1", conversationId: "conv-1", role: "user", content: "hello there", createdAt: "2026-07-20T10:00:00.000Z" }],
+    total: 1,
+    limit: 100,
+    offset: 0,
+  };
+
+  it("requests the cross-conversation route for one agent", async () => {
+    const h = harness([response(messages)]);
+
+    await leaf(h.command, ["messages"])(["acme", "--role", "user", "--limit", "100"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/messages",
+      query: { instanceId: "acme", role: "user", limit: "100" },
+      workspaceSlug: "ws-1",
+    });
+    expect(h.out.join("")).toContain("hello there");
+    expect(h.err.join("")).toContain("1 of 1 messages");
+  });
+
+  it("passes the response body through unchanged with --json", async () => {
+    const h = harness([response(messages)]);
+
+    await leaf(h.command, ["messages"])(["acme"], context({ json: true }));
+
+    expect(h.out.join("")).toBe(JSON.stringify(messages));
+  });
+
+  // Usage errors (a missing agent slug) surface as ConfigError, which the CLI's
+  // top-level dispatcher maps to exit code 2 — this test file exercises actions
+  // directly, below that mapping.
+  it("without a slug is a usage error", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["messages"])([], context())).rejects.toThrow(ConfigError);
+    expect(h.request).not.toHaveBeenCalled();
+  });
+
+  it("truncates table content to 80 characters and points the reader to --json", async () => {
+    const tail = "TAIL-NOT-SHOWN-IN-TABLE";
+    const long = {
+      ...messages,
+      items: [{ id: "m1", conversationId: "conv-1", role: "user", content: `${"A".repeat(80)}${tail}`, createdAt: "2026-07-20T10:00:00.000Z" }],
+    };
+    const h = harness([response(long)]);
+
+    await leaf(h.command, ["messages"])(["acme"], context());
+
+    const table = h.out.join("");
+    // Pins the actual cutoff: the first 80 characters must survive, and the tail
+    // — anything past the cutoff — must not, so a wrong-length regression fails.
+    expect(table).toContain("A".repeat(80));
+    expect(table).not.toContain(tail);
+    // The disclosure that content is truncated must itself be tested, not just
+    // the count next to it — otherwise the pointer to --json can be dropped
+    // silently.
+    expect(h.err.join("")).toContain("--json");
+  });
+
+  it("does not truncate content in the --json path", async () => {
+    const tail = "TAIL-NOT-SHOWN-IN-TABLE";
+    const long = {
+      ...messages,
+      items: [{ id: "m1", conversationId: "conv-1", role: "user", content: `${"A".repeat(80)}${tail}`, createdAt: "2026-07-20T10:00:00.000Z" }],
+    };
+    const h = harness([response(long)]);
+
+    await leaf(h.command, ["messages"])(["acme"], context({ json: true }));
+
+    expect(h.out.join("")).toContain(tail);
+  });
+});

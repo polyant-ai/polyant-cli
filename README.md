@@ -108,6 +108,7 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 |---|---|---|
 | 0.1.x | the management API as of 2026-08-04 | needs `GET /api/service-context`, `x-workspace-slug`, and `POST /api/instances/:slug/playground/chat/stream` for `agent chat` |
 | 0.2.x | 1.1.0 and 1.1.0-ee | adds `agent mcp`, `agent a2a`, `agent memory`, `agent optouts`, `agent events url` and `agent channels whatsapp`; `agent update` gains `--stt-provider` |
+| 0.3.x | the first engine release after 1.1.0-ee | adds `monitor ai-logs`, `monitor traces` and `agent messages`; the three routes merged to the engine's develop on 2026-09-01, so against 1.1.0-ee or older all three answer `404` |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
 `agent a2a enable` is a `400` — the field does not exist there. Everything else
@@ -304,7 +305,12 @@ polyant-cli --context engineering agent chat acme --message "2+2?" --expect 4
 
 polyant-cli --context engineering agent conversations list acme --limit 20
 polyant-cli --context engineering agent conversations show acme <conversationId>
+polyant-cli --context engineering agent messages acme --from 2026-08-31 --limit 200
 ```
+
+`agent messages` reads every conversation of one agent in a single call, where
+`agent conversations show` reads one. The table truncates content to 80
+characters; `--json` carries it whole.
 
 Reads print an aligned table or a labelled record; `--json` passes the engine's
 response body through byte-for-byte, so a pipeline never sees re-serialised
@@ -475,7 +481,15 @@ polyant-cli --context engineering monitor status
 polyant-cli --context engineering monitor events --tool web_search --limit 50
 polyant-cli --context engineering monitor events --follow --instance acme
 polyant-cli --context engineering monitor stats --from 2026-07-01
+polyant-cli --context engineering monitor ai-logs --instance acme --call-type conversation --limit 50
+polyant-cli --context engineering monitor traces --instance acme --from 2026-09-01
 ```
+
+`monitor ai-logs` and `monitor traces` serve the rows the analytics aggregates
+are computed from — one per LLM call and one per turn. `ai-logs` includes calls
+that FAILED, which `analytics overview` excludes: summing its cost and
+comparing the two yields a real difference, not a bug. Pass `--outcome ok` to
+reproduce the aggregate's basis.
 
 `status` probes `/health` and the agent list **independently**: whichever one the
 engine will not serve is reported as `unavailable — <error>`, never as a zero, so

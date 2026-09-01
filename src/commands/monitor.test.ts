@@ -319,6 +319,162 @@ describe("monitor events as agent logs", () => {
   });
 });
 
+describe("monitor ai-logs", () => {
+  const page = {
+    items: [
+      {
+        id: "log-1",
+        provider: "anthropic",
+        model: "claude-sonnet-4",
+        tier: "standard",
+        promptTokens: 500,
+        completionTokens: 120,
+        totalTokens: 620,
+        cachedInputTokens: 0,
+        estimatedCostUsd: 0.0123,
+        durationMs: 890,
+        conversationId: "conv-1",
+        instanceId: "acme",
+        callType: "conversation",
+        outcome: "ok",
+        errorKind: null,
+        createdAt: "2026-07-29T10:00:00.000Z",
+      },
+    ],
+    total: 42,
+    limit: 10,
+    offset: 0,
+  };
+
+  it("requests the raw route with its filters", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")(["--instance", "acme", "--call-type", "conversation", "--limit", "10"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/ai-logs",
+      query: { instanceId: "acme", callType: "conversation", limit: "10" },
+    });
+  });
+
+  it("rejects an unknown option instead of dropping it", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "ai-logs")(["--nope", "x"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+  });
+
+  it("rejects a non-positive --limit before any request", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "ai-logs")(["--limit", "-5"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("renders the cost and cache columns and reports the page size on stderr", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")([], context());
+
+    const text = h.out.join("");
+    expect(text).toContain("claude-sonnet-4");
+    expect(text).toContain("conversation");
+    expect(h.err.join("")).toContain("1 of 42 calls.");
+    expect(h.err.join("")).toContain("analytics aggregate excludes them");
+  });
+
+  it("passes the response through unchanged with --json", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")([], context({ json: true }));
+
+    expect(h.out.join("")).toBe(JSON.stringify(page));
+  });
+});
+
+describe("monitor traces", () => {
+  const page = {
+    items: [
+      {
+        id: "trace-1",
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        instanceId: "acme",
+        channel: "whatsapp",
+        contextPrepMs: 12,
+        governanceInputMs: 3,
+        toolBuildingMs: 5,
+        llmCallMs: 720,
+        governanceOutputMs: 4,
+        totalMs: 890,
+        ttfbMs: 210,
+        promptTokens: 500,
+        completionTokens: 120,
+        cachedInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        model: "claude-sonnet-4",
+        provider: "anthropic",
+        cost: 0.0123,
+        thinking: false,
+        temperature: 0.7,
+        toolCalls: 0,
+        isStreaming: true,
+        sttDurationMs: null,
+        sttProvider: null,
+        audioDurationSec: null,
+        parentConversationId: null,
+        parentTraceId: null,
+        createdAt: "2026-07-29T10:00:00.000Z",
+      },
+    ],
+    total: 17,
+    limit: 5,
+    offset: 0,
+  };
+
+  it("requests the trace route for one conversation", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "traces")(["--conversation", "acme:whatsapp:+39", "--limit", "5"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/pipeline-traces",
+      query: { conversationId: "acme:whatsapp:+39", limit: "5" },
+    });
+  });
+
+  it("rejects an unknown option instead of dropping it", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "traces")(["--nope", "x"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+  });
+
+  it("rejects a non-positive --limit before any request", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "traces")(["--limit", "-5"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("renders the phase timings and reports the page size on stderr", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "traces")([], context());
+
+    const text = h.out.join("");
+    expect(text).toContain("claude-sonnet-4");
+    expect(text).toContain("whatsapp");
+    expect(h.err.join("")).toContain("1 of 17 turns.");
+  });
+
+  it("passes the response through unchanged with --json", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "traces")([], context({ json: true }));
+
+    expect(h.out.join("")).toBe(JSON.stringify(page));
+  });
+});
+
 describe("monitor scope", () => {
   // Monitoring is read-only, and a management key cannot discover its workspaces,
   // so it falls back to the engine's default resolution and says so.
