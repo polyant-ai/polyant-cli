@@ -284,7 +284,7 @@ async function aiLogs(args: string[], context: CommandContext | undefined, deps:
       ...maybe("outcome", takeValue(args, "--outcome")),
       ...maybe("from", takeValue(args, "--from")),
       ...maybe("to", takeValue(args, "--to")),
-      ...maybe("limit", takeValue(args, "--limit")),
+      ...maybe("limit", positiveInteger(takeValue(args, "--limit"), "--limit")),
       ...maybe("offset", takeValue(args, "--offset")),
     },
   });
@@ -326,7 +326,7 @@ async function traces(args: string[], context: CommandContext | undefined, deps:
       ...maybe("conversationId", takeValue(args, "--conversation")),
       ...maybe("from", takeValue(args, "--from")),
       ...maybe("to", takeValue(args, "--to")),
-      ...maybe("limit", takeValue(args, "--limit")),
+      ...maybe("limit", positiveInteger(takeValue(args, "--limit"), "--limit")),
       ...maybe("offset", takeValue(args, "--offset")),
     },
   });

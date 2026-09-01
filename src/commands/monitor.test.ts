@@ -363,6 +363,13 @@ describe("monitor ai-logs", () => {
     await expect(action(h.monitor, "ai-logs")(["--nope", "x"], context())).rejects.toMatchObject({ code: ExitCode.Config });
   });
 
+  it("rejects a non-positive --limit before any request", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "ai-logs")(["--limit", "-5"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+    expect(h.calls).toHaveLength(0);
+  });
+
   it("renders the cost and cache columns and reports the page size on stderr", async () => {
     const h = harness([response(page)]);
 
@@ -439,6 +446,13 @@ describe("monitor traces", () => {
     const h = harness([]);
 
     await expect(action(h.monitor, "traces")(["--nope", "x"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+  });
+
+  it("rejects a non-positive --limit before any request", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "traces")(["--limit", "-5"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+    expect(h.calls).toHaveLength(0);
   });
 
   it("renders the phase timings and reports the page size on stderr", async () => {
