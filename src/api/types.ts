@@ -243,6 +243,7 @@ export interface AiLogRow {
   completionTokens: number;
   totalTokens: number;
   cachedInputTokens: number;
+  cacheCreationInputTokens: number;
   estimatedCostUsd: number;
   durationMs: number;
   conversationId: string | null;
@@ -250,6 +251,9 @@ export interface AiLogRow {
   callType: string;
   outcome: string;
   errorKind: string | null;
+  thinking: boolean;
+  reasoningChars: number;
+  stepCount: number;
   createdAt: string;
 }
 
