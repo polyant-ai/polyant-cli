@@ -109,6 +109,7 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | 0.1.x | the management API as of 2026-08-04 | needs `GET /api/service-context`, `x-workspace-slug`, and `POST /api/instances/:slug/playground/chat/stream` for `agent chat` |
 | 0.2.x | 1.1.0 and 1.1.0-ee | adds `agent mcp`, `agent a2a`, `agent memory`, `agent optouts`, `agent events url` and `agent channels whatsapp`; `agent update` gains `--stt-provider` |
 | 0.3.x | the first engine release after 1.1.0-ee | adds `monitor ai-logs`, `monitor traces` and `agent messages`; the three routes merged to the engine's develop on 2026-09-01, so against 1.1.0-ee or older all three answer `404` |
+| 0.4.x | the same, plus the engine's develop as of 2026-09-02 | adds `workspace skills` and `workspace plugins`; `agent update` gains `--memory-scope`, `monitor events` gains `--conversation`, `agent models` gains a VISION column, and `agent channels show` reports an unreadable config and an engine-side disable |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
 `agent a2a enable` is a `400` — the field does not exist there. Everything else
@@ -124,6 +125,26 @@ Three 1.1.0 changes are visible from here even without a new command:
 - An empty tool selection means **no tools**, where it used to mean "everything".
   `agent tools set <slug> --none` is now literal.
 
+Four more are visible against the engine's develop, and matter to anything that
+parses this CLI's output:
+
+- `GET /api/organizations/:org/plugins` moved off the `org:read` floor onto a
+  permission of its own, `org.plugin:read`. A key issued before that split, and
+  holding only `org:read`, now answers `403` on `org plugins`.
+- The three raw-observability listings count over at most 10001 matching rows and
+  report `totalIsCapped` when the count came back at that ceiling. `monitor
+  ai-logs`, `monitor traces` and `agent messages` then say "at least 10001"
+  rather than restating a number the engine did not measure.
+- Those same three resolve a named `--instance` through the caller's accessible
+  workspaces: an agent the key cannot reach answers `404` or `403`, where it used
+  to answer `200` with an empty list — a false "no traffic" on an observability
+  route.
+- Retention covers six traffic-driven tables, not two: `tool_audit_logs`,
+  `hook_executions`, `scheduled_task_runs` and the completed half of
+  `event_backlog` joined `ai_logs` and `pipeline_traces`. `agent retention run
+  --count-only` passes the engine's answer through, so the counts it reports are
+  wider than they were.
+
 The engine publishes the contract it actually serves at `GET /api/openapi.json`
 (and `packages/engine/api-index.md` in its repo), with `x-permission` and
 `x-requires-feature` on every operation. That is the thing to diff against when a
@@ -131,16 +152,28 @@ command starts answering `404` or `403`.
 
 One family is deliberately absent. Every `/api/platform/*` route — platform
 plugins, platform skills, deployment-wide analytics and audit logs — is declared
-`@RequireRole("platform_admin")`, and a management key carries no role at all: it
-is org-scoped by construction, and `ServicePrincipal` has no `role` field for the
-engine's `RoleGuard` to match.
+`@PlatformAdminOnly()`, which admits **only a human principal** whose
+`users.is_platform_admin` column is true at the moment of the request. A
+management key is not a human principal, so it is refused whatever it holds.
 
 The key is not rejected at the door. `AuthGuard` validates it and resolves the
-principal exactly as it does everywhere else; the guard immediately after it
-refuses the route. So the answer is **`403 "Insufficient role"`** — exit code `2`,
-not `401` — and no key, however permissioned, can change it. Those surfaces are
+principal exactly as it does everywhere else; `PermissionGuard` immediately after
+it takes the platform-admin lane and refuses. So the answer is
+**`403 "Current platform administrator standing required"`** — exit code `2`, not
+`401` — and no key, however permissioned, can change it. Those surfaces are
 unreachable from any CLI rather than unimplemented here, and are administered from
 the web console.
+
+This used to work differently, and the difference is worth naming because the
+older description is still in circulation: the gate was `@RequireRole
+("platform_admin")` matched against a `users.role` column, and the message was
+`403 "Insufficient role"`. The engine dropped that column and deleted its
+`RoleGuard`; the flag is now the only authority. Nothing changes for a management
+key — it was refused then and is refused now — but the message a caller matches
+on, and the reason to give an operator, both did.
+
+The organisation's own `role` commands are a different thing entirely and are
+unaffected: they administer **custom org roles**, which the engine still has.
 
 `polyant-cli whoami` is the check: it reports whether the instance answers, the
 permissions the key actually holds, and the workspaces it may address. A command
@@ -278,6 +311,7 @@ polyant-cli --context engineering agent list
 polyant-cli --context engineering agent show acme
 polyant-cli --context engineering agent create acme --name Acme --model claude-sonnet-4
 polyant-cli --context engineering agent update acme --model claude-opus-5
+polyant-cli --context engineering agent update acme --memory-scope conversation
 polyant-cli --context engineering agent delete acme --yes --confirm acme
 
 polyant-cli --context engineering agent prompt show acme --section identity
@@ -453,6 +487,26 @@ and asks for no confirmation, but it does dial the URL, which is why the engine
 gates it on `channel:write`; `--server <slug>` lets it borrow a saved server's
 credential instead of probing with none.
 
+`agent update --memory-scope` decides how wide an agent's long-term memory
+reaches: `agent` is one pool shared by every conversation it serves, and
+`conversation` is a pool per conversation. It does **not** migrate what is
+already stored — memories keep the key they were written under — so a flip
+changes what new turns can recall, not what the agent already holds. The engine
+stores a third value, `principal`, reserved for identity work that has not
+landed; it refuses to have it set, so the CLI does not offer it.
+
+`agent channels show` distinguishes a config that failed to decrypt from one that
+is simply empty: CONFIG KEYS reads `(unreadable)` when the engine could not read
+the stored config, which is what a rotated `ENCRYPTION_KEY` looks like. The
+AUTO-DISABLED column names why the **engine** turned a channel off — a webhook
+that kept rejecting, say — and stays `-` when a person did it, or when nobody
+has.
+
+`agent models` reports VISION beside THINKING. It is what decides whether a
+channel may hand that model an image: a model without it drops attachments rather
+than failing the turn. Both come from the engine's catalog, never from a guess at
+the model id.
+
 `agent a2a enable` is an exposure decision, which is why it is not a flag on
 `agent update`. The agent card is served **unauthenticated** whenever A2A is on,
 and the JSON-RPC endpoint is gated by the agent's own `authEnabled` and nothing
@@ -479,6 +533,7 @@ rule as the `agent` reads above.
 ```bash
 polyant-cli --context engineering monitor status
 polyant-cli --context engineering monitor events --tool web_search --limit 50
+polyant-cli --context engineering monitor events --conversation conv-1
 polyant-cli --context engineering monitor events --follow --instance acme
 polyant-cli --context engineering monitor stats --from 2026-07-01
 polyant-cli --context engineering monitor ai-logs --instance acme --call-type conversation --limit 50
@@ -490,6 +545,18 @@ are computed from — one per LLM call and one per turn. `ai-logs` includes call
 that FAILED, which `analytics overview` excludes: summing its cost and
 comparing the two yields a real difference, not a bug. Pass `--outcome ok` to
 reproduce the aggregate's basis.
+
+Both, and `agent messages` with them, report a **capped** total: the engine
+counts over at most 10001 matching rows, so a busy window reports `at least
+10001` instead of restating a number nobody measured. Narrow the window when the
+exact figure matters. An `--instance` the key cannot reach answers `404` or
+`403` on all three; it does not answer an empty list, which would read as an
+agent with no traffic.
+
+`monitor events --conversation <id>` narrows the tool audit to one conversation,
+which is what lines a turn's tool calls up with `monitor traces` and `agent
+messages` for the same id. Every audit row also carries the assistant message it
+served; that is in `--json` rather than in the table.
 
 `status` probes `/health` and the agent list **independently**: whichever one the
 engine will not serve is reported as `unavailable — <error>`, never as a zero, so
@@ -555,6 +622,14 @@ polyant-cli workspace member set labs u-1 --role member --yes
 polyant-cli org secrets show
 printf %s "$OPENAI_KEY" | polyant-cli org secrets set --key openai_api_key --file - --yes
 polyant-cli org plugins
+
+polyant-cli workspace skills list labs
+polyant-cli workspace skills assign labs billing --yes
+polyant-cli workspace skills revoke labs billing --yes --confirm billing
+
+polyant-cli workspace plugins list labs
+polyant-cli workspace plugins assign labs sales --yes
+polyant-cli workspace plugins revoke labs sales --yes --confirm sales
 ```
 
 Workspaces and roles are addressed by **slug** and **key** on the command line,
@@ -568,6 +643,28 @@ share one key. The engine only offers the keys that can legitimately apply at th
 level — an inbound credential like `auth_api_key` authenticates a caller to one
 agent and stays per-agent — and the CLI refuses anything outside that set rather
 than storing a value that would be silently ignored.
+
+`workspace skills` and `workspace plugins` are the workspace's allow-list: which
+of the organisation's skills, and which of its plugins, agents in that workspace
+may actually use. What an agent sees is the **intersection** of the
+organisation's grant and this assignment, which is why `workspace plugins list`
+reports GRANTED and ASSIGNED as separate columns — a plugin needs both. Assigning
+a plugin the organisation does not hold is refused locally rather than written as
+a row that changes nothing; the grant itself is a platform-admin action, made
+from the web console.
+
+The listings are the whole organisation catalogue with an ASSIGNED column, not
+the assigned subset, because "why does this agent not have that skill" is
+answered by the row that says `no`. `--assigned-only` narrows it when that is
+the question instead.
+
+Two things about the shape. These six routes take the workspace **slug** in the
+path, unlike `workspace member`, whose engine paths take the row's uuid — so
+there is no id resolution here. And an admin bound only to the workspace being
+restricted is **refused**: the allow-list must not be liftable by the person it
+restricts, so this needs an organisation-scope binding. Like the rest of
+workspace-scoped RBAC they are Enterprise; an OSS engine does not serve them at
+all, so there the answer is `404` rather than `403`.
 
 `workspace bindings` is the read side of workspace-scoped RBAC, which is what
 actually decides a workspace-scoped permission. It resolves each workspace id back

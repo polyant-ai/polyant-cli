@@ -130,3 +130,20 @@ export function positiveInteger(value: string | undefined, flag: string): string
 export function maybe(key: string, value: string | undefined): Record<string, string> {
   return value === undefined ? {} : { [key]: value };
 }
+
+/**
+ * The `total` of a raw observability listing, said honestly.
+ *
+ * `/api/ai-logs`, `/api/pipeline-traces` and `/api/messages` count over at most
+ * `RAW_LIST_COUNT_LIMIT` rows (10001 in the engine) and report `totalIsCapped`
+ * when the count came back AT that ceiling. `total` is then a FLOOR, not the
+ * number of matching rows, so printing it bare states a number the engine did
+ * not measure.
+ *
+ * Absent `totalIsCapped` reads as "not capped": an engine that predates the
+ * field never capped the count, so the plain total is the true one there.
+ */
+export function cappedTotal(body: { total?: unknown; totalIsCapped?: unknown } | null | undefined): string {
+  const total = text(body?.total);
+  return body?.totalIsCapped === true ? `at least ${total}` : total;
+}

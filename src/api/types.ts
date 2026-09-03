@@ -48,6 +48,13 @@ export interface AgentDetail extends AgentSummary {
   provider: string | null;
   model: string | null;
   memoryEnabled: boolean;
+  /**
+   * How wide the agent's long-term memory reaches: "agent" (one pool for every
+   * conversation), "conversation" (a pool per conversation), or "principal"
+   * (reserved — the engine stores it but refuses to set it, and resolves it as
+   * "conversation" until identity work lands). Absent before the field existed.
+   */
+  memoryScope?: string;
   knowledgeEnabled: boolean;
   /**
    * Whether the agent is exposed over A2A. Optional: an engine older than 1.1.0
@@ -97,6 +104,17 @@ export interface ChannelEntry {
   channelType: string;
   enabled: boolean;
   config: Record<string, unknown>;
+  /**
+   * `false` only when the stored config failed to decrypt — a rotated
+   * ENCRYPTION_KEY — never when it is simply empty. Without it an unreadable
+   * channel renders exactly like an unconfigured one, which is the difference
+   * an operator is looking for. Optional: an engine that predates it reports
+   * nothing, and absent must read as readable rather than as broken.
+   */
+  configReadable?: boolean;
+  /** Why the ENGINE disabled this channel, or null when a person did (or nobody). */
+  disabledReason?: string | null;
+  disabledAt?: string | null;
 }
 
 export interface ChannelsResponse {
@@ -211,6 +229,8 @@ export interface AuditLogRow {
   conversationId: string | null;
   toolName: string;
   action: string;
+  /** The assistant message this tool call served, when the engine recorded one. */
+  messageId: string | null;
   success: boolean;
   error: string | null;
   durationMs: number | null;
@@ -259,7 +279,10 @@ export interface AiLogRow {
 
 export interface AiLogListResponse {
   items: AiLogRow[];
+  /** Counted over at most 10001 rows. A floor, not the row count, when capped. */
   total: number;
+  /** True when `total` came back AT the engine's count ceiling. */
+  totalIsCapped?: boolean;
   limit: number;
   offset: number;
 }
@@ -280,7 +303,10 @@ export interface TraceRow {
 
 export interface TraceListResponse {
   items: TraceRow[];
+  /** Counted over at most 10001 rows. A floor, not the row count, when capped. */
   total: number;
+  /** True when `total` came back AT the engine's count ceiling. */
+  totalIsCapped?: boolean;
   limit: number;
   offset: number;
 }
@@ -296,7 +322,10 @@ export interface MessageRow {
 
 export interface MessageListResponse {
   items: MessageRow[];
+  /** Counted over at most 10001 rows. A floor, not the row count, when capped. */
   total: number;
+  /** True when `total` came back AT the engine's count ceiling. */
+  totalIsCapped?: boolean;
   limit: number;
   offset: number;
 }

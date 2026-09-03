@@ -24,6 +24,12 @@ byte-for-byte: large integers keep their precision, `1.0` stays `1.0`, key order
 survives. Never parse the human tables — they are aligned for eyes and their
 columns will change.
 
+One field to read rather than assume: `monitor ai-logs`, `monitor traces` and
+`agent messages` carry `totalIsCapped`. The engine counts over at most 10001
+matching rows, so when that is `true` the `total` beside it is a **floor**, not
+the number of matching rows. Narrow the window if you need the real figure. The
+human output says "at least 10001" for the same reason.
+
 **2. Exit codes carry the outcome.** Branch on them instead of matching on stderr:
 
 | code | meaning |
@@ -59,8 +65,9 @@ polyant-cli --yes --confirm acme agent delete acme        # destructive: name it
 actions — `agent delete`, `channels remove`, `channels whatsapp rotate`,
 `hooks remove`, `secrets unset`, `events rotate`, `mcp remove`, `memory remove`,
 `memory clear`, `optouts opt-in`, `workspace delete`, `role delete`,
-`member remove`, and any non-GET `api` DELETE — additionally require
-`--confirm <name>` matching the thing being destroyed.
+`member remove`, `workspace skills revoke`, `workspace plugins revoke`, and any
+non-GET `api` DELETE — additionally require `--confirm <name>` matching the thing
+being destroyed.
 
 ## Before the first command
 
@@ -99,6 +106,7 @@ its job. Use `monitor status` when you need a gate that fails.
 | what governs an agent | `agent governance show <slug>`, `governance policy list` |
 | move an agent between instances | `agent export <slug>` → `agent import --file -` |
 | who may do what | `role list`, `workspace bindings`, `apikey list` |
+| what a workspace may use | `workspace skills list <ws>`, `workspace plugins list <ws>` |
 | anything not covered | `api <METHOD> <path>` |
 
 `--follow` has no deadline: bound it with `--max <n>` or you will wait forever.

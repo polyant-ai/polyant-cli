@@ -312,6 +312,32 @@ describe("agent models", () => {
     await leaf(one.command, ["models"])(["--provider", "openai"], context());
     expect(one.out.join("")).not.toContain("claude-sonnet-4");
   });
+
+  // VISION is what decides whether a channel may hand a model an image. It comes
+  // from the engine's catalog, and a model without it drops attachments.
+  it("reports vision per model, and an engine that does not say reads as no", async () => {
+    const body = {
+      providers: {
+        openai: {
+          models: [
+            { id: "gpt-4o", tier: null, costInput: 2, costOutput: 8, supportsThinking: false, supportsVision: true },
+            { id: "gpt-3.5", tier: null, costInput: 1, costOutput: 2, supportsThinking: false, supportsVision: false },
+            { id: "legacy", tier: null, costInput: 1, costOutput: 2, supportsThinking: false },
+          ],
+        },
+      },
+    };
+    const h = harness([response(body)]);
+
+    await leaf(h.command, ["models"])([], context());
+
+    const table = h.out.join("");
+    expect(table).toContain("VISION");
+    // PROVIDER MODEL TIER IN OUT THINKING VISION
+    expect(table).toMatch(/gpt-4o\s+-\s+2\s+8\s+no\s+yes/);
+    expect(table).toMatch(/gpt-3\.5\s+-\s+1\s+2\s+no\s+no/);
+    expect(table).toMatch(/legacy\s+-\s+1\s+2\s+no\s+no/);
+  });
 });
 
 describe("agent governance", () => {

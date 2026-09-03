@@ -17,6 +17,7 @@ import { assertKnown, takeValue } from "../runtime/flags.js";
 import {
   call,
   callStream,
+  cappedTotal,
   expectArray,
   maybe,
   positiveInteger,
@@ -112,11 +113,23 @@ function failIfDegraded(...probes: readonly Probe[]): void {
   if (failed !== undefined) throw failed.cause;
 }
 
-const EVENT_FILTERS = ["--instance", "--tool", "--action", "--search", "--from", "--to", "--limit", "--offset", "--max"] as const;
+const EVENT_FILTERS = [
+  "--instance",
+  "--conversation",
+  "--tool",
+  "--action",
+  "--search",
+  "--from",
+  "--to",
+  "--limit",
+  "--offset",
+  "--max",
+] as const;
 
 function eventQuery(options: readonly string[], forcedInstance: string | undefined): Record<string, string> {
   return {
     ...maybe("instanceId", forcedInstance ?? takeValue(options, "--instance")),
+    ...maybe("conversationId", takeValue(options, "--conversation")),
     ...maybe("toolName", takeValue(options, "--tool")),
     ...maybe("action", takeValue(options, "--action")),
     ...maybe("search", takeValue(options, "--search")),
@@ -310,7 +323,9 @@ async function aiLogs(args: string[], context: CommandContext | undefined, deps:
       emptyMessage: "No LLM calls matched.",
     })}\n`,
   );
-  deps.io.stderr(`${items.length} of ${text(body?.total)} calls. Failed calls are included; the analytics aggregate excludes them.\n`);
+  deps.io.stderr(
+    `${items.length} of ${cappedTotal(body)} calls. Failed calls are included; the analytics aggregate excludes them.\n`,
+  );
 }
 
 const TRACE_FILTERS = ["--instance", "--conversation", "--from", "--to", "--limit", "--offset"] as const;
@@ -350,7 +365,7 @@ async function traces(args: string[], context: CommandContext | undefined, deps:
       emptyMessage: "No turns matched.",
     })}\n`,
   );
-  deps.io.stderr(`${items.length} of ${text(body?.total)} turns.\n`);
+  deps.io.stderr(`${items.length} of ${cappedTotal(body)} turns.\n`);
 }
 
 export interface MonitorActions {
@@ -358,10 +373,15 @@ export interface MonitorActions {
   events(args: string[], context: CommandContext | undefined, forcedInstance?: string): Promise<void>;
 }
 
-const EVENTS_USAGE = `Usage: polyant-cli monitor events [--instance <slug>] [--tool <name>] [--action <name>]
-                                 [--search <text>] [--from <iso>] [--to <iso>]
+const EVENTS_USAGE = `Usage: polyant-cli monitor events [--instance <slug>] [--conversation <id>] [--tool <name>]
+                                 [--action <name>] [--search <text>] [--from <iso>] [--to <iso>]
                                  [--limit <n>] [--offset <n>]
-       polyant-cli monitor events --follow [--instance <slug>] [--max <n>]`;
+       polyant-cli monitor events --follow [--instance <slug>] [--max <n>]
+
+--conversation narrows to one conversation's tool calls, which is how a turn's
+audit trail lines up with \`monitor traces\` and \`agent messages\` for the same id.
+Every row also carries the assistant message it served; that is in --json, not
+in the table.`;
 
 export function createMonitorCommand(overrides: Partial<ServiceDependencies> = {}): { command: Command; actions: MonitorActions } {
   const deps = { ...processServiceDependencies, ...overrides };
@@ -390,13 +410,23 @@ export function createMonitorCommand(overrides: Partial<ServiceDependencies> = {
           usage: `Usage: polyant-cli monitor ai-logs [--instance <slug>] [--conversation <id>] [--model <name>]
                                    [--tier <fast|standard|heavy>] [--call-type <conversation|service>]
                                    [--outcome <ok|error>] [--from <iso>] [--to <iso>]
-                                   [--limit <n>] [--offset <n>]`,
+                                   [--limit <n>] [--offset <n>]
+
+The engine counts over at most 10001 matching rows, so a busy window reports
+"at least 10001" rather than a number it did not measure. Narrow the window, or
+page with --limit/--offset. An --instance the key cannot reach answers 404 or
+403; it does not answer an empty list.`,
           run: (args, context) => aiLogs(args, context, deps),
         },
         traces: {
           summary: "list raw turn traces, with their phase timings",
           usage: `Usage: polyant-cli monitor traces [--instance <slug>] [--conversation <id>]
-                                  [--from <iso>] [--to <iso>] [--limit <n>] [--offset <n>]`,
+                                  [--from <iso>] [--to <iso>] [--limit <n>] [--offset <n>]
+
+The engine counts over at most 10001 matching rows, so a busy window reports
+"at least 10001" rather than a number it did not measure. Narrow the window, or
+page with --limit/--offset. An --instance the key cannot reach answers 404 or
+403; it does not answer an empty list.`,
           run: (args, context) => traces(args, context, deps),
         },
       },

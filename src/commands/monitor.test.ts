@@ -205,6 +205,14 @@ describe("monitor events", () => {
     expect(h.err.join("")).toContain("1 of 37 events.");
   });
 
+  it("narrows to one conversation, which is what lines a turn up with its traces", async () => {
+    const h = harness([response({ items: [], total: 0, limit: 50, offset: 0 })]);
+
+    await action(h.monitor, "events")(["--conversation", "conv-1"], context());
+
+    expect(h.calls[0]).toMatchObject({ path: "/api/audit-logs", query: { conversationId: "conv-1" } });
+  });
+
   it("rejects a non-positive --limit before any request", async () => {
     const h = harness([]);
 
@@ -389,6 +397,34 @@ describe("monitor ai-logs", () => {
 
     expect(h.out.join("")).toBe(JSON.stringify(page));
   });
+
+  // The engine counts over at most 10001 rows and says so. Printing that total
+  // bare would state a number it never measured.
+  it("reports a capped total as a floor, not as the row count", async () => {
+    const h = harness([response({ ...page, total: 10001, totalIsCapped: true })]);
+
+    await action(h.monitor, "ai-logs")([], context());
+
+    expect(h.err.join("")).toContain("1 of at least 10001 calls.");
+  });
+
+  it("reports an uncapped total plainly", async () => {
+    const h = harness([response({ ...page, totalIsCapped: false })]);
+
+    await action(h.monitor, "ai-logs")([], context());
+
+    expect(h.err.join("")).toContain("1 of 42 calls.");
+  });
+
+  // An engine that predates the field never capped, so absent must not read as
+  // "capped" — that would put "at least" in front of an exact number.
+  it("treats an absent totalIsCapped as not capped", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")([], context());
+
+    expect(h.err.join("")).not.toContain("at least");
+  });
 });
 
 describe("monitor traces", () => {
@@ -472,6 +508,14 @@ describe("monitor traces", () => {
     await action(h.monitor, "traces")([], context({ json: true }));
 
     expect(h.out.join("")).toBe(JSON.stringify(page));
+  });
+
+  it("reports a capped total as a floor", async () => {
+    const h = harness([response({ ...page, total: 10001, totalIsCapped: true })]);
+
+    await action(h.monitor, "traces")([], context());
+
+    expect(h.err.join("")).toContain("1 of at least 10001 turns.");
   });
 });
 

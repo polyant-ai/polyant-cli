@@ -31,6 +31,7 @@ const AGENT = {
   model: "claude-sonnet-4",
   authEnabled: true,
   memoryEnabled: true,
+  memoryScope: "agent",
   knowledgeEnabled: false,
   createdAt: "2026-07-01T00:00:00.000Z",
   updatedAt: "2026-07-20T10:00:00.000Z",
@@ -264,6 +265,49 @@ describe("agent update", () => {
       /openai, aws, deepgram, disabled/,
     );
   });
+
+  it("narrows memory to one conversation, and names the previous scope in the recap", async () => {
+    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+
+    await leaf(h.command, ["update"])(["acme", "--memory-scope", "conversation"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain('Change memoryScope from "agent" to "conversation"');
+    expect(h.calls[1]).toMatchObject({
+      method: "PATCH",
+      path: "/api/instances/acme",
+      body: { memoryScope: "conversation" },
+    });
+  });
+
+  // `principal` is a third value the engine STORES but refuses to be set, so
+  // offering it here would offer a write that always 400s.
+  it("refuses a memory scope the engine will not accept, principal included", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["update"])(["acme", "--memory-scope", "principal"], context({ yes: true }))).rejects.toThrow(
+      /agent, conversation/,
+    );
+    expect(h.request).not.toHaveBeenCalled();
+  });
+});
+
+describe("agent show", () => {
+  it("reports how wide the agent's memory reaches", async () => {
+    const h = harness([response({ instance: { ...AGENT, memoryScope: "conversation" } })]);
+
+    await leaf(h.command, ["show"])(["acme"], context());
+
+    expect(h.out.join("")).toMatch(/memoryScope:\s+conversation/);
+  });
+
+  it("reports an absent scope as absent rather than inventing the default", async () => {
+    const { memoryScope: _dropped, ...withoutScope } = AGENT;
+    const h = harness([response({ instance: withoutScope })]);
+
+    await leaf(h.command, ["show"])(["acme"], context());
+
+    expect(h.out.join("")).toMatch(/memoryScope:\s+-/);
+  });
 });
 
 describe("agent delete", () => {
@@ -369,6 +413,47 @@ describe("agent channels", () => {
     expect(table).toContain("botToken, chatId");
     expect(table).not.toContain("••••");
     expect(table).not.toContain("-100");
+  });
+
+  // The distinction the engine added `configReadable` for: a config that failed
+  // to decrypt has no readable keys, and reporting "-" for it would read as an
+  // unconfigured channel — the opposite of what happened.
+  it("says a config is unreadable rather than showing it as empty", async () => {
+    const h = harness([
+      response({ channels: [{ channelType: "telegram", enabled: true, config: {}, configReadable: false }] }),
+    ]);
+
+    await leaf(h.command, ["channels", "show"])(["acme"], context());
+
+    const table = h.out.join("");
+    expect(table).toContain("(unreadable)");
+  });
+
+  it("names why the engine disabled a channel, and stays quiet when nobody did", async () => {
+    const h = harness([
+      response({
+        channels: [
+          { channelType: "telegram", enabled: false, config: {}, configReadable: true, disabledReason: "webhook rejected 5 times" },
+          { channelType: "whatsapp", enabled: true, config: {}, configReadable: true, disabledReason: null },
+        ],
+      }),
+    ]);
+
+    await leaf(h.command, ["channels", "show"])(["acme"], context());
+
+    const table = h.out.join("");
+    expect(table).toContain("webhook rejected 5 times");
+    expect(table).toMatch(/whatsapp\s+yes\s+-\s+-/);
+  });
+
+  // An engine that predates the field reports neither, and absent must read as
+  // readable: treating it as unreadable would flag every channel as broken.
+  it("treats an absent configReadable as readable", async () => {
+    const h = harness([response(channels)]);
+
+    await leaf(h.command, ["channels", "show"])(["acme"], context());
+
+    expect(h.out.join("")).not.toContain("(unreadable)");
   });
 
   it("takes configuration from a payload and recaps keys only", async () => {
@@ -673,6 +758,14 @@ describe("agent messages", () => {
     await leaf(h.command, ["messages"])(["acme"], context({ json: true }));
 
     expect(h.out.join("")).toBe(JSON.stringify(messages));
+  });
+
+  it("reports a capped total as a floor, not as the message count", async () => {
+    const h = harness([response({ ...messages, total: 10001, totalIsCapped: true })]);
+
+    await leaf(h.command, ["messages"])(["acme"], context());
+
+    expect(h.err.join("")).toContain("1 of at least 10001 messages");
   });
 
   // Usage errors (a missing agent slug) surface as ConfigError, which the CLI's

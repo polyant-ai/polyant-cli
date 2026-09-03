@@ -19,6 +19,7 @@ import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
 import {
   call,
+  cappedTotal,
   expectArray,
   maybe,
   positiveInteger,
@@ -78,6 +79,9 @@ async function show(args: string[], context: CommandContext | undefined, deps: A
     { label: "authEnabled", value: text(agent.authEnabled) },
     { label: "a2aEnabled", value: agent.a2aEnabled === true ? "true" : "false" },
     { label: "memoryEnabled", value: text(agent.memoryEnabled) },
+    // Only meaningful while memory is on, but printed regardless: a scope that
+    // disappeared when memory was off would look like an engine that has none.
+    { label: "memoryScope", value: text(agent.memoryScope) },
     { label: "knowledgeEnabled", value: text(agent.knowledgeEnabled) },
     { label: "updatedAt", value: text(agent.updatedAt) },
   ]);
@@ -117,7 +121,7 @@ function optional(options: readonly string[], flag: string, field: string): Reco
 }
 
 const UPDATE_FLAGS = {
-  value: ["--name", "--description", "--provider", "--model", "--status", "--stt-provider", "--confirm"],
+  value: ["--name", "--description", "--provider", "--model", "--status", "--stt-provider", "--memory-scope", "--confirm"],
 } as const;
 
 /**
@@ -126,6 +130,23 @@ const UPDATE_FLAGS = {
  * messages off had no way to say so.
  */
 const STT_PROVIDERS = ["openai", "aws", "deepgram", "disabled"] as const;
+
+/**
+ * What a caller may SET, which is narrower than what the engine stores.
+ * `principal` is a third stored value, reserved for identity work that has not
+ * landed; the engine refuses it on the write path and resolves it as
+ * `conversation` on the read path, so offering it here would offer a no-op.
+ */
+const MEMORY_SCOPES = ["agent", "conversation"] as const;
+
+function memoryScope(options: readonly string[]): Record<string, string> {
+  const value = takeValue(options, "--memory-scope");
+  if (value === undefined) return {};
+  if (!(MEMORY_SCOPES as readonly string[]).includes(value)) {
+    throw new ConfigError(`--memory-scope must be one of ${MEMORY_SCOPES.join(", ")}.`);
+  }
+  return { memoryScope: value };
+}
 
 function sttProvider(options: readonly string[]): Record<string, string> {
   const value = takeValue(options, "--stt-provider");
@@ -147,6 +168,7 @@ async function update(args: string[], context: CommandContext | undefined, deps:
     ...optional(options, "--model", "model"),
     ...optional(options, "--status", "status"),
     ...sttProvider(options),
+    ...memoryScope(options),
   };
   if (Object.keys(body).length === 0) throw new ConfigError("polyant-cli agent update needs at least one field to change.");
 
@@ -340,11 +362,17 @@ async function channelsShow(args: string[], context: CommandContext | undefined,
   // into tickets; the key list answers the operator's question without that.
   deps.io.stdout(
     `${renderTable({
-      headers: ["TYPE", "ENABLED", "CONFIG KEYS"],
+      headers: ["TYPE", "ENABLED", "CONFIG KEYS", "AUTO-DISABLED"],
       rows: channels.map((channel) => [
         channel.channelType,
         channel.enabled ? "yes" : "no",
-        Object.keys(channel.config ?? {}).sort().join(", ") || "-",
+        // A config that failed to decrypt has no readable keys, and listing "-"
+        // for it would report a rotated ENCRYPTION_KEY as an empty channel —
+        // the one reading an operator must not get wrong here.
+        channel.configReadable === false
+          ? "(unreadable)"
+          : Object.keys(channel.config ?? {}).sort().join(", ") || "-",
+        text(channel.disabledReason),
       ]),
       emptyMessage: `Agent ${slug} has no channels configured.`,
     })}\n`,
@@ -829,7 +857,7 @@ async function messages(args: string[], context: CommandContext | undefined, dep
       emptyMessage: `Agent ${slug} has no messages in this window.`,
     })}\n`,
   );
-  deps.io.stderr(`${items.length} of ${text(body?.total)} messages. Use --json for the untruncated content.\n`);
+  deps.io.stderr(`${items.length} of ${cappedTotal(body)} messages. Use --json for the untruncated content.\n`);
 }
 
 // --- command tree ----------------------------------------------------------
@@ -844,13 +872,19 @@ const LEAVES: Record<string, Node> = {
     mutates: true,
   },
   update: {
-    summary: "change an agent's name, description, status, provider or model",
+    summary: "change an agent's name, description, status, provider, model or memory scope",
     usage: `Usage: polyant-cli agent update <slug> [--name <name>] [--description <text>] [--status <status>]
                                  [--provider <name>] [--model <id>] [--stt-provider <p>]
+                                 [--memory-scope <agent|conversation>]
 
 --stt-provider is one of openai, aws, deepgram or disabled. "disabled" is a real
 setting, not an absent one: the agent then tells a sender that voice messages
-are not supported instead of transcribing them.`,
+are not supported instead of transcribing them.
+
+--memory-scope decides how wide long-term memory reaches: "agent" is one pool
+shared by every conversation, "conversation" is a pool per conversation. It does
+not migrate what is already stored — memories written under one scope stay under
+the key they were written with, so a flip changes what NEW turns can recall.`,
     action: update,
     mutates: true,
   },
@@ -888,8 +922,14 @@ are not supported instead of transcribing them.`,
   },
   channels: {
     show: {
-      summary: "list configured channels and their config key names",
-      usage: "Usage: polyant-cli agent channels show <slug>",
+      summary: "list configured channels, their config key names and any engine-side disable",
+      usage: `Usage: polyant-cli agent channels show <slug>
+
+Key names only: the engine masks values, and a masked value still discloses
+which fields are populated. CONFIG KEYS reads "(unreadable)" when the stored
+config failed to decrypt — a rotated ENCRYPTION_KEY, not an empty channel.
+AUTO-DISABLED names why the ENGINE turned the channel off; it stays "-" when a
+person did, or when nobody has.`,
       action: channelsShow,
     },
     set: {
@@ -1000,7 +1040,11 @@ while the real secret stayed in place.`,
   messages: {
     summary: "list messages across all of an agent's conversations",
     usage: `Usage: polyant-cli agent messages <slug> [--conversation <id>] [--role <user|assistant|system>]
-                                      [--from <iso>] [--to <iso>] [--limit <n>] [--offset <n>]`,
+                                      [--from <iso>] [--to <iso>] [--limit <n>] [--offset <n>]
+
+The engine counts over at most 10001 matching rows, so a busy agent reports
+"at least 10001" rather than a number it did not measure. A slug the key cannot
+reach answers 404 or 403; it does not answer an empty list.`,
     action: messages,
   },
 };

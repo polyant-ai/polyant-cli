@@ -1,6 +1,6 @@
 {
   "name": "@polyant-ai/cli",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Configure a Polyant instance as code",
   "license": "LicenseRef-Polyant-Enterprise",
   "type": "module",

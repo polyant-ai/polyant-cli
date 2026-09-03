@@ -390,6 +390,8 @@ const FAMILY_SUMMARIES: Record<string, string> = {
   "org secrets": "the provider credentials every agent in the organisation falls back to",
   workspace: "manage the organisation's workspaces and who is bound to them",
   "workspace member": "bind a member to one workspace",
+  "workspace skills": "which of the organisation's skills one workspace may use",
+  "workspace plugins": "which of the organisation's plugins one workspace may use",
   member: "inspect the organisation's members and set their roles",
   role: "manage the organisation's custom roles",
   apikey: "issue and revoke the management API keys the CLI authenticates with",

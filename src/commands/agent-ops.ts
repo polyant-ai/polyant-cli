@@ -998,12 +998,22 @@ async function models(args: string[], context: CommandContext | undefined, deps:
   for (const [name, entry] of Object.entries(providers)) {
     if (provider !== undefined && name !== provider) continue;
     for (const model of entry.models ?? []) {
-      rows.push([name, text(model.id), text(model.tier), text(model.costInput), text(model.costOutput), model.supportsThinking ? "yes" : "no"]);
+      rows.push([
+        name,
+        text(model.id),
+        text(model.tier),
+        text(model.costInput),
+        text(model.costOutput),
+        model.supportsThinking ? "yes" : "no",
+        // Read from the engine's catalog, never inferred from the model id: the
+        // catalog is what the runtime consults before it accepts an image.
+        model.supportsVision ? "yes" : "no",
+      ]);
     }
   }
   deps.io.stdout(
     `${renderTable({
-      headers: ["PROVIDER", "MODEL", "TIER", "IN /1M", "OUT /1M", "THINKING"],
+      headers: ["PROVIDER", "MODEL", "TIER", "IN /1M", "OUT /1M", "THINKING", "VISION"],
       rows,
       emptyMessage: provider === undefined ? "This deployment configures no providers." : `No provider named ${provider}.`,
     })}\n`,
@@ -1016,6 +1026,8 @@ interface ModelRow {
   costInput: number;
   costOutput: number;
   supportsThinking: boolean;
+  /** Absent on an engine that predates the field; absent reads as no vision. */
+  supportsVision?: boolean;
 }
 
 // --- the nodes merged into the `agent` family -------------------------------------
@@ -1317,7 +1329,11 @@ replaced, not merged. Without one, a new agent lands in the addressed workspace.
   },
   models: {
     summary: "list the providers and models this deployment offers",
-    usage: "Usage: polyant-cli agent models [--provider <name>]\n\nCosts are per million tokens, straight from the engine's catalog.",
+    usage: `Usage: polyant-cli agent models [--provider <name>]
+
+Costs are per million tokens, straight from the engine's catalog. VISION is what
+decides whether a channel may hand this model an image; a model without it drops
+attachments rather than failing the turn.`,
     action: models,
   },
 };
