@@ -145,10 +145,12 @@ parses this CLI's output:
   --count-only` passes the engine's answer through, so the counts it reports are
   wider than they were.
 
-The engine publishes the contract it actually serves at `GET /api/openapi.json`
-(and `packages/engine/api-index.md` in its repo), with `x-permission` and
-`x-requires-feature` on every operation. That is the thing to diff against when a
-command starts answering `404` or `403`.
+When a command starts answering `404` or `403`, the engine's controllers are the
+contract: the permission decorator on the route (`@RequirePermission`, or
+`@PlatformAdminOnly` for the platform lane) and the `@Query` parameters it
+actually declares. A generated OpenAPI artefact has been planned but is not
+served — there is no `GET /api/openapi.json` to diff against, and no
+`api-index.md` beside it.
 
 One family is deliberately absent. Every `/api/platform/*` route — platform
 plugins, platform skills, deployment-wide analytics and audit logs — is declared
@@ -214,8 +216,8 @@ literal `key:` is rejected: a token in a versioned file is a leak. Keys are
 read only from the environment variable named by `keyEnv`, and there is no
 `--key` flag, because argv is visible in `ps` and lands in shell history.
 
-For a selected context, `--target`, `--org`, and `--workspace` each override
-its corresponding value independently. `--context` overrides
+For a selected context, `--target`, `--url`, `--org`, and `--workspace` each
+override its corresponding value independently. `--context` overrides
 `defaultContext`. When neither flag nor context supplies a target,
 `POLYANT_TARGET`, then `default`, then a sole declared target are considered.
 `POLYANT_URL` and `POLYANT_KEY` remain the no-config fallback; there are no
@@ -233,6 +235,13 @@ labelled as staging. `--url` still overrides the host, because typing it is
 per-invocation intent — but it too keeps the target's key and `prod` flag, so
 prefer declaring a target over reaching for the flag.
 
+`--url` is process-wide, like `--target`: it may appear before or after the
+command path, and it retargets every command, not only `api` and `whoami`. When
+a `polyant.yaml` is present and `POLYANT_URL` is set, the target error names the
+discarded variable and repeats it back as the `--url` to type — the two
+mechanisms are easy to confuse from the outside, and silence there costs an
+afternoon.
+
 Driving it from a coding agent? Read [AGENTS.md](AGENTS.md) — the exit-code
 contract, the `--json` discipline and the confirmation rules — and let the agent
 discover the surface with `polyant-cli --json`, which prints the whole command
@@ -242,7 +251,14 @@ rather than maintained by hand.
 `polyant-cli --version` prints the installed version and the Node version it runs
 on — the two things a bug report needs. `-v` and `version` do the same. It reads
 the package manifest, so it cannot disagree with what npm installed, and it makes
-no network call: for the engine's version and reachability use `whoami`.
+no network call: for the instance's reachability use `whoami`.
+
+The engine's own version is not discoverable from here: `GET /health` reports
+`status`, `timestamp` and `service`, and no other route carries a version. So
+`whoami` does not report one — an unshipped route answers `404` exactly like a
+mistyped path, and the CLI names that ambiguity in the error rather than
+guessing which side is wrong. Closing it needs a version on the engine's
+`/health`.
 
 ## Commands
 
@@ -338,6 +354,7 @@ echo "riassumi la policy di reso" | polyant-cli --context engineering agent chat
 polyant-cli --context engineering agent chat acme --message "2+2?" --expect 4
 
 polyant-cli --context engineering agent conversations list acme --limit 20
+polyant-cli --context engineering agent conversations list acme --from 2026-09-03 --to 2026-09-04
 polyant-cli --context engineering agent conversations show acme <conversationId>
 polyant-cli --context engineering agent messages acme --from 2026-08-31 --limit 200
 ```
@@ -345,6 +362,17 @@ polyant-cli --context engineering agent messages acme --from 2026-08-31 --limit 
 `agent messages` reads every conversation of one agent in a single call, where
 `agent conversations show` reads one. The table truncates content to 80
 characters; `--json` carries it whole.
+
+`conversations list --from/--to` windows by last update, half-open — `--from`
+inclusive, `--to` exclusive, so one day is `--from 2026-09-03 --to 2026-09-04`.
+The engine's search is relevance-ranked and drops the window, so `--search`
+refuses to combine with either rather than answering a narrower question than
+the one asked.
+
+`conversations show` names the tools each turn invoked, in step order, in a
+`TOOLS` column; a call whose result never came back is marked `?`. The arguments
+and the results are unbounded JSON and stay out of the table — `--json` carries
+them unchanged.
 
 Reads print an aligned table or a labelled record; `--json` passes the engine's
 response body through byte-for-byte, so a pipeline never sees re-serialised
@@ -553,10 +581,15 @@ exact figure matters. An `--instance` the key cannot reach answers `404` or
 `403` on all three; it does not answer an empty list, which would read as an
 agent with no traffic.
 
-`monitor events --conversation <id>` narrows the tool audit to one conversation,
-which is what lines a turn's tool calls up with `monitor traces` and `agent
-messages` for the same id. Every audit row also carries the assistant message it
-served; that is in `--json` rather than in the table.
+`monitor events` names the conversation each event belongs to, in a
+`CONVERSATION` column. `--conversation <id>` asks the tool audit for one
+conversation, which is what lines a turn's tool calls up with `monitor traces`
+and `agent messages` for the same id — but the engine drops the parameter today:
+`GET /api/audit-logs` declares `instanceId`, `toolName`, `action`, `search`,
+`from` and `to`, and nothing else, so the flag is sent, ignored, and answered
+with the whole log. Until the route takes it, the column is the filter that
+holds. Every audit row also carries the assistant message it served; that is in
+`--json` rather than in the table.
 
 `status` probes `/health` and the agent list **independently**: whichever one the
 engine will not serve is reported as `unavailable — <error>`, never as a zero, so

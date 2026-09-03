@@ -213,6 +213,16 @@ describe("monitor events", () => {
     expect(h.calls[0]).toMatchObject({ path: "/api/audit-logs", query: { conversationId: "conv-1" } });
   });
 
+  it("names the conversation each event belongs to", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "events")([], context());
+
+    const text = h.out.join("");
+    expect(text).toContain("CONVERSATION");
+    expect(text).toContain("conv-1");
+  });
+
   it("rejects a non-positive --limit before any request", async () => {
     const h = harness([]);
 

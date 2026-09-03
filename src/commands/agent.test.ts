@@ -706,6 +706,26 @@ describe("agent conversations", () => {
       .rejects.toThrow(/--limit needs a positive integer/);
   });
 
+  it("maps --from/--to onto the route's own window parameter names", async () => {
+    const h = harness([response(conversations)]);
+
+    await leaf(h.command, ["conversations", "list"])(["acme", "--from", "2026-09-03", "--to", "2026-09-04"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/conversations",
+      query: { instanceId: "acme", updatedSince: "2026-09-03", updatedUntil: "2026-09-04" },
+    });
+  });
+
+  it("refuses a window combined with a search the engine would not window", async () => {
+    const h = harness([]);
+
+    await expect(
+      leaf(h.command, ["conversations", "list"])(["acme", "--search", "refund", "--from", "2026-09-03"], context()),
+    ).rejects.toThrow(/cannot combine --search with --from\/--to/);
+    expect(h.calls).toHaveLength(0);
+  });
+
   it("emits both source bodies unchanged as a composite JSON object", async () => {
     const detail = { conversation: conversations.conversations[0] };
     const messages = { messages: [{ id: "m1", role: "user", content: "hi", createdAt: "2026-07-20T10:00:00.000Z" }] };
@@ -727,6 +747,37 @@ describe("agent conversations", () => {
     expect(text).toContain("conversationId:");
     // A multi-line message must not break the table's column alignment.
     expect(text).toContain("line one line two");
+  });
+
+  it("names the tools a turn invoked, and marks a call left without a result", async () => {
+    const detail = { conversation: conversations.conversations[0] };
+    const messages = {
+      messages: [
+        {
+          id: "m1",
+          role: "assistant",
+          content: "done",
+          createdAt: null,
+          steps: [
+            {
+              toolCalls: [
+                { toolCallId: "c1", toolName: "search_orders", args: {} },
+                { toolCallId: "c2", toolName: "issue_refund", args: {} },
+              ],
+              toolResults: [{ toolCallId: "c1", result: {} }],
+            },
+          ],
+        },
+        { id: "m2", role: "user", content: "hi", createdAt: null, steps: null },
+      ],
+    };
+    const h = harness([response(detail), response(messages)]);
+
+    await leaf(h.command, ["conversations", "show"])(["acme", "conv-1"], context());
+
+    const text = h.out.join("");
+    expect(text).toContain("TOOLS");
+    expect(text).toContain("search_orders, issue_refund?");
   });
 });
 

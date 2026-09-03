@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { KEY_HEADER, WORKSPACE_HEADER, extractMessage, request, requestStream, statusToExitCode } from "./client.js";
+import { KEY_HEADER, WORKSPACE_HEADER, explainUnmatchedRoute, extractMessage, request, requestStream, statusToExitCode } from "./client.js";
 import { ExitCode, RemoteError } from "../exit.js";
 import type { ResolvedTarget } from "../config.js";
 
@@ -59,6 +59,23 @@ describe("extractMessage", () => {
 
   it("should_return_a_plain_text_body_verbatim", () => {
     expect(extractMessage(404, "Not Found")).toBe("Not Found");
+  });
+});
+
+describe("explainUnmatchedRoute", () => {
+  it("should_name_version_skew_on_an_unmatched_route", () => {
+    const explained = explainUnmatchedRoute(404, "Cannot GET /api/messages");
+    expect(explained).toContain("Cannot GET /api/messages");
+    expect(explained).toMatch(/does not serve that route/);
+    expect(explained).toMatch(/compatibility table/);
+  });
+
+  it("should_leave_a_domain_404_untouched", () => {
+    expect(explainUnmatchedRoute(404, "Conversation not found: abc")).toBe("Conversation not found: abc");
+  });
+
+  it("should_leave_other_statuses_untouched", () => {
+    expect(explainUnmatchedRoute(403, "Cannot GET /api/messages")).toBe("Cannot GET /api/messages");
   });
 });
 

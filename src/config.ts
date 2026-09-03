@@ -243,7 +243,16 @@ export function resolveTarget(opts: ResolveOptions): ResolvedTarget {
 
   const key = env[spec.keyEnv];
   if (!key) {
-    throw new ConfigError(`Target "${name}" reads its key from $${spec.keyEnv}, which is unset or empty.`);
+    // Naming the discarded POLYANT_URL here is the point: an operator who
+    // exported it is trying to retarget, and the bare key error sends them
+    // looking at the key instead of at the override that never applied.
+    throw new ConfigError(
+      `Target "${name}" reads its key from $${spec.keyEnv}, which is unset or empty.` +
+        (env.POLYANT_URL === undefined
+          ? ""
+          : ` POLYANT_URL is set, and ${CONFIG_FILE} takes precedence over it — ` +
+            `it applies only when no ${CONFIG_FILE} is found. Pass --url ${env.POLYANT_URL} to retarget this invocation.`),
+    );
   }
 
   return {

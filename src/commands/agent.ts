@@ -8,6 +8,7 @@ import type {
   HooksResponse,
   ListAgentsResponse,
   MessageListResponse,
+  MessageStep,
   PromptsResponse,
   SecretsResponse,
   ToolsResponse,
@@ -737,16 +738,35 @@ async function logs(args: string[], context: CommandContext | undefined, deps: A
 async function conversationsList(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "conversations list");
   const options = args.slice(1);
-  assertKnown(options, { value: ["--limit", "--offset", "--search", "--source"] }, "agent conversations list option");
+  assertKnown(options, { value: ["--limit", "--offset", "--search", "--source", "--from", "--to"] }, "agent conversations list option");
   const scope = await scopeFor(deps, context, "read");
+  const search = takeValue(options, "--search");
+  // The engine spells the window `updatedSince`/`updatedUntil` on this route
+  // and `from`/`to` on the audit log. The operator should not have to know
+  // that: `--from`/`--to` mean the same thing everywhere in the CLI, and the
+  // mapping happens here.
+  const from = takeValue(options, "--from");
+  const to = takeValue(options, "--to");
+  // The engine's search path is FTS-ranked and never time-windowed, so it drops
+  // `updatedSince`/`updatedUntil` on the floor. Accepting both would answer a
+  // question the operator did not ask, with no sign that half the request was
+  // discarded.
+  if (search !== undefined && (from !== undefined || to !== undefined)) {
+    throw new ConfigError(
+      "agent conversations list cannot combine --search with --from/--to: the engine's search is ranked by " +
+        "relevance and ignores the time window. Run the search, or the window, but not both.",
+    );
+  }
   const query = {
     // instanceId carries the agent slug: the engine resolves it through
     // asInstanceSlug, not as a UUID.
     instanceId: slug,
     ...maybe("limit", positiveInteger(takeValue(options, "--limit"), "--limit")),
     ...maybe("offset", takeValue(options, "--offset")),
-    ...maybe("search", takeValue(options, "--search")),
+    ...maybe("search", search),
     ...maybe("source", takeValue(options, "--source")),
+    ...maybe("updatedSince", from),
+    ...maybe("updatedUntil", to),
   };
   const res = await call(deps, scope, { path: "/api/conversations", query });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
@@ -807,11 +827,39 @@ async function conversationsShow(args: string[], context: CommandContext | undef
   );
   deps.io.stdout(
     `\n${renderTable({
-      headers: ["ROLE", "CREATED", "CONTENT"],
-      rows: rows.map((message) => [text(message.role), text(message.createdAt), text(message.content).replaceAll("\n", " ")]),
+      headers: ["ROLE", "CREATED", "TOOLS", "CONTENT"],
+      rows: rows.map((message) => [
+        text(message.role),
+        text(message.createdAt),
+        renderToolCalls(message.steps),
+        text(message.content).replaceAll("\n", " "),
+      ]),
       emptyMessage: "No messages in this conversation.",
     })}\n`,
   );
+}
+
+/**
+ * The tool names a turn actually invoked, in step order. They arrive in the same
+ * payload as the message, so a text render that dropped them made the operator
+ * re-fetch with `--json` and reach for `jq` to answer the first question anyone
+ * has about an agent's turn: which tool ran. A call whose result is missing from
+ * the same message is marked `?` — that is a turn that ended mid-tool, and it
+ * reads as an empty column otherwise.
+ *
+ * The arguments and the results stay out: they are unbounded JSON, and a table
+ * cell is the wrong place for them. `--json` carries them unchanged.
+ */
+function renderToolCalls(steps: unknown): string {
+  if (!Array.isArray(steps)) return "-";
+  const names: string[] = [];
+  for (const step of steps as MessageStep[]) {
+    const answered = new Set((step.toolResults ?? []).map((result) => result.toolCallId));
+    for (const call of step.toolCalls ?? []) {
+      names.push(answered.has(call.toolCallId) ? call.toolName : `${call.toolName}?`);
+    }
+  }
+  return names.length === 0 ? "-" : names.join(", ");
 }
 
 /**
@@ -1028,7 +1076,13 @@ while the real secret stayed in place.`,
   conversations: {
     list: {
       summary: "list an agent's conversations",
-      usage: "Usage: polyant-cli agent conversations list <slug> [--limit <n>] [--offset <n>] [--search <text>] [--source <channel>]",
+      usage: `Usage: polyant-cli agent conversations list <slug> [--limit <n>] [--offset <n>] [--search <text>]
+                                                     [--source <channel>] [--from <iso>] [--to <iso>]
+
+--from/--to window the conversations by last update, half-open: --from is
+inclusive, --to exclusive, so a single day is --from 2026-09-03 --to 2026-09-04.
+The engine ignores the window when searching, so --search refuses to combine
+with either.`,
       action: conversationsList,
     },
     show: {

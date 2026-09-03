@@ -59,10 +59,15 @@ export async function scopeFor(
   context: CommandContext | undefined,
   mode: ScopeMode = "write",
 ): Promise<ResolvedScope> {
+  const global = context?.global ?? { json: false, yes: false, dryRun: false };
   const scope = resolveScope({
     config: await deps.loadConfig(),
     env: deps.env,
-    global: context?.global ?? { json: false, yes: false, dryRun: false },
+    global,
+    // `--url` is per-invocation intent, so it reaches resolveTarget as an
+    // explicit override. Without this every command but `api` and `whoami`
+    // ignored the flag the CLI's own error messages already named.
+    ...(global.url === undefined ? {} : { url: global.url }),
     required: REQUIRED[mode],
   });
   if (mode === "read" && scope.workspace === undefined) {

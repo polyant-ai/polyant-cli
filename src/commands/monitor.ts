@@ -215,7 +215,7 @@ async function events(
   const items = expectArray<AuditLogListResponse["items"][number]>(body?.items, "GET /api/audit-logs");
   deps.io.stdout(
     `${renderTable({
-      headers: ["CREATED", "AGENT", "TOOL", "ACTION", "OK", "MS", "ERROR"],
+      headers: ["CREATED", "AGENT", "TOOL", "ACTION", "OK", "MS", "ERROR", "CONVERSATION"],
       rows: items.map((item) => [
         text(item.createdAt),
         text(item.instanceId),
@@ -224,6 +224,7 @@ async function events(
         item.success ? "yes" : "NO",
         text(item.durationMs),
         text(item.error).replaceAll("\n", " "),
+        text(item.conversationId),
       ]),
       emptyMessage: "No events matched.",
     })}\n`,
@@ -381,7 +382,12 @@ const EVENTS_USAGE = `Usage: polyant-cli monitor events [--instance <slug>] [--c
 --conversation narrows to one conversation's tool calls, which is how a turn's
 audit trail lines up with \`monitor traces\` and \`agent messages\` for the same id.
 Every row also carries the assistant message it served; that is in --json, not
-in the table.`;
+in the table.
+
+Mind that the engine drops the parameter today: GET /api/audit-logs declares
+instanceId, toolName, action, search, from and to, and nothing else, so
+--conversation is sent and ignored and the answer is the whole log. The
+CONVERSATION column is the filter that actually holds until the route takes it.`;
 
 export function createMonitorCommand(overrides: Partial<ServiceDependencies> = {}): { command: Command; actions: MonitorActions } {
   const deps = { ...processServiceDependencies, ...overrides };

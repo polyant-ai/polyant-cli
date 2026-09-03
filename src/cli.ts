@@ -145,6 +145,7 @@ export function renderCatalogue(): string {
       version: renderVersion(),
       globalOptions: [
         { flag: "--target", value: "name", summary: "target from polyant.yaml" },
+        { flag: "--url", value: "baseUrl", summary: "override the resolved target's baseUrl for this invocation" },
         { flag: "--context", value: "name", summary: "named target/org/workspace shortcut" },
         { flag: "--org", value: "slug", summary: "organisation to act in" },
         { flag: "--workspace", value: "slug", summary: "workspace to act in; sent as x-workspace-slug" },

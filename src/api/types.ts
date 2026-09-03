@@ -166,6 +166,18 @@ export interface ConversationsResponse {
   total: number;
 }
 
+/**
+ * One model step inside an assistant message, as
+ * `GET /api/conversations/:id/messages` carries it. The DTO holds the step's
+ * text, reasoning, token counts and duration too; these are the fields read.
+ * Every one is optional on purpose: rows written before the engine persisted
+ * steps are backfilled with `legacy: true` and carry no tool calls.
+ */
+export interface MessageStep {
+  toolCalls?: { toolCallId: string; toolName: string; args: unknown }[];
+  toolResults?: { toolCallId: string; result: unknown }[];
+}
+
 /** GET /api/organizations — a management key sees only its own organisation. */
 export interface OrganizationSummary {
   id: string;
