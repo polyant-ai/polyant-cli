@@ -171,8 +171,6 @@ export async function devInit(
   deps.io.stderr(
     `Next: npm install in ${directory}, then \`npm run dev\`${
       agent === AGENT_PLACEHOLDER ? ` after replacing ${AGENT_PLACEHOLDER} in package.json` : ""
-    }.\n` +
-      `note: ${SDK_SPECIFIER} is not published yet. Until that tag exists, install the SDK from a local checkout ` +
-      "(`npm install ../polyant-sdk`) — the dev runtime lives in its `./dev` entry point.\n",
+    }.\n`,
   );
 }
