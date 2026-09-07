@@ -205,6 +205,24 @@ describe("monitor events", () => {
     expect(h.err.join("")).toContain("1 of 37 events.");
   });
 
+  it("narrows to one conversation, which is what lines a turn up with its traces", async () => {
+    const h = harness([response({ items: [], total: 0, limit: 50, offset: 0 })]);
+
+    await action(h.monitor, "events")(["--conversation", "conv-1"], context());
+
+    expect(h.calls[0]).toMatchObject({ path: "/api/audit-logs", query: { conversationId: "conv-1" } });
+  });
+
+  it("names the conversation each event belongs to", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "events")([], context());
+
+    const text = h.out.join("");
+    expect(text).toContain("CONVERSATION");
+    expect(text).toContain("conv-1");
+  });
+
   it("rejects a non-positive --limit before any request", async () => {
     const h = harness([]);
 
@@ -316,6 +334,198 @@ describe("monitor events as agent logs", () => {
     await h.monitor.actions.events(["acme", "--follow"], context(), "acme");
 
     expect(h.streamCalls[0].query).toMatchObject({ instance: "acme" });
+  });
+});
+
+describe("monitor ai-logs", () => {
+  const page = {
+    items: [
+      {
+        id: "log-1",
+        provider: "anthropic",
+        model: "claude-sonnet-4",
+        tier: "standard",
+        promptTokens: 500,
+        completionTokens: 120,
+        totalTokens: 620,
+        cachedInputTokens: 0,
+        estimatedCostUsd: 0.0123,
+        durationMs: 890,
+        conversationId: "conv-1",
+        instanceId: "acme",
+        callType: "conversation",
+        outcome: "ok",
+        errorKind: null,
+        createdAt: "2026-07-29T10:00:00.000Z",
+      },
+    ],
+    total: 42,
+    limit: 10,
+    offset: 0,
+  };
+
+  it("requests the raw route with its filters", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")(["--instance", "acme", "--call-type", "conversation", "--limit", "10"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/ai-logs",
+      query: { instanceId: "acme", callType: "conversation", limit: "10" },
+    });
+  });
+
+  it("rejects an unknown option instead of dropping it", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "ai-logs")(["--nope", "x"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+  });
+
+  it("rejects a non-positive --limit before any request", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "ai-logs")(["--limit", "-5"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("renders the cost and cache columns and reports the page size on stderr", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")([], context());
+
+    const text = h.out.join("");
+    expect(text).toContain("claude-sonnet-4");
+    expect(text).toContain("conversation");
+    expect(h.err.join("")).toContain("1 of 42 calls.");
+    expect(h.err.join("")).toContain("analytics aggregate excludes them");
+  });
+
+  it("passes the response through unchanged with --json", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")([], context({ json: true }));
+
+    expect(h.out.join("")).toBe(JSON.stringify(page));
+  });
+
+  // The engine counts over at most 10001 rows and says so. Printing that total
+  // bare would state a number it never measured.
+  it("reports a capped total as a floor, not as the row count", async () => {
+    const h = harness([response({ ...page, total: 10001, totalIsCapped: true })]);
+
+    await action(h.monitor, "ai-logs")([], context());
+
+    expect(h.err.join("")).toContain("1 of at least 10001 calls.");
+  });
+
+  it("reports an uncapped total plainly", async () => {
+    const h = harness([response({ ...page, totalIsCapped: false })]);
+
+    await action(h.monitor, "ai-logs")([], context());
+
+    expect(h.err.join("")).toContain("1 of 42 calls.");
+  });
+
+  // An engine that predates the field never capped, so absent must not read as
+  // "capped" — that would put "at least" in front of an exact number.
+  it("treats an absent totalIsCapped as not capped", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "ai-logs")([], context());
+
+    expect(h.err.join("")).not.toContain("at least");
+  });
+});
+
+describe("monitor traces", () => {
+  const page = {
+    items: [
+      {
+        id: "trace-1",
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        instanceId: "acme",
+        channel: "whatsapp",
+        contextPrepMs: 12,
+        governanceInputMs: 3,
+        toolBuildingMs: 5,
+        llmCallMs: 720,
+        governanceOutputMs: 4,
+        totalMs: 890,
+        ttfbMs: 210,
+        promptTokens: 500,
+        completionTokens: 120,
+        cachedInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        model: "claude-sonnet-4",
+        provider: "anthropic",
+        cost: 0.0123,
+        thinking: false,
+        temperature: 0.7,
+        toolCalls: 0,
+        isStreaming: true,
+        sttDurationMs: null,
+        sttProvider: null,
+        audioDurationSec: null,
+        parentConversationId: null,
+        parentTraceId: null,
+        createdAt: "2026-07-29T10:00:00.000Z",
+      },
+    ],
+    total: 17,
+    limit: 5,
+    offset: 0,
+  };
+
+  it("requests the trace route for one conversation", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "traces")(["--conversation", "acme:whatsapp:+39", "--limit", "5"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/pipeline-traces",
+      query: { conversationId: "acme:whatsapp:+39", limit: "5" },
+    });
+  });
+
+  it("rejects an unknown option instead of dropping it", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "traces")(["--nope", "x"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+  });
+
+  it("rejects a non-positive --limit before any request", async () => {
+    const h = harness([]);
+
+    await expect(action(h.monitor, "traces")(["--limit", "-5"], context())).rejects.toMatchObject({ code: ExitCode.Config });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("renders the phase timings and reports the page size on stderr", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "traces")([], context());
+
+    const text = h.out.join("");
+    expect(text).toContain("claude-sonnet-4");
+    expect(text).toContain("whatsapp");
+    expect(h.err.join("")).toContain("1 of 17 turns.");
+  });
+
+  it("passes the response through unchanged with --json", async () => {
+    const h = harness([response(page)]);
+
+    await action(h.monitor, "traces")([], context({ json: true }));
+
+    expect(h.out.join("")).toBe(JSON.stringify(page));
+  });
+
+  it("reports a capped total as a floor", async () => {
+    const h = harness([response({ ...page, total: 10001, totalIsCapped: true })]);
+
+    await action(h.monitor, "traces")([], context());
+
+    expect(h.err.join("")).toContain("1 of at least 10001 turns.");
   });
 });
 

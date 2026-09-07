@@ -257,6 +257,160 @@ describe("org plugins", () => {
   });
 });
 
+/** The listing is the whole org catalogue with an `assigned` flag, not the subset. */
+const WS_SKILLS = {
+  skills: [
+    { slug: "triage", name: "Triage", assigned: true },
+    { slug: "billing", name: "Billing", assigned: false },
+  ],
+};
+
+const WS_PLUGINS = {
+  plugins: [
+    { name: "sales", version: "1.2.0", compatible: true, grantedToOrg: true, assigned: false },
+    { name: "ticketing", version: "0.9.0", compatible: true, grantedToOrg: false, assigned: false },
+    { name: "legacy", version: "0.1.0", compatible: true, grantedToOrg: true, assigned: true },
+  ],
+};
+
+describe("workspace skills", () => {
+  it("lists the whole catalogue with the workspace's assignment, addressing the workspace by slug", async () => {
+    const h = harness([response(WS_SKILLS)]);
+
+    await leaf(h.commands, ["workspace", "skills", "list"])(["labs"], context());
+
+    // The slug goes in the path: this route family does not take the uuid the
+    // sibling `workspace member` routes do.
+    expect(h.calls[0]).toMatchObject({ path: "/api/organizations/default/workspaces/labs/skills" });
+    const table = h.out.join("");
+    expect(table).toMatch(/triage\s+Triage\s+yes/);
+    expect(table).toMatch(/billing\s+Billing\s+no/);
+  });
+
+  it("--assigned-only drops what the workspace may not use", async () => {
+    const h = harness([response(WS_SKILLS)]);
+
+    await leaf(h.commands, ["workspace", "skills", "list"])(["labs", "--assigned-only"], context());
+
+    expect(h.out.join("")).not.toContain("billing");
+  });
+
+  it("assigns a skill from the organisation's catalogue", async () => {
+    const h = harness([response(WS_SKILLS), response({ assigned: true })]);
+
+    await leaf(h.commands, ["workspace", "skills", "assign"])(["labs", "billing"], context({ yes: true }));
+
+    expect(h.calls[1]).toMatchObject({
+      method: "PUT",
+      path: "/api/organizations/default/workspaces/labs/skills/billing",
+    });
+    expect(h.err.join("")).toContain("Let labs use skill billing.");
+  });
+
+  it("refuses a slug the organisation does not hold, naming the ones it does", async () => {
+    const h = harness([response(WS_SKILLS)]);
+
+    await expect(
+      leaf(h.commands, ["workspace", "skills", "assign"])(["labs", "trage"], context({ yes: true })),
+    ).rejects.toThrow(/no skill "trage".*Available: triage, billing/s);
+    // The catalogue was read; nothing was written.
+    expect(h.calls.filter((c) => c.method !== undefined && c.method !== "GET")).toEqual([]);
+  });
+
+  it("says an assignment that already exists changes nothing", async () => {
+    const h = harness([response(WS_SKILLS), response({ assigned: true })]);
+
+    await leaf(h.commands, ["workspace", "skills", "assign"])(["labs", "triage"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain("Leave triage assigned to labs; it already is.");
+  });
+
+  it("refuses to revoke an assignment the workspace does not have", async () => {
+    const h = harness([response(WS_SKILLS)]);
+
+    await expect(
+      leaf(h.commands, ["workspace", "skills", "revoke"])(["labs", "billing"], context({ yes: true, }))
+    ).rejects.toThrow(/not assigned skill billing/);
+  });
+
+  it("requires a matching --confirm before revoking", async () => {
+    const h = harness([response(WS_SKILLS)]);
+
+    await expect(
+      leaf(h.commands, ["workspace", "skills", "revoke"])(["labs", "triage"], context({ yes: true })),
+    ).rejects.toThrow(/--confirm/);
+  });
+
+  it("revokes once the name is confirmed", async () => {
+    const h = harness([response(WS_SKILLS), response({ assigned: false })]);
+
+    await leaf(h.commands, ["workspace", "skills", "revoke"])(
+      ["labs", "triage", "--confirm", "triage"],
+      context({ yes: true }),
+    );
+
+    expect(h.calls[1]).toMatchObject({
+      method: "DELETE",
+      path: "/api/organizations/default/workspaces/labs/skills/triage",
+    });
+  });
+});
+
+describe("workspace plugins", () => {
+  it("reports the organisation's grant and the workspace's assignment separately", async () => {
+    const h = harness([response(WS_PLUGINS)]);
+
+    await leaf(h.commands, ["workspace", "plugins", "list"])(["labs"], context());
+
+    const table = h.out.join("");
+    // NAME VERSION GRANTED ASSIGNED COMPATIBLE
+    expect(table).toMatch(/sales\s+1\.2\.0\s+yes\s+no\s+yes/);
+    expect(table).toMatch(/ticketing\s+0\.9\.0\s+no\s+no\s+yes/);
+  });
+
+  it("assigns a plugin the organisation holds", async () => {
+    const h = harness([response(WS_PLUGINS), response({ assigned: true })]);
+
+    await leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "sales"], context({ yes: true }));
+
+    expect(h.calls[1]).toMatchObject({
+      method: "PUT",
+      path: "/api/organizations/default/workspaces/labs/plugins/sales",
+    });
+  });
+
+  it("refuses to assign a plugin the organisation does not hold, because the row would change nothing", async () => {
+    const h = harness([response(WS_PLUGINS)]);
+
+    await expect(
+      leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "ticketing"], context({ yes: true })),
+    ).rejects.toThrow(/does not hold plugin ticketing/);
+    expect(h.calls.filter((c) => c.method !== undefined && c.method !== "GET")).toEqual([]);
+  });
+
+  it("refuses a plugin this deployment has not installed", async () => {
+    const h = harness([response(WS_PLUGINS)]);
+
+    await expect(
+      leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "ghost"], context({ yes: true })),
+    ).rejects.toThrow(/no plugin "ghost"/);
+  });
+
+  it("revokes an assigned plugin once the name is confirmed", async () => {
+    const h = harness([response(WS_PLUGINS), response({ assigned: false })]);
+
+    await leaf(h.commands, ["workspace", "plugins", "revoke"])(
+      ["labs", "legacy", "--confirm", "legacy"],
+      context({ yes: true }),
+    );
+
+    expect(h.calls[1]).toMatchObject({
+      method: "DELETE",
+      path: "/api/organizations/default/workspaces/labs/plugins/legacy",
+    });
+  });
+});
+
 describe("dry runs", () => {
   // A dry run may still READ — the validation that makes the recap accurate is
   // the point of it. What it must never do is send a write.
@@ -266,6 +420,10 @@ describe("dry runs", () => {
       [["apikey", "create"], ["ci", "--permissions", "agent:read"], [response(ISSUABLE)]],
       [["member", "set-role"], ["u-1", "--role", "admin"], []],
       [["workspace", "member", "set"], ["labs", "u-1", "--role", "member"], []],
+      [["workspace", "skills", "assign"], ["labs", "billing"], [response(WS_SKILLS)]],
+      [["workspace", "skills", "revoke"], ["labs", "triage"], [response(WS_SKILLS)]],
+      [["workspace", "plugins", "assign"], ["labs", "sales"], [response(WS_PLUGINS)]],
+      [["workspace", "plugins", "revoke"], ["labs", "legacy"], [response(WS_PLUGINS)]],
     ];
     for (const [path, args, reads] of cases) {
       const h = harness(reads);

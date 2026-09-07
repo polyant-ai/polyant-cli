@@ -48,7 +48,22 @@ export interface AgentDetail extends AgentSummary {
   provider: string | null;
   model: string | null;
   memoryEnabled: boolean;
+  /**
+   * How wide the agent's long-term memory reaches: "agent" (one pool for every
+   * conversation), "conversation" (a pool per conversation), or "principal"
+   * (reserved — the engine stores it but refuses to set it, and resolves it as
+   * "conversation" until identity work lands). Absent before the field existed.
+   */
+  memoryScope?: string;
   knowledgeEnabled: boolean;
+  /**
+   * Whether the agent is exposed over A2A. Optional: an engine older than 1.1.0
+   * does not report it, and a missing field must read as "not exposed" rather
+   * than as "unknown" — the panel and the CLI both default it to false.
+   */
+  a2aEnabled?: boolean;
+  /** The speech-to-text provider, "disabled" included. Absent before 1.0.2. */
+  sttProvider?: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -89,6 +104,17 @@ export interface ChannelEntry {
   channelType: string;
   enabled: boolean;
   config: Record<string, unknown>;
+  /**
+   * `false` only when the stored config failed to decrypt — a rotated
+   * ENCRYPTION_KEY — never when it is simply empty. Without it an unreadable
+   * channel renders exactly like an unconfigured one, which is the difference
+   * an operator is looking for. Optional: an engine that predates it reports
+   * nothing, and absent must read as readable rather than as broken.
+   */
+  configReadable?: boolean;
+  /** Why the ENGINE disabled this channel, or null when a person did (or nobody). */
+  disabledReason?: string | null;
+  disabledAt?: string | null;
 }
 
 export interface ChannelsResponse {
@@ -138,6 +164,18 @@ export interface ConversationSummary {
 export interface ConversationsResponse {
   conversations: ConversationSummary[];
   total: number;
+}
+
+/**
+ * One model step inside an assistant message, as
+ * `GET /api/conversations/:id/messages` carries it. The DTO holds the step's
+ * text, reasoning, token counts and duration too; these are the fields read.
+ * Every one is optional on purpose: rows written before the engine persisted
+ * steps are backfilled with `legacy: true` and carry no tool calls.
+ */
+export interface MessageStep {
+  toolCalls?: { toolCallId: string; toolName: string; args: unknown }[];
+  toolResults?: { toolCallId: string; result: unknown }[];
 }
 
 /** GET /api/organizations — a management key sees only its own organisation. */
@@ -203,6 +241,8 @@ export interface AuditLogRow {
   conversationId: string | null;
   toolName: string;
   action: string;
+  /** The assistant message this tool call served, when the engine recorded one. */
+  messageId: string | null;
   success: boolean;
   error: string | null;
   durationMs: number | null;
@@ -223,6 +263,83 @@ export interface AuditStatsResponse {
   errorRate: number;
   byTool: { toolName: string; count: number }[];
   byAction: { action: string; count: number }[];
+}
+
+/** GET /api/ai-logs — one row per LLM call, unfiltered by outcome. */
+export interface AiLogRow {
+  id: string;
+  provider: string;
+  model: string;
+  tier: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  estimatedCostUsd: number;
+  durationMs: number;
+  conversationId: string | null;
+  instanceId: string | null;
+  callType: string;
+  outcome: string;
+  errorKind: string | null;
+  thinking: boolean;
+  reasoningChars: number;
+  stepCount: number;
+  createdAt: string;
+}
+
+export interface AiLogListResponse {
+  items: AiLogRow[];
+  /** Counted over at most 10001 rows. A floor, not the row count, when capped. */
+  total: number;
+  /** True when `total` came back AT the engine's count ceiling. */
+  totalIsCapped?: boolean;
+  limit: number;
+  offset: number;
+}
+
+/** GET /api/pipeline-traces — one row per turn, with its phase breakdown. */
+export interface TraceRow {
+  id: string;
+  conversationId: string;
+  instanceId: string;
+  channel: string;
+  llmCallMs: number | null;
+  totalMs: number;
+  ttfbMs: number | null;
+  model: string | null;
+  provider: string | null;
+  createdAt: string;
+}
+
+export interface TraceListResponse {
+  items: TraceRow[];
+  /** Counted over at most 10001 rows. A floor, not the row count, when capped. */
+  total: number;
+  /** True when `total` came back AT the engine's count ceiling. */
+  totalIsCapped?: boolean;
+  limit: number;
+  offset: number;
+}
+
+/** GET /api/messages — messages across one agent's conversations. */
+export interface MessageRow {
+  id: string;
+  conversationId: string;
+  role: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface MessageListResponse {
+  items: MessageRow[];
+  /** Counted over at most 10001 rows. A floor, not the row count, when capped. */
+  total: number;
+  /** True when `total` came back AT the engine's count ceiling. */
+  totalIsCapped?: boolean;
+  limit: number;
+  offset: number;
 }
 
 /**

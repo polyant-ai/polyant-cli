@@ -22,7 +22,7 @@ export const WORKSPACE_HEADER = "x-workspace-slug";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Routes that live outside /api, which callers get wrong systematically. */
-const TOP_LEVEL_PREFIXES = "/health, /v1, /memories, /channels/http, /webhooks, /oauth";
+const TOP_LEVEL_PREFIXES = "/health, /v1, /a2a, /memories, /channels/http, /webhooks, /oauth";
 
 export interface RequestOptions {
   method?: string;
@@ -165,12 +165,35 @@ async function dispatch(target: ResolvedTarget, opts: RequestOptions): Promise<{
   return { res, url, method };
 }
 
+/**
+ * Nest answers an unmatched path with `Cannot GET /api/x`, and that is the exact
+ * answer an engine older than the CLI gives for a route it has not shipped. The
+ * status carries no way to tell the two apart, so version skew arrives looking
+ * like a usage mistake — the operator reads `404`, exit 2, and goes hunting for
+ * a typo in a slug. The engine publishes no version on any route, so the CLI
+ * cannot resolve the ambiguity; naming it is what it can do.
+ */
+const UNMATCHED_ROUTE = /^Cannot [A-Z]+ \//;
+
+export function explainUnmatchedRoute(status: number, message: string): string {
+  if (status !== 404 || !UNMATCHED_ROUTE.test(message)) return message;
+  return (
+    `${message} — the instance does not serve that route. Either the path is wrong, or this ` +
+    `engine predates it: an unshipped route and an unknown one answer the same 404. ` +
+    `See the CLI/engine compatibility table in the README before reading this as a usage error.`
+  );
+}
+
 export async function request(target: ResolvedTarget, opts: RequestOptions): Promise<ApiResponse> {
   const { res } = await dispatch(target, opts);
 
   const { raw, body } = await readBody(res);
   if (!res.ok) {
-    throw new RemoteError(extractMessage(res.status, body), statusToExitCode(res.status), res.status);
+    throw new RemoteError(
+      explainUnmatchedRoute(res.status, extractMessage(res.status, body)),
+      statusToExitCode(res.status),
+      res.status,
+    );
   }
   return { status: res.status, raw, body };
 }
@@ -228,7 +251,11 @@ export async function requestStream(target: ResolvedTarget, opts: RequestOptions
 
   if (!res.ok) {
     const { body } = await readBody(res);
-    throw new RemoteError(extractMessage(res.status, body), statusToExitCode(res.status), res.status);
+    throw new RemoteError(
+      explainUnmatchedRoute(res.status, extractMessage(res.status, body)),
+      statusToExitCode(res.status),
+      res.status,
+    );
   }
   if (res.body === null) throw new RemoteError(`${opts.path} returned no stream body.`, ExitCode.Remote);
   return { status: res.status, events: parseSse(res.body) };

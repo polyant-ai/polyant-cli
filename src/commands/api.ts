@@ -145,6 +145,15 @@ async function readData(spec: string): Promise<RawPayload> {
   return { text, source };
 }
 
+/**
+ * `--url` is a global flag, so the runtime's parser consumes it before this
+ * command's own parser sees it. The local spelling survives for a direct caller
+ * that hands `run` its argv without going through `parseInvocation`.
+ */
+function urlForScope(context: CommandContext | undefined, url: string | undefined): string | undefined {
+  return url ?? context?.global.url;
+}
+
 /** Lets direct command callers retain local --target parsing while the runtime owns global flags. */
 function globalForScope(context: CommandContext | undefined, target: string | undefined): GlobalOptions {
   const global = context?.global;
@@ -154,11 +163,12 @@ function globalForScope(context: CommandContext | undefined, target: string | un
 
 async function resolveInvocation(args: ApiArgs, context?: CommandContext): Promise<{ target: ResolvedTarget; payload?: RawPayload }> {
   const config = await loadWorkspaceConfig();
+  const url = urlForScope(context, args.url);
   const target = resolveScope({
     config,
     env: process.env,
     global: globalForScope(context, args.target),
-    ...(args.url === undefined ? {} : { url: args.url }),
+    ...(url === undefined ? {} : { url }),
     required: ["target"],
   }).target;
   const payload = args.data === undefined ? undefined : await readData(args.data);

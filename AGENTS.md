@@ -24,6 +24,12 @@ byte-for-byte: large integers keep their precision, `1.0` stays `1.0`, key order
 survives. Never parse the human tables — they are aligned for eyes and their
 columns will change.
 
+One field to read rather than assume: `monitor ai-logs`, `monitor traces` and
+`agent messages` carry `totalIsCapped`. The engine counts over at most 10001
+matching rows, so when that is `true` the `total` beside it is a **floor**, not
+the number of matching rows. Narrow the window if you need the real figure. The
+human output says "at least 10001" for the same reason.
+
 **2. Exit codes carry the outcome.** Branch on them instead of matching on stderr:
 
 | code | meaning |
@@ -56,9 +62,12 @@ polyant-cli --yes --confirm acme agent delete acme        # destructive: name it
 ```
 
 `--dry-run` is the cheap way to check you have the arguments right. Destructive
-actions — `agent delete`, `channels remove`, `hooks remove`, `secrets unset`,
-`workspace delete`, `role delete`, `member remove`, and any non-GET `api` DELETE —
-additionally require `--confirm <name>` matching the thing being destroyed.
+actions — `agent delete`, `channels remove`, `channels whatsapp rotate`,
+`hooks remove`, `secrets unset`, `events rotate`, `mcp remove`, `memory remove`,
+`memory clear`, `optouts opt-in`, `workspace delete`, `role delete`,
+`member remove`, `workspace skills revoke`, `workspace plugins revoke`, and any
+non-GET `api` DELETE — additionally require `--confirm <name>` matching the thing
+being destroyed.
 
 ## Before the first command
 
@@ -90,10 +99,14 @@ its job. Use `monitor status` when you need a gate that fails.
 | watch it live | `monitor events --follow [--instance <slug>] [--max <n>]` |
 | cost and latency | `analytics overview`, `analytics agent <slug>`, `analytics org` |
 | try an agent | `agent chat <slug> --message "…" [--expect "…"]` |
-| what an agent knows | `agent knowledge list <slug>`, `agent skills show <slug>` |
+| what an agent knows | `agent knowledge list <slug>`, `agent skills show <slug>`, `agent memory list <slug>` |
+| tools from elsewhere | `agent mcp show <slug>`, `agent mcp test <slug> --file -` |
+| is it exposed to other agents | `agent a2a show <slug>` |
+| who asked to be left alone | `agent optouts list <slug>` |
 | what governs an agent | `agent governance show <slug>`, `governance policy list` |
 | move an agent between instances | `agent export <slug>` → `agent import --file -` |
 | who may do what | `role list`, `workspace bindings`, `apikey list` |
+| what a workspace may use | `workspace skills list <ws>`, `workspace plugins list <ws>` |
 | anything not covered | `api <METHOD> <path>` |
 
 `--follow` has no deadline: bound it with `--max <n>` or you will wait forever.
@@ -110,7 +123,8 @@ printf %s "$OPENAI_KEY" | polyant-cli agent secrets set acme --key openai_api_ke
 ```
 
 That holds for `agent secrets set`, `org secrets set`, `agent skills env set`,
-`channels set`, `hooks add|update`, `prompt set` and `api --data`. Every structured
+`channels set`, `mcp set|test`, `memory add`, `hooks add|update`, `prompt set` and
+`api --data`. Every structured
 payload — a hook, a channel, a scheduled task, a retention policy, a governance
 assignment, an import bundle — arrives the same way, as `--file <path|->`. Recaps report a payload's **length and source**,
 never its content. `secrets show` and `channels show` report key *names* and
@@ -127,7 +141,7 @@ polyant-cli api PUT /api/instances/acme/secrets --data - --yes
 ```
 
 Paths start with `/`, and not everything is under `/api`: `/health`, `/v1`,
-`/memories`, `/channels/http`, `/webhooks` and `/oauth` are top level. Both
+`/memories`, `/a2a`, `/channels/http`, `/webhooks` and `/oauth` are top level. Both
 directions are byte-for-byte, so it is the right tool for a route with no product
 command yet — and the wrong one when a product command exists, because the
 product command validates arguments locally and names what it is about to change.

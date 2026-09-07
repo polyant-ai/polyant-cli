@@ -7,6 +7,8 @@ import type {
   ConversationsResponse,
   HooksResponse,
   ListAgentsResponse,
+  MessageListResponse,
+  MessageStep,
   PromptsResponse,
   SecretsResponse,
   ToolsResponse,
@@ -18,6 +20,7 @@ import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
 import {
   call,
+  cappedTotal,
   expectArray,
   maybe,
   positiveInteger,
@@ -31,6 +34,8 @@ import { buildNode, type Node } from "../runtime/tree.js";
 import { preflight, reportWrite, requireSlug } from "../runtime/workspace.js";
 import type { ResolvedScope } from "../runtime/scope.js";
 import { AGENT_FAMILY_EXTRAS } from "./agent-ops.js";
+import { AGENT_DATA_EXTRAS } from "./agent-data.js";
+import { AGENT_INTEROP_EXTRAS } from "./agent-interop.js";
 import { chat, CHAT_USAGE } from "./agent-chat.js";
 import { createMonitorCommand } from "./monitor.js";
 
@@ -73,7 +78,11 @@ async function show(args: string[], context: CommandContext | undefined, deps: A
     { label: "provider", value: text(agent.provider) },
     { label: "model", value: text(agent.model) },
     { label: "authEnabled", value: text(agent.authEnabled) },
+    { label: "a2aEnabled", value: agent.a2aEnabled === true ? "true" : "false" },
     { label: "memoryEnabled", value: text(agent.memoryEnabled) },
+    // Only meaningful while memory is on, but printed regardless: a scope that
+    // disappeared when memory was off would look like an engine that has none.
+    { label: "memoryScope", value: text(agent.memoryScope) },
     { label: "knowledgeEnabled", value: text(agent.knowledgeEnabled) },
     { label: "updatedAt", value: text(agent.updatedAt) },
   ]);
@@ -112,7 +121,42 @@ function optional(options: readonly string[], flag: string, field: string): Reco
   return value === undefined ? {} : { [field]: value };
 }
 
-const UPDATE_FLAGS = { value: ["--name", "--description", "--provider", "--model", "--status", "--confirm"] } as const;
+const UPDATE_FLAGS = {
+  value: ["--name", "--description", "--provider", "--model", "--status", "--stt-provider", "--memory-scope", "--confirm"],
+} as const;
+
+/**
+ * The engine's own union. "disabled" is the one that matters: an unrecognised
+ * value used to fall back to Whisper silently, so an operator who wanted voice
+ * messages off had no way to say so.
+ */
+const STT_PROVIDERS = ["openai", "aws", "deepgram", "disabled"] as const;
+
+/**
+ * What a caller may SET, which is narrower than what the engine stores.
+ * `principal` is a third stored value, reserved for identity work that has not
+ * landed; the engine refuses it on the write path and resolves it as
+ * `conversation` on the read path, so offering it here would offer a no-op.
+ */
+const MEMORY_SCOPES = ["agent", "conversation"] as const;
+
+function memoryScope(options: readonly string[]): Record<string, string> {
+  const value = takeValue(options, "--memory-scope");
+  if (value === undefined) return {};
+  if (!(MEMORY_SCOPES as readonly string[]).includes(value)) {
+    throw new ConfigError(`--memory-scope must be one of ${MEMORY_SCOPES.join(", ")}.`);
+  }
+  return { memoryScope: value };
+}
+
+function sttProvider(options: readonly string[]): Record<string, string> {
+  const value = takeValue(options, "--stt-provider");
+  if (value === undefined) return {};
+  if (!(STT_PROVIDERS as readonly string[]).includes(value)) {
+    throw new ConfigError(`--stt-provider must be one of ${STT_PROVIDERS.join(", ")}.`);
+  }
+  return { sttProvider: value };
+}
 
 async function update(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "update");
@@ -124,6 +168,8 @@ async function update(args: string[], context: CommandContext | undefined, deps:
     ...optional(options, "--provider", "provider"),
     ...optional(options, "--model", "model"),
     ...optional(options, "--status", "status"),
+    ...sttProvider(options),
+    ...memoryScope(options),
   };
   if (Object.keys(body).length === 0) throw new ConfigError("polyant-cli agent update needs at least one field to change.");
 
@@ -317,11 +363,17 @@ async function channelsShow(args: string[], context: CommandContext | undefined,
   // into tickets; the key list answers the operator's question without that.
   deps.io.stdout(
     `${renderTable({
-      headers: ["TYPE", "ENABLED", "CONFIG KEYS"],
+      headers: ["TYPE", "ENABLED", "CONFIG KEYS", "AUTO-DISABLED"],
       rows: channels.map((channel) => [
         channel.channelType,
         channel.enabled ? "yes" : "no",
-        Object.keys(channel.config ?? {}).sort().join(", ") || "-",
+        // A config that failed to decrypt has no readable keys, and listing "-"
+        // for it would report a rotated ENCRYPTION_KEY as an empty channel —
+        // the one reading an operator must not get wrong here.
+        channel.configReadable === false
+          ? "(unreadable)"
+          : Object.keys(channel.config ?? {}).sort().join(", ") || "-",
+        text(channel.disabledReason),
       ]),
       emptyMessage: `Agent ${slug} has no channels configured.`,
     })}\n`,
@@ -402,6 +454,52 @@ async function channelsRemove(args: string[], context: CommandContext | undefine
     path: `/api/instances/${encodeURIComponent(slug)}/channels/${encodeURIComponent(type)}`,
   });
   reportWrite(deps, context, res, `Removed channel ${type} from ${slug}.`);
+}
+
+// --- whatsapp inbound ------------------------------------------------------
+
+/**
+ * A WhatsApp channel authenticating to Twilio with a revocable API Key cannot
+ * be verified by Twilio's signature — Twilio signs with the account Auth Token
+ * alone — so it receives on a URL carrying a server-generated secret instead.
+ * That secret is bearer-equivalent, so `channels show` withholds it and these
+ * two routes, both `channel:write`, are the only way to see or replace it.
+ *
+ * Both answer 404 when the channel is not in API-Key mode, which is the engine
+ * saying "there is no such secret here", not "there is no such agent".
+ */
+function whatsappPath(slug: string, rest: string): string {
+  return `/api/instances/${encodeURIComponent(slug)}/channels/whatsapp/${rest}`;
+}
+
+async function whatsappUrl(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "channels whatsapp url");
+  assertKnown(args.slice(1), {}, "agent channels whatsapp url option");
+  const scope = await scopeFor(deps, context, "read");
+  const res = await call(deps, scope, { path: whatsappPath(slug, "webhook-url") });
+  // Printed whole rather than summarised: the URL IS the answer, and it is the
+  // one thing the operator has to paste elsewhere verbatim.
+  writeRawResponse(deps.io, res.raw);
+}
+
+async function whatsappRotate(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "channels whatsapp rotate");
+  const options = args.slice(1);
+  assertKnown(options, { value: ["--confirm"] }, "agent channels whatsapp rotate option");
+  const scope = await scopeFor(deps, context);
+  const plan = {
+    title: `Rotate the WhatsApp inbound secret of ${slug}`,
+    changes: [
+      "The current inbound URL stops working immediately.",
+      "Paste the new URL into the Twilio Console before the next inbound message, or it is lost.",
+    ],
+    destructive: { confirm: slug },
+  };
+  if (!(await preflight(deps, scope, context, options, plan))) return;
+
+  const res = await call(deps, scope, { method: "POST", path: whatsappPath(slug, "rotate-webhook-secret") });
+  // The response carries the new URL, so it is printed whole even in text mode.
+  writeRawResponse(deps.io, res.raw);
 }
 
 // --- secrets ---------------------------------------------------------------
@@ -640,16 +738,35 @@ async function logs(args: string[], context: CommandContext | undefined, deps: A
 async function conversationsList(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "conversations list");
   const options = args.slice(1);
-  assertKnown(options, { value: ["--limit", "--offset", "--search", "--source"] }, "agent conversations list option");
+  assertKnown(options, { value: ["--limit", "--offset", "--search", "--source", "--from", "--to"] }, "agent conversations list option");
   const scope = await scopeFor(deps, context, "read");
+  const search = takeValue(options, "--search");
+  // The engine spells the window `updatedSince`/`updatedUntil` on this route
+  // and `from`/`to` on the audit log. The operator should not have to know
+  // that: `--from`/`--to` mean the same thing everywhere in the CLI, and the
+  // mapping happens here.
+  const from = takeValue(options, "--from");
+  const to = takeValue(options, "--to");
+  // The engine's search path is FTS-ranked and never time-windowed, so it drops
+  // `updatedSince`/`updatedUntil` on the floor. Accepting both would answer a
+  // question the operator did not ask, with no sign that half the request was
+  // discarded.
+  if (search !== undefined && (from !== undefined || to !== undefined)) {
+    throw new ConfigError(
+      "agent conversations list cannot combine --search with --from/--to: the engine's search is ranked by " +
+        "relevance and ignores the time window. Run the search, or the window, but not both.",
+    );
+  }
   const query = {
     // instanceId carries the agent slug: the engine resolves it through
     // asInstanceSlug, not as a UUID.
     instanceId: slug,
     ...maybe("limit", positiveInteger(takeValue(options, "--limit"), "--limit")),
     ...maybe("offset", takeValue(options, "--offset")),
-    ...maybe("search", takeValue(options, "--search")),
+    ...maybe("search", search),
     ...maybe("source", takeValue(options, "--source")),
+    ...maybe("updatedSince", from),
+    ...maybe("updatedUntil", to),
   };
   const res = await call(deps, scope, { path: "/api/conversations", query });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
@@ -710,11 +827,85 @@ async function conversationsShow(args: string[], context: CommandContext | undef
   );
   deps.io.stdout(
     `\n${renderTable({
-      headers: ["ROLE", "CREATED", "CONTENT"],
-      rows: rows.map((message) => [text(message.role), text(message.createdAt), text(message.content).replaceAll("\n", " ")]),
+      headers: ["ROLE", "CREATED", "TOOLS", "CONTENT"],
+      rows: rows.map((message) => [
+        text(message.role),
+        text(message.createdAt),
+        renderToolCalls(message.steps),
+        text(message.content).replaceAll("\n", " "),
+      ]),
       emptyMessage: "No messages in this conversation.",
     })}\n`,
   );
+}
+
+/**
+ * The tool names a turn actually invoked, in step order. They arrive in the same
+ * payload as the message, so a text render that dropped them made the operator
+ * re-fetch with `--json` and reach for `jq` to answer the first question anyone
+ * has about an agent's turn: which tool ran. A call whose result is missing from
+ * the same message is marked `?` — that is a turn that ended mid-tool, and it
+ * reads as an empty column otherwise.
+ *
+ * The arguments and the results stay out: they are unbounded JSON, and a table
+ * cell is the wrong place for them. `--json` carries them unchanged.
+ */
+function renderToolCalls(steps: unknown): string {
+  if (!Array.isArray(steps)) return "-";
+  const names: string[] = [];
+  for (const step of steps as MessageStep[]) {
+    const answered = new Set((step.toolResults ?? []).map((result) => result.toolCallId));
+    for (const call of step.toolCalls ?? []) {
+      names.push(answered.has(call.toolCallId) ? call.toolName : `${call.toolName}?`);
+    }
+  }
+  return names.length === 0 ? "-" : names.join(", ");
+}
+
+/**
+ * Messages across ALL of one agent's conversations, in one call.
+ *
+ * `agent conversations show` reads a single conversation; this reads the window.
+ * The engine requires the agent slug, which is why it is positional here.
+ */
+async function messages(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "messages");
+  const options = args.slice(1);
+  assertKnown(
+    options,
+    { value: ["--conversation", "--role", "--from", "--to", "--limit", "--offset"] },
+    "agent messages option",
+  );
+  const scope = await scopeFor(deps, context, "read");
+  const res = await call(deps, scope, {
+    path: "/api/messages",
+    query: {
+      instanceId: slug,
+      ...maybe("conversationId", takeValue(options, "--conversation")),
+      ...maybe("role", takeValue(options, "--role")),
+      ...maybe("from", takeValue(options, "--from")),
+      ...maybe("to", takeValue(options, "--to")),
+      ...maybe("limit", positiveInteger(takeValue(options, "--limit"), "--limit")),
+      ...maybe("offset", takeValue(options, "--offset")),
+    },
+  });
+  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+
+  const body = res.body as Partial<MessageListResponse> | null;
+  const items = expectArray<MessageListResponse["items"][number]>(body?.items, "GET /api/messages");
+  deps.io.stdout(
+    `${renderTable({
+      headers: ["CREATED", "CONVERSATION", "ROLE", "CONTENT"],
+      rows: items.map((item) => [
+        text(item.createdAt),
+        text(item.conversationId),
+        text(item.role),
+        text(item.content).replaceAll("\n", " ").slice(0, 80),
+      ]),
+      emptyMessage: `Agent ${slug} has no messages in this window.`,
+    })}\n`,
+  );
+  deps.io.stderr(`${items.length} of ${cappedTotal(body)} messages. Use --json for the untruncated content.\n`);
 }
 
 // --- command tree ----------------------------------------------------------
@@ -729,8 +920,19 @@ const LEAVES: Record<string, Node> = {
     mutates: true,
   },
   update: {
-    summary: "change an agent's name, description, status, provider or model",
-    usage: "Usage: polyant-cli agent update <slug> [--name <name>] [--description <text>] [--status <status>] [--provider <name>] [--model <id>]",
+    summary: "change an agent's name, description, status, provider, model or memory scope",
+    usage: `Usage: polyant-cli agent update <slug> [--name <name>] [--description <text>] [--status <status>]
+                                 [--provider <name>] [--model <id>] [--stt-provider <p>]
+                                 [--memory-scope <agent|conversation>]
+
+--stt-provider is one of openai, aws, deepgram or disabled. "disabled" is a real
+setting, not an absent one: the agent then tells a sender that voice messages
+are not supported instead of transcribing them.
+
+--memory-scope decides how wide long-term memory reaches: "agent" is one pool
+shared by every conversation, "conversation" is a pool per conversation. It does
+not migrate what is already stored — memories written under one scope stay under
+the key they were written with, so a flip changes what NEW turns can recall.`,
     action: update,
     mutates: true,
   },
@@ -768,8 +970,14 @@ const LEAVES: Record<string, Node> = {
   },
   channels: {
     show: {
-      summary: "list configured channels and their config key names",
-      usage: "Usage: polyant-cli agent channels show <slug>",
+      summary: "list configured channels, their config key names and any engine-side disable",
+      usage: `Usage: polyant-cli agent channels show <slug>
+
+Key names only: the engine masks values, and a masked value still discloses
+which fields are populated. CONFIG KEYS reads "(unreadable)" when the stored
+config failed to decrypt — a rotated ENCRYPTION_KEY, not an empty channel.
+AUTO-DISABLED names why the ENGINE turned the channel off; it stays "-" when a
+person did, or when nobody has.`,
       action: channelsShow,
     },
     set: {
@@ -783,6 +991,26 @@ const LEAVES: Record<string, Node> = {
       usage: "Usage: polyant-cli agent channels remove <slug> <type> --yes --confirm <type>",
       action: channelsRemove,
       mutates: true,
+    },
+    whatsapp: {
+      url: {
+        summary: "reveal the inbound webhook URL of an API-Key WhatsApp channel",
+        usage: `Usage: polyant-cli agent channels whatsapp url <slug>
+
+The URL carries a server-generated secret and is bearer-equivalent, so it needs
+channel:write and \`channels show\` withholds it. A 404 means the channel is not
+in Twilio API-Key mode — an Auth Token channel has no such URL.`,
+        action: whatsappUrl,
+      },
+      rotate: {
+        summary: "issue a new inbound webhook secret, invalidating the current URL",
+        usage: `Usage: polyant-cli agent channels whatsapp rotate <slug> --yes --confirm <slug>
+
+The old URL stops working immediately and the new one is in the response — the
+only copy. Update the Twilio Console before the next inbound message.`,
+        action: whatsappRotate,
+        mutates: true,
+      },
     },
   },
   secrets: {
@@ -848,7 +1076,13 @@ while the real secret stayed in place.`,
   conversations: {
     list: {
       summary: "list an agent's conversations",
-      usage: "Usage: polyant-cli agent conversations list <slug> [--limit <n>] [--offset <n>] [--search <text>] [--source <channel>]",
+      usage: `Usage: polyant-cli agent conversations list <slug> [--limit <n>] [--offset <n>] [--search <text>]
+                                                     [--source <channel>] [--from <iso>] [--to <iso>]
+
+--from/--to window the conversations by last update, half-open: --from is
+inclusive, --to exclusive, so a single day is --from 2026-09-03 --to 2026-09-04.
+The engine ignores the window when searching, so --search refuses to combine
+with either.`,
       action: conversationsList,
     },
     show: {
@@ -857,17 +1091,32 @@ while the real secret stayed in place.`,
       action: conversationsShow,
     },
   },
+  messages: {
+    summary: "list messages across all of an agent's conversations",
+    usage: `Usage: polyant-cli agent messages <slug> [--conversation <id>] [--role <user|assistant|system>]
+                                      [--from <iso>] [--to <iso>] [--limit <n>] [--offset <n>]
+
+The engine counts over at most 10001 matching rows, so a busy agent reports
+"at least 10001" rather than a number it did not measure. A slug the key cannot
+reach answers 404 or 403; it does not answer an empty list.`,
+    action: messages,
+  },
 };
 
 const AGENT_SUMMARIES: Record<string, string> = {
   agent: "manage agents, their configuration and their conversations",
+  "agent a2a": "expose an agent over the Agent2Agent protocol",
   "agent channels": "manage an agent's channels",
+  "agent channels whatsapp": "reveal and rotate the WhatsApp inbound webhook secret",
   "agent compliance": "an agent's model card, snapshots and reports",
   "agent conversations": "manage an agent's conversations",
   "agent events": "manage an agent's event sources",
   "agent governance": "assign and inspect an agent's governance policies",
   "agent hooks": "manage an agent's hooks",
   "agent knowledge": "manage an agent's knowledge documents",
+  "agent mcp": "equip an agent with tools from external MCP servers",
+  "agent memory": "manage what an agent has remembered",
+  "agent optouts": "manage the contacts that have opted out of this agent",
   "agent prompt": "manage an agent's prompt",
   "agent retention": "manage an agent's data retention",
   "agent secrets": "manage an agent's secrets",
@@ -885,7 +1134,7 @@ const AGENT_SUMMARIES: Record<string, string> = {
  */
 export function createAgentCommand(overrides: Partial<AgentCommandDependencies> = {}): Command {
   const deps = { ...processServiceDependencies, ...overrides };
-  return buildNode({ ...LEAVES, ...AGENT_FAMILY_EXTRAS }, deps, ["agent"], AGENT_SUMMARIES);
+  return buildNode({ ...LEAVES, ...AGENT_FAMILY_EXTRAS, ...AGENT_INTEROP_EXTRAS, ...AGENT_DATA_EXTRAS }, deps, ["agent"], AGENT_SUMMARIES);
 }
 
 export const agentCommand = createAgentCommand();

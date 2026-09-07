@@ -555,6 +555,21 @@ async function eventsAdd(args: string[], context: CommandContext | undefined, de
   writeRawResponse(deps.io, res.raw);
 }
 
+/**
+ * The ingest URL of one source. It has a route of its own because the list
+ * deliberately no longer carries it: the token it embeds lets its holder inject
+ * events into the agent, so listing (`room:read`) and revealing (`room:write`)
+ * are different questions with different answers.
+ */
+async function eventsUrl(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const slug = requireSlug(args, "events url");
+  const id = requireSecond(args, "events url", "event source id");
+  assertKnown(args.slice(2), {}, "agent events url option");
+  const scope = await scopeFor(deps, context, "read");
+  const res = await call(deps, scope, { path: agentPath(slug, `/event-sources/${encodeURIComponent(id)}/webhook-url`) });
+  writeRawResponse(deps.io, res.raw);
+}
+
 async function eventsUpdate(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   const slug = requireSlug(args, "events update");
   const id = requireSecond(args, "events update", "event source id");
@@ -983,12 +998,22 @@ async function models(args: string[], context: CommandContext | undefined, deps:
   for (const [name, entry] of Object.entries(providers)) {
     if (provider !== undefined && name !== provider) continue;
     for (const model of entry.models ?? []) {
-      rows.push([name, text(model.id), text(model.tier), text(model.costInput), text(model.costOutput), model.supportsThinking ? "yes" : "no"]);
+      rows.push([
+        name,
+        text(model.id),
+        text(model.tier),
+        text(model.costInput),
+        text(model.costOutput),
+        model.supportsThinking ? "yes" : "no",
+        // Read from the engine's catalog, never inferred from the model id: the
+        // catalog is what the runtime consults before it accepts an image.
+        model.supportsVision ? "yes" : "no",
+      ]);
     }
   }
   deps.io.stdout(
     `${renderTable({
-      headers: ["PROVIDER", "MODEL", "TIER", "IN /1M", "OUT /1M", "THINKING"],
+      headers: ["PROVIDER", "MODEL", "TIER", "IN /1M", "OUT /1M", "THINKING", "VISION"],
       rows,
       emptyMessage: provider === undefined ? "This deployment configures no providers." : `No provider named ${provider}.`,
     })}\n`,
@@ -1001,6 +1026,8 @@ interface ModelRow {
   costInput: number;
   costOutput: number;
   supportsThinking: boolean;
+  /** Absent on an engine that predates the field; absent reads as no vision. */
+  supportsVision?: boolean;
 }
 
 // --- the nodes merged into the `agent` family -------------------------------------
@@ -1146,14 +1173,29 @@ A real run: it calls the model and delivers to the task's outbound channel.`,
   events: {
     show: {
       summary: "list an agent's event sources",
-      usage: "Usage: polyant-cli agent events show <slug>",
+      usage: `Usage: polyant-cli agent events show <slug>
+
+The ingest URL is NOT listed: the token it embeds lets its holder drive the
+agent, so the engine withholds it from a read-only caller. Reveal one with
+\`agent events url <slug> <id>\`.`,
       action: eventsShow,
     },
     add: {
       summary: "add an event source from a JSON file or stdin",
-      usage: "Usage: polyant-cli agent events add <slug> --file <path|->\n\nThe response carries the ingest token and is printed whole: it is the only copy.",
+      usage: `Usage: polyant-cli agent events add <slug> --file <path|->
+
+The response carries the ingest token and is printed whole. It is not the only
+copy — \`agent events url\` reveals it again — but every later look needs
+room:write, so keep this one.`,
       action: eventsAdd,
       mutates: true,
+    },
+    url: {
+      summary: "reveal one event source's ingest URL",
+      usage: `Usage: polyant-cli agent events url <slug> <id>
+
+Needs room:write, not room:read: the URL embeds a bearer-equivalent token.`,
+      action: eventsUrl,
     },
     update: {
       summary: "replace an event source from a JSON file or stdin",
@@ -1287,7 +1329,11 @@ replaced, not merged. Without one, a new agent lands in the addressed workspace.
   },
   models: {
     summary: "list the providers and models this deployment offers",
-    usage: "Usage: polyant-cli agent models [--provider <name>]\n\nCosts are per million tokens, straight from the engine's catalog.",
+    usage: `Usage: polyant-cli agent models [--provider <name>]
+
+Costs are per million tokens, straight from the engine's catalog. VISION is what
+decides whether a channel may hand this model an image; a model without it drops
+attachments rather than failing the turn.`,
     action: models,
   },
 };

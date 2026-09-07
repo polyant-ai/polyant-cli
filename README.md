@@ -107,24 +107,75 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | CLI | Engine | Notes |
 |---|---|---|
 | 0.1.x | the management API as of 2026-08-04 | needs `GET /api/service-context`, `x-workspace-slug`, and `POST /api/instances/:slug/playground/chat/stream` for `agent chat` |
+| 0.2.x | 1.1.0 and 1.1.0-ee | adds `agent mcp`, `agent a2a`, `agent memory`, `agent optouts`, `agent events url` and `agent channels whatsapp`; `agent update` gains `--stt-provider` |
+| 0.3.x | the first engine release after 1.1.0-ee | adds `monitor ai-logs`, `monitor traces` and `agent messages`; the three routes merged to the engine's develop on 2026-09-01, so against 1.1.0-ee or older all three answer `404` |
+| 0.4.x | the same, plus the engine's develop as of 2026-09-02 | adds `workspace skills` and `workspace plugins`; `agent update` gains `--memory-scope`, `monitor events` gains `--conversation`, `agent models` gains a VISION column, and `agent channels show` reports an unreadable config and an engine-side disable |
 
-The engine publishes the contract it actually serves at `GET /api/openapi.json`
-(and `packages/engine/api-index.md` in its repo), with `x-permission` and
-`x-requires-feature` on every operation. That is the thing to diff against when a
-command starts answering `404` or `403`.
+Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
+`agent a2a enable` is a `400` — the field does not exist there. Everything else
+in 0.2.x works unchanged against 1.0.x.
+
+Three 1.1.0 changes are visible from here even without a new command:
+
+- `agent events show` no longer lists an ingest URL. The token it embedded lets
+  its holder drive the agent, so the engine withholds it from a `room:read`
+  caller; `agent events url` reveals it, and needs `room:write`.
+- `agent tools set` now refuses a tool name neither the registry nor the
+  catalogue knows, instead of answering `200` with the change silently undone.
+- An empty tool selection means **no tools**, where it used to mean "everything".
+  `agent tools set <slug> --none` is now literal.
+
+Four more are visible against the engine's develop, and matter to anything that
+parses this CLI's output:
+
+- `GET /api/organizations/:org/plugins` moved off the `org:read` floor onto a
+  permission of its own, `org.plugin:read`. A key issued before that split, and
+  holding only `org:read`, now answers `403` on `org plugins`.
+- The three raw-observability listings count over at most 10001 matching rows and
+  report `totalIsCapped` when the count came back at that ceiling. `monitor
+  ai-logs`, `monitor traces` and `agent messages` then say "at least 10001"
+  rather than restating a number the engine did not measure.
+- Those same three resolve a named `--instance` through the caller's accessible
+  workspaces: an agent the key cannot reach answers `404` or `403`, where it used
+  to answer `200` with an empty list — a false "no traffic" on an observability
+  route.
+- Retention covers six traffic-driven tables, not two: `tool_audit_logs`,
+  `hook_executions`, `scheduled_task_runs` and the completed half of
+  `event_backlog` joined `ai_logs` and `pipeline_traces`. `agent retention run
+  --count-only` passes the engine's answer through, so the counts it reports are
+  wider than they were.
+
+When a command starts answering `404` or `403`, the engine's controllers are the
+contract: the permission decorator on the route (`@RequirePermission`, or
+`@PlatformAdminOnly` for the platform lane) and the `@Query` parameters it
+actually declares. A generated OpenAPI artefact has been planned but is not
+served — there is no `GET /api/openapi.json` to diff against, and no
+`api-index.md` beside it.
 
 One family is deliberately absent. Every `/api/platform/*` route — platform
 plugins, platform skills, deployment-wide analytics and audit logs — is declared
-`@RequireRole("platform_admin")`, and a management key carries no role at all: it
-is org-scoped by construction, and `ServicePrincipal` has no `role` field for the
-engine's `RoleGuard` to match.
+`@PlatformAdminOnly()`, which admits **only a human principal** whose
+`users.is_platform_admin` column is true at the moment of the request. A
+management key is not a human principal, so it is refused whatever it holds.
 
 The key is not rejected at the door. `AuthGuard` validates it and resolves the
-principal exactly as it does everywhere else; the guard immediately after it
-refuses the route. So the answer is **`403 "Insufficient role"`** — exit code `2`,
-not `401` — and no key, however permissioned, can change it. Those surfaces are
+principal exactly as it does everywhere else; `PermissionGuard` immediately after
+it takes the platform-admin lane and refuses. So the answer is
+**`403 "Current platform administrator standing required"`** — exit code `2`, not
+`401` — and no key, however permissioned, can change it. Those surfaces are
 unreachable from any CLI rather than unimplemented here, and are administered from
 the web console.
+
+This used to work differently, and the difference is worth naming because the
+older description is still in circulation: the gate was `@RequireRole
+("platform_admin")` matched against a `users.role` column, and the message was
+`403 "Insufficient role"`. The engine dropped that column and deleted its
+`RoleGuard`; the flag is now the only authority. Nothing changes for a management
+key — it was refused then and is refused now — but the message a caller matches
+on, and the reason to give an operator, both did.
+
+The organisation's own `role` commands are a different thing entirely and are
+unaffected: they administer **custom org roles**, which the engine still has.
 
 `polyant-cli whoami` is the check: it reports whether the instance answers, the
 permissions the key actually holds, and the workspaces it may address. A command
@@ -165,8 +216,8 @@ literal `key:` is rejected: a token in a versioned file is a leak. Keys are
 read only from the environment variable named by `keyEnv`, and there is no
 `--key` flag, because argv is visible in `ps` and lands in shell history.
 
-For a selected context, `--target`, `--org`, and `--workspace` each override
-its corresponding value independently. `--context` overrides
+For a selected context, `--target`, `--url`, `--org`, and `--workspace` each
+override its corresponding value independently. `--context` overrides
 `defaultContext`. When neither flag nor context supplies a target,
 `POLYANT_TARGET`, then `default`, then a sole declared target are considered.
 `POLYANT_URL` and `POLYANT_KEY` remain the no-config fallback; there are no
@@ -184,6 +235,13 @@ labelled as staging. `--url` still overrides the host, because typing it is
 per-invocation intent — but it too keeps the target's key and `prod` flag, so
 prefer declaring a target over reaching for the flag.
 
+`--url` is process-wide, like `--target`: it may appear before or after the
+command path, and it retargets every command, not only `api` and `whoami`. When
+a `polyant.yaml` is present and `POLYANT_URL` is set, the target error names the
+discarded variable and repeats it back as the `--url` to type — the two
+mechanisms are easy to confuse from the outside, and silence there costs an
+afternoon.
+
 Driving it from a coding agent? Read [AGENTS.md](AGENTS.md) — the exit-code
 contract, the `--json` discipline and the confirmation rules — and let the agent
 discover the surface with `polyant-cli --json`, which prints the whole command
@@ -193,7 +251,14 @@ rather than maintained by hand.
 `polyant-cli --version` prints the installed version and the Node version it runs
 on — the two things a bug report needs. `-v` and `version` do the same. It reads
 the package manifest, so it cannot disagree with what npm installed, and it makes
-no network call: for the engine's version and reachability use `whoami`.
+no network call: for the instance's reachability use `whoami`.
+
+The engine's own version is not discoverable from here: `GET /health` reports
+`status`, `timestamp` and `service`, and no other route carries a version. So
+`whoami` does not report one — an unshipped route answers `404` exactly like a
+mistyped path, and the CLI names that ambiguity in the error rather than
+guessing which side is wrong. Closing it needs a version on the engine's
+`/health`.
 
 ## Commands
 
@@ -262,6 +327,7 @@ polyant-cli --context engineering agent list
 polyant-cli --context engineering agent show acme
 polyant-cli --context engineering agent create acme --name Acme --model claude-sonnet-4
 polyant-cli --context engineering agent update acme --model claude-opus-5
+polyant-cli --context engineering agent update acme --memory-scope conversation
 polyant-cli --context engineering agent delete acme --yes --confirm acme
 
 polyant-cli --context engineering agent prompt show acme --section identity
@@ -288,8 +354,25 @@ echo "riassumi la policy di reso" | polyant-cli --context engineering agent chat
 polyant-cli --context engineering agent chat acme --message "2+2?" --expect 4
 
 polyant-cli --context engineering agent conversations list acme --limit 20
+polyant-cli --context engineering agent conversations list acme --from 2026-09-03 --to 2026-09-04
 polyant-cli --context engineering agent conversations show acme <conversationId>
+polyant-cli --context engineering agent messages acme --from 2026-08-31 --limit 200
 ```
+
+`agent messages` reads every conversation of one agent in a single call, where
+`agent conversations show` reads one. The table truncates content to 80
+characters; `--json` carries it whole.
+
+`conversations list --from/--to` windows by last update, half-open — `--from`
+inclusive, `--to` exclusive, so one day is `--from 2026-09-03 --to 2026-09-04`.
+The engine's search is relevance-ranked and drops the window, so `--search`
+refuses to combine with either rather than answering a narrower question than
+the one asked.
+
+`conversations show` names the tools each turn invoked, in step order, in a
+`TOOLS` column; a call whose result never came back is marked `?`. The arguments
+and the results are unbounded JSON and stay out of the table — `--json` carries
+them unchanged.
 
 Reads print an aligned table or a labelled record; `--json` passes the engine's
 response body through byte-for-byte, so a pipeline never sees re-serialised
@@ -365,7 +448,26 @@ polyant-cli agent tasks create acme --file digest.json --yes
 polyant-cli agent tasks run acme <taskId> --yes
 
 polyant-cli agent events show acme
+polyant-cli agent events url acme <id>
 polyant-cli agent events rotate acme <id> --yes --confirm <id>
+
+polyant-cli agent mcp show acme
+polyant-cli agent mcp set acme github --file github.json --yes
+polyant-cli agent mcp test acme --file github.json --server github
+polyant-cli agent mcp remove acme github --yes --confirm github
+
+polyant-cli agent a2a show acme
+polyant-cli agent a2a enable acme --yes
+polyant-cli agent a2a card acme
+
+polyant-cli agent memory list acme --search email
+polyant-cli agent memory clear acme --yes --confirm acme
+
+polyant-cli agent optouts list acme
+polyant-cli agent optouts opt-out acme --channel whatsapp --contact +391234567890 --yes
+
+polyant-cli agent channels whatsapp url acme
+polyant-cli agent channels whatsapp rotate acme --yes --confirm acme
 
 polyant-cli agent retention show acme
 polyant-cli agent retention run acme --count-only
@@ -378,7 +480,7 @@ polyant-cli agent export acme > acme.json
 polyant-cli agent import --file acme.json --yes
 ```
 
-Five of these carry a sharp edge worth stating plainly.
+Several of these carry a sharp edge worth stating plainly.
 
 `agent skills set` **replaces** the selection: a skill not listed is disabled, and
 the recap says so rather than reading as "enable these".
@@ -403,6 +505,54 @@ radius.
 `agent retention show` reports the deployment default when an agent has no policy
 of its own, because "no policy" is not "keep nothing".
 
+`agent mcp set` is a **replacement**, not a patch: the payload needs `name`,
+`url`, `authMode` (`none`, `static` or `oauth`) and `config` together, and what
+it omits is not kept. The one exception is a credential re-submitted as `••••`,
+which the engine restores from what it already holds — so `mcp show --json` can
+be edited and sent back without re-typing a token. `mcp show` prints config **key
+names** only, the same rule `channels show` follows. `mcp test` persists nothing
+and asks for no confirmation, but it does dial the URL, which is why the engine
+gates it on `channel:write`; `--server <slug>` lets it borrow a saved server's
+credential instead of probing with none.
+
+`agent update --memory-scope` decides how wide an agent's long-term memory
+reaches: `agent` is one pool shared by every conversation it serves, and
+`conversation` is a pool per conversation. It does **not** migrate what is
+already stored — memories keep the key they were written under — so a flip
+changes what new turns can recall, not what the agent already holds. The engine
+stores a third value, `principal`, reserved for identity work that has not
+landed; it refuses to have it set, so the CLI does not offer it.
+
+`agent channels show` distinguishes a config that failed to decrypt from one that
+is simply empty: CONFIG KEYS reads `(unreadable)` when the engine could not read
+the stored config, which is what a rotated `ENCRYPTION_KEY` looks like. The
+AUTO-DISABLED column names why the **engine** turned a channel off — a webhook
+that kept rejecting, say — and stays `-` when a person did it, or when nobody
+has.
+
+`agent models` reports VISION beside THINKING. It is what decides whether a
+channel may hand that model an image: a model without it drops attachments rather
+than failing the turn. Both come from the engine's catalog, never from a guess at
+the model id.
+
+`agent a2a enable` is an exposure decision, which is why it is not a flag on
+`agent update`. The agent card is served **unauthenticated** whenever A2A is on,
+and the JSON-RPC endpoint is gated by the agent's own `authEnabled` and nothing
+else — so enabling A2A on an agent with authentication off publishes an open LLM
+endpoint. The command says so before it writes.
+
+`agent memory clear` and `agent optouts opt-in` both need their subject named
+twice. The first is permanent and has no archive. The second resumes messaging
+someone who asked to stop: do it on their own request, not to tidy a list.
+
+`agent channels whatsapp url` and `rotate` exist because a channel authenticating
+to Twilio with a revocable **API Key** cannot be verified by Twilio's signature —
+Twilio signs with the account Auth Token alone — so it receives on a URL carrying
+a server-generated secret instead. That secret is bearer-equivalent: `channels
+show` withholds it, both routes need `channel:write`, and a `404` means the
+channel is not in API-Key mode rather than that the agent is missing. Rotating
+invalidates the current URL immediately; update the Twilio Console first.
+
 ### `polyant-cli monitor`
 
 Current state and live activity. Read-only, so it follows the same workspace
@@ -411,9 +561,35 @@ rule as the `agent` reads above.
 ```bash
 polyant-cli --context engineering monitor status
 polyant-cli --context engineering monitor events --tool web_search --limit 50
+polyant-cli --context engineering monitor events --conversation conv-1
 polyant-cli --context engineering monitor events --follow --instance acme
 polyant-cli --context engineering monitor stats --from 2026-07-01
+polyant-cli --context engineering monitor ai-logs --instance acme --call-type conversation --limit 50
+polyant-cli --context engineering monitor traces --instance acme --from 2026-09-01
 ```
+
+`monitor ai-logs` and `monitor traces` serve the rows the analytics aggregates
+are computed from — one per LLM call and one per turn. `ai-logs` includes calls
+that FAILED, which `analytics overview` excludes: summing its cost and
+comparing the two yields a real difference, not a bug. Pass `--outcome ok` to
+reproduce the aggregate's basis.
+
+Both, and `agent messages` with them, report a **capped** total: the engine
+counts over at most 10001 matching rows, so a busy window reports `at least
+10001` instead of restating a number nobody measured. Narrow the window when the
+exact figure matters. An `--instance` the key cannot reach answers `404` or
+`403` on all three; it does not answer an empty list, which would read as an
+agent with no traffic.
+
+`monitor events` names the conversation each event belongs to, in a
+`CONVERSATION` column. `--conversation <id>` asks the tool audit for one
+conversation, which is what lines a turn's tool calls up with `monitor traces`
+and `agent messages` for the same id — but the engine drops the parameter today:
+`GET /api/audit-logs` declares `instanceId`, `toolName`, `action`, `search`,
+`from` and `to`, and nothing else, so the flag is sent, ignored, and answered
+with the whole log. Until the route takes it, the column is the filter that
+holds. Every audit row also carries the assistant message it served; that is in
+`--json` rather than in the table.
 
 `status` probes `/health` and the agent list **independently**: whichever one the
 engine will not serve is reported as `unavailable — <error>`, never as a zero, so
@@ -479,6 +655,14 @@ polyant-cli workspace member set labs u-1 --role member --yes
 polyant-cli org secrets show
 printf %s "$OPENAI_KEY" | polyant-cli org secrets set --key openai_api_key --file - --yes
 polyant-cli org plugins
+
+polyant-cli workspace skills list labs
+polyant-cli workspace skills assign labs billing --yes
+polyant-cli workspace skills revoke labs billing --yes --confirm billing
+
+polyant-cli workspace plugins list labs
+polyant-cli workspace plugins assign labs sales --yes
+polyant-cli workspace plugins revoke labs sales --yes --confirm sales
 ```
 
 Workspaces and roles are addressed by **slug** and **key** on the command line,
@@ -492,6 +676,28 @@ share one key. The engine only offers the keys that can legitimately apply at th
 level — an inbound credential like `auth_api_key` authenticates a caller to one
 agent and stays per-agent — and the CLI refuses anything outside that set rather
 than storing a value that would be silently ignored.
+
+`workspace skills` and `workspace plugins` are the workspace's allow-list: which
+of the organisation's skills, and which of its plugins, agents in that workspace
+may actually use. What an agent sees is the **intersection** of the
+organisation's grant and this assignment, which is why `workspace plugins list`
+reports GRANTED and ASSIGNED as separate columns — a plugin needs both. Assigning
+a plugin the organisation does not hold is refused locally rather than written as
+a row that changes nothing; the grant itself is a platform-admin action, made
+from the web console.
+
+The listings are the whole organisation catalogue with an ASSIGNED column, not
+the assigned subset, because "why does this agent not have that skill" is
+answered by the row that says `no`. `--assigned-only` narrows it when that is
+the question instead.
+
+Two things about the shape. These six routes take the workspace **slug** in the
+path, unlike `workspace member`, whose engine paths take the row's uuid — so
+there is no id resolution here. And an admin bound only to the workspace being
+restricted is **refused**: the allow-list must not be liftable by the person it
+restricts, so this needs an organisation-scope binding. Like the rest of
+workspace-scoped RBAC they are Enterprise; an OSS engine does not serve them at
+all, so there the answer is `404` rather than `403`.
 
 `workspace bindings` is the read side of workspace-scoped RBAC, which is what
 actually decides a workspace-scoped permission. It resolves each workspace id back

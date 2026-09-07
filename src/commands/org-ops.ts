@@ -153,6 +153,240 @@ async function orgPlugins(args: string[], context: CommandContext | undefined, d
   );
 }
 
+// --- workspace allow-lists: which skills and plugins a workspace may use ----
+
+/**
+ * These six routes take the workspace **slug** in the path, unlike
+ * `/workspaces/:workspaceId/members` two sections up, which takes the uuid. So
+ * there is deliberately no `workspaceIdFor` call here: resolving the slug to an
+ * id first would build a path the engine does not serve.
+ *
+ * `:name` rather than `:slug` is the engine's choice and it is load-bearing
+ * there — its permission guard treats any path param literally named `slug` as
+ * an AGENT slug to resolve — but from here it is just the last segment.
+ */
+function assignmentPath(org: string, workspace: string, kind: "skills" | "plugins", name?: string): string {
+  const base = orgPath(org, `/workspaces/${encodeURIComponent(workspace)}/${kind}`);
+  return name === undefined ? base : `${base}/${encodeURIComponent(name)}`;
+}
+
+interface WorkspaceSkillRow {
+  slug: string;
+  name: string;
+  assigned: boolean;
+}
+
+interface WorkspacePluginRow {
+  name: string;
+  version: string;
+  compatible: boolean;
+  /** The ORGANISATION's grant. A plugin it does not hold cannot be assigned. */
+  grantedToOrg: boolean;
+  assigned: boolean;
+}
+
+/**
+ * The listing is the whole organisation catalogue with an `assigned` flag, not
+ * the assigned subset — which is what makes it the right thing to validate a
+ * name against before writing.
+ */
+async function assignableSkills(
+  deps: ServiceDependencies,
+  scope: ResolvedScope,
+  org: string,
+  workspace: string,
+): Promise<WorkspaceSkillRow[]> {
+  const path = assignmentPath(org, workspace, "skills");
+  const res = await call(deps, scope, { path });
+  return expectArray<WorkspaceSkillRow>((res.body as { skills?: unknown } | null)?.skills, `GET ${path}`);
+}
+
+async function assignablePlugins(
+  deps: ServiceDependencies,
+  scope: ResolvedScope,
+  org: string,
+  workspace: string,
+): Promise<WorkspacePluginRow[]> {
+  const path = assignmentPath(org, workspace, "plugins");
+  const res = await call(deps, scope, { path });
+  return expectArray<WorkspacePluginRow>((res.body as { plugins?: unknown } | null)?.plugins, `GET ${path}`);
+}
+
+/** Two positionals, so the second one gets the same flag-in-the-wrong-place check. */
+function requirePair(args: readonly string[], action: string, what: string): { workspace: string; name: string } {
+  const workspace = requirePositional(args, action, "workspace slug");
+  const name = requirePositional(args.slice(1), action, what);
+  return { workspace, name };
+}
+
+async function workspaceSkillsList(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const workspace = requirePositional(args, "workspace skills list", "workspace slug");
+  assertKnown(args.slice(1), { boolean: ["--assigned-only"] }, "workspace skills list option");
+  const { scope, org } = await readScope(deps, context);
+  const path = assignmentPath(org, workspace, "skills");
+  const res = await call(deps, scope, { path });
+  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+
+  const all = expectArray<WorkspaceSkillRow>((res.body as { skills?: unknown } | null)?.skills, `GET ${path}`);
+  const skills = args.includes("--assigned-only") ? all.filter((skill) => skill.assigned) : all;
+  deps.io.stdout(
+    `${renderTable({
+      headers: ["SLUG", "NAME", "ASSIGNED"],
+      rows: skills.map((skill) => [text(skill.slug), text(skill.name), skill.assigned ? "yes" : "no"]),
+      emptyMessage: `Organisation ${org} has no skills to assign.`,
+    })}\n`,
+  );
+}
+
+async function workspaceSkillsAssign(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const { workspace, name } = requirePair(args, "workspace skills assign", "skill slug");
+  const options = args.slice(2);
+  assertKnown(options, { value: ["--confirm"] }, "workspace skills assign option");
+  const { scope, org } = await readScope(deps, context);
+
+  const catalogue = await assignableSkills(deps, scope, org, workspace);
+  const skill = catalogue.find((entry) => entry.slug === name);
+  if (skill === undefined) {
+    throw new ConfigError(
+      `Organisation ${org} has no skill ${JSON.stringify(name)}. ` +
+        `Available: ${catalogue.map((entry) => entry.slug).join(", ") || "(none)"}.`,
+    );
+  }
+
+  const changes = skill.assigned
+    ? [`Leave ${name} assigned to ${workspace}; it already is.`]
+    : [
+        `Let ${workspace} use skill ${name}.`,
+        "Agents in that workspace start resolving it. Elsewhere it stays invisible.",
+      ];
+  if (!(await preflight(deps, scope, org, context, options, { title: `Assign skill ${name} to ${workspace}`, changes }))) return;
+
+  const res = await call(deps, scope, { method: "PUT", path: assignmentPath(org, workspace, "skills", name) });
+  report(deps, context, res.raw, `Assigned skill ${name} to ${workspace}.`);
+}
+
+async function workspaceSkillsRevoke(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const { workspace, name } = requirePair(args, "workspace skills revoke", "skill slug");
+  const options = args.slice(2);
+  assertKnown(options, { value: ["--confirm"] }, "workspace skills revoke option");
+  const { scope, org } = await readScope(deps, context);
+
+  const catalogue = await assignableSkills(deps, scope, org, workspace);
+  const skill = catalogue.find((entry) => entry.slug === name);
+  if (skill === undefined) {
+    throw new ConfigError(`Organisation ${org} has no skill ${JSON.stringify(name)}.`);
+  }
+  if (!skill.assigned) {
+    // The engine answers 200 for an assignment it never held, so without this a
+    // typo would report success while the real assignment stayed in place.
+    throw new ConfigError(`Workspace ${workspace} is not assigned skill ${name}; there is nothing to revoke.`);
+  }
+
+  const plan = {
+    title: `Revoke skill ${name} from ${workspace}`,
+    changes: [
+      `Stop ${workspace} using skill ${name}. Agents there stop resolving it on their next turn.`,
+      "The skill itself, and its assignment to other workspaces, are untouched.",
+    ],
+    destructive: { confirm: name },
+  };
+  if (!(await preflight(deps, scope, org, context, options, plan))) return;
+
+  const res = await call(deps, scope, { method: "DELETE", path: assignmentPath(org, workspace, "skills", name) });
+  report(deps, context, res.raw, `Revoked skill ${name} from ${workspace}.`);
+}
+
+async function workspacePluginsList(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const workspace = requirePositional(args, "workspace plugins list", "workspace slug");
+  assertKnown(args.slice(1), { boolean: ["--assigned-only"] }, "workspace plugins list option");
+  const { scope, org } = await readScope(deps, context);
+  const path = assignmentPath(org, workspace, "plugins");
+  const res = await call(deps, scope, { path });
+  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+
+  const all = expectArray<WorkspacePluginRow>((res.body as { plugins?: unknown } | null)?.plugins, `GET ${path}`);
+  const plugins = args.includes("--assigned-only") ? all.filter((plugin) => plugin.assigned) : all;
+  deps.io.stdout(
+    `${renderTable({
+      headers: ["NAME", "VERSION", "GRANTED", "ASSIGNED", "COMPATIBLE"],
+      rows: plugins.map((plugin) => [
+        text(plugin.name),
+        text(plugin.version),
+        plugin.grantedToOrg ? "yes" : "no",
+        plugin.assigned ? "yes" : "no",
+        plugin.compatible ? "yes" : "no",
+      ]),
+      emptyMessage: "This deployment has no plugins installed.",
+    })}\n`,
+  );
+}
+
+async function workspacePluginsAssign(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const { workspace, name } = requirePair(args, "workspace plugins assign", "plugin name");
+  const options = args.slice(2);
+  assertKnown(options, { value: ["--confirm"] }, "workspace plugins assign option");
+  const { scope, org } = await readScope(deps, context);
+
+  const installed = await assignablePlugins(deps, scope, org, workspace);
+  const plugin = installed.find((entry) => entry.name === name);
+  if (plugin === undefined) {
+    throw new ConfigError(
+      `This deployment has no plugin ${JSON.stringify(name)}. ` +
+        `Installed: ${installed.map((entry) => entry.name).join(", ") || "(none)"}.`,
+    );
+  }
+  if (!plugin.grantedToOrg) {
+    // Visibility is the intersection of the organisation's grant and this
+    // assignment, so an assignment without the grant is a row that changes
+    // nothing. The grant is a platform-admin action a management key cannot make.
+    throw new ConfigError(
+      `Organisation ${org} does not hold plugin ${name}, so assigning it to ${workspace} would change nothing. ` +
+        "That grant is a platform-admin action, made from the web console.",
+    );
+  }
+
+  const changes = plugin.assigned
+    ? [`Leave ${name} assigned to ${workspace}; it already is.`]
+    : [
+        `Let ${workspace} use plugin ${name} (${plugin.version}).`,
+        ...(plugin.compatible ? [] : ["This engine cannot run that plugin version: its tools and hooks stay absent."]),
+        "Its tools and hooks appear to agents in that workspace. Elsewhere they stay undiscoverable.",
+      ];
+  if (!(await preflight(deps, scope, org, context, options, { title: `Assign plugin ${name} to ${workspace}`, changes }))) return;
+
+  const res = await call(deps, scope, { method: "PUT", path: assignmentPath(org, workspace, "plugins", name) });
+  report(deps, context, res.raw, `Assigned plugin ${name} to ${workspace}.`);
+}
+
+async function workspacePluginsRevoke(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const { workspace, name } = requirePair(args, "workspace plugins revoke", "plugin name");
+  const options = args.slice(2);
+  assertKnown(options, { value: ["--confirm"] }, "workspace plugins revoke option");
+  const { scope, org } = await readScope(deps, context);
+
+  const installed = await assignablePlugins(deps, scope, org, workspace);
+  const plugin = installed.find((entry) => entry.name === name);
+  if (plugin === undefined) {
+    throw new ConfigError(`This deployment has no plugin ${JSON.stringify(name)}.`);
+  }
+  if (!plugin.assigned) {
+    throw new ConfigError(`Workspace ${workspace} is not assigned plugin ${name}; there is nothing to revoke.`);
+  }
+
+  const plan = {
+    title: `Revoke plugin ${name} from ${workspace}`,
+    changes: [
+      `Stop ${workspace} using plugin ${name}. Its tools and hooks become undiscoverable to agents there.`,
+      "An agent configured to use one of those tools keeps the configuration and loses the tool.",
+    ],
+    destructive: { confirm: name },
+  };
+  if (!(await preflight(deps, scope, org, context, options, plan))) return;
+
+  const res = await call(deps, scope, { method: "DELETE", path: assignmentPath(org, workspace, "plugins", name) });
+  report(deps, context, res.raw, `Revoked plugin ${name} from ${workspace}.`);
+}
+
 // --- management API keys ----------------------------------------------------
 
 interface ApiKeyRow {
@@ -428,6 +662,13 @@ async function workspaceMemberRemove(args: string[], context: CommandContext | u
 
 // --- the nodes these families contribute ------------------------------------
 
+const ASSIGN_NOTE =
+  "An allow-list, not a grant: what a workspace may use is the INTERSECTION of\n" +
+  "the organisation's grant and this assignment. An admin bound only to the\n" +
+  "workspace being restricted is refused — the list must not be liftable by the\n" +
+  "person it restricts — so this needs an organisation-scope binding. The path\n" +
+  "takes the workspace SLUG here, unlike \"workspace member\", which takes its id.";
+
 const EE_NOTE =
   "Enterprise: the engine gates this behind a licensed feature and answers 403 on a\ndeployment without it, the same shape as a missing permission.";
 
@@ -463,11 +704,79 @@ from a file or stdin, never a flag, and is never printed. ${ORG_NOTE}`,
 
 An ungranted plugin is undiscoverable rather than merely inert: its tools and
 hooks do not exist for this organisation's agents. Granting is a platform-admin
-action, which a management key cannot perform. ${ORG_NOTE}`,
+action, which a management key cannot perform.
+
+GRANTED is the organisation's half of the decision. The workspace's half is
+\`workspace plugins list\`, and an agent sees a plugin only when both say yes.
+
+The permission is \`org.plugin:read\`, which used to be the \`org:read\` floor: a key
+issued before that split, holding only \`org:read\`, now answers 403 here.
+${ORG_NOTE}`,
       action: orgPlugins,
     },
   },
   workspace: {
+    skills: {
+      list: {
+        summary: "list the organisation's skills and which this workspace may use",
+        usage: `Usage: polyant-cli workspace skills list <workspaceSlug> [--assigned-only]
+
+The whole organisation catalogue with an ASSIGNED column, not the assigned
+subset: a skill missing from the workspace is the answer to "why does the agent
+not have it". ${ASSIGN_NOTE} ${ORG_NOTE}`,
+        action: workspaceSkillsList,
+      },
+      assign: {
+        summary: "let one workspace use a skill",
+        usage: `Usage: polyant-cli workspace skills assign <workspaceSlug> <skillSlug>
+
+The slug is checked against the organisation's catalogue first, so a typo fails
+naming the available skills rather than as a 404. ${ASSIGN_NOTE} ${ORG_NOTE}`,
+        action: workspaceSkillsAssign,
+        mutates: true,
+      },
+      revoke: {
+        summary: "stop one workspace using a skill",
+        usage: `Usage: polyant-cli workspace skills revoke <workspaceSlug> <skillSlug> --yes --confirm <skillSlug>
+
+Agents in that workspace stop resolving the skill on their next turn. The skill
+itself, and its assignment elsewhere, are untouched. ${ORG_NOTE}`,
+        action: workspaceSkillsRevoke,
+        mutates: true,
+      },
+    },
+    plugins: {
+      list: {
+        summary: "list the installed plugins, the organisation's grant and this workspace's assignment",
+        usage: `Usage: polyant-cli workspace plugins list <workspaceSlug> [--assigned-only]
+
+GRANTED is the organisation's, ASSIGNED is this workspace's, and a plugin needs
+both to be visible to an agent. COMPATIBLE is whether this engine can run it at
+all. ${ASSIGN_NOTE} ${ORG_NOTE}`,
+        action: workspacePluginsList,
+      },
+      assign: {
+        summary: "let one workspace use a plugin",
+        usage: `Usage: polyant-cli workspace plugins assign <workspaceSlug> <name>
+
+Refused locally when the organisation does not hold the plugin: the assignment
+would be a row that changes nothing, because visibility is the intersection of
+the two. Granting is a platform-admin action, made from the web console.
+${ORG_NOTE}`,
+        action: workspacePluginsAssign,
+        mutates: true,
+      },
+      revoke: {
+        summary: "stop one workspace using a plugin",
+        usage: `Usage: polyant-cli workspace plugins revoke <workspaceSlug> <name> --yes --confirm <name>
+
+The plugin's tools and hooks become undiscoverable to agents in that workspace.
+An agent configured to use one of them keeps the configuration and loses the
+tool. ${ORG_NOTE}`,
+        action: workspacePluginsRevoke,
+        mutates: true,
+      },
+    },
     bindings: {
       summary: "list every workspace-scoped role binding in the organisation",
       usage: `Usage: polyant-cli workspace bindings

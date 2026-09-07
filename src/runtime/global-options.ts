@@ -3,6 +3,13 @@ import { ConfigError } from "../exit.js";
 
 export interface GlobalOptions {
   target?: string;
+  /**
+   * Per-invocation base URL, overriding the resolved target's. It exists as a
+   * global rather than a per-command flag because retargeting is orthogonal to
+   * what the command does: every scoped command resolves its target the same
+   * way, so the override has to be available to all of them.
+   */
+  url?: string;
   org?: string;
   workspace?: string;
   context?: string;
@@ -26,6 +33,7 @@ export type CommandTree = Record<string, CommandNode>;
 
 const VALUE_FLAGS = {
   "--target": "target",
+  "--url": "url",
   "--org": "org",
   "--workspace": "workspace",
   "--context": "context",

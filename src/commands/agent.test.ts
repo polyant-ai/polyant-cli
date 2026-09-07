@@ -31,6 +31,7 @@ const AGENT = {
   model: "claude-sonnet-4",
   authEnabled: true,
   memoryEnabled: true,
+  memoryScope: "agent",
   knowledgeEnabled: false,
   createdAt: "2026-07-01T00:00:00.000Z",
   updatedAt: "2026-07-20T10:00:00.000Z",
@@ -248,6 +249,65 @@ describe("agent update", () => {
     const h = harness([]);
     await expect(leaf(h.command, ["update"])(["acme"], context({ yes: true }))).rejects.toThrow(/at least one field/);
   });
+
+  it("sets the speech-to-text provider, disabled included", async () => {
+    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+
+    await leaf(h.command, ["update"])(["acme", "--stt-provider", "disabled"], context({ yes: true }));
+
+    expect(h.calls[1]).toMatchObject({ method: "PATCH", path: "/api/instances/acme", body: { sttProvider: "disabled" } });
+  });
+
+  it("refuses a speech-to-text provider the engine does not have", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["update"])(["acme", "--stt-provider", "whisper"], context({ yes: true }))).rejects.toThrow(
+      /openai, aws, deepgram, disabled/,
+    );
+  });
+
+  it("narrows memory to one conversation, and names the previous scope in the recap", async () => {
+    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+
+    await leaf(h.command, ["update"])(["acme", "--memory-scope", "conversation"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain('Change memoryScope from "agent" to "conversation"');
+    expect(h.calls[1]).toMatchObject({
+      method: "PATCH",
+      path: "/api/instances/acme",
+      body: { memoryScope: "conversation" },
+    });
+  });
+
+  // `principal` is a third value the engine STORES but refuses to be set, so
+  // offering it here would offer a write that always 400s.
+  it("refuses a memory scope the engine will not accept, principal included", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["update"])(["acme", "--memory-scope", "principal"], context({ yes: true }))).rejects.toThrow(
+      /agent, conversation/,
+    );
+    expect(h.request).not.toHaveBeenCalled();
+  });
+});
+
+describe("agent show", () => {
+  it("reports how wide the agent's memory reaches", async () => {
+    const h = harness([response({ instance: { ...AGENT, memoryScope: "conversation" } })]);
+
+    await leaf(h.command, ["show"])(["acme"], context());
+
+    expect(h.out.join("")).toMatch(/memoryScope:\s+conversation/);
+  });
+
+  it("reports an absent scope as absent rather than inventing the default", async () => {
+    const { memoryScope: _dropped, ...withoutScope } = AGENT;
+    const h = harness([response({ instance: withoutScope })]);
+
+    await leaf(h.command, ["show"])(["acme"], context());
+
+    expect(h.out.join("")).toMatch(/memoryScope:\s+-/);
+  });
 });
 
 describe("agent delete", () => {
@@ -355,6 +415,47 @@ describe("agent channels", () => {
     expect(table).not.toContain("-100");
   });
 
+  // The distinction the engine added `configReadable` for: a config that failed
+  // to decrypt has no readable keys, and reporting "-" for it would read as an
+  // unconfigured channel — the opposite of what happened.
+  it("says a config is unreadable rather than showing it as empty", async () => {
+    const h = harness([
+      response({ channels: [{ channelType: "telegram", enabled: true, config: {}, configReadable: false }] }),
+    ]);
+
+    await leaf(h.command, ["channels", "show"])(["acme"], context());
+
+    const table = h.out.join("");
+    expect(table).toContain("(unreadable)");
+  });
+
+  it("names why the engine disabled a channel, and stays quiet when nobody did", async () => {
+    const h = harness([
+      response({
+        channels: [
+          { channelType: "telegram", enabled: false, config: {}, configReadable: true, disabledReason: "webhook rejected 5 times" },
+          { channelType: "whatsapp", enabled: true, config: {}, configReadable: true, disabledReason: null },
+        ],
+      }),
+    ]);
+
+    await leaf(h.command, ["channels", "show"])(["acme"], context());
+
+    const table = h.out.join("");
+    expect(table).toContain("webhook rejected 5 times");
+    expect(table).toMatch(/whatsapp\s+yes\s+-\s+-/);
+  });
+
+  // An engine that predates the field reports neither, and absent must read as
+  // readable: treating it as unreadable would flag every channel as broken.
+  it("treats an absent configReadable as readable", async () => {
+    const h = harness([response(channels)]);
+
+    await leaf(h.command, ["channels", "show"])(["acme"], context());
+
+    expect(h.out.join("")).not.toContain("(unreadable)");
+  });
+
   it("takes configuration from a payload and recaps keys only", async () => {
     const h = harness([response(channels), response({ channel: channels.channels[0] })], {
       readPayload: async () => JSON.stringify({ botToken: "real-secret" }),
@@ -385,6 +486,40 @@ describe("agent channels", () => {
 
     await expect(leaf(h.command, ["channels", "remove"])(["acme", "telegram"], context({ yes: true })))
       .rejects.toThrow(/--confirm telegram is required/);
+  });
+
+  // A WhatsApp channel authenticating with a Twilio API Key receives on a URL
+  // carrying a server-generated secret. It is withheld from `channels show`, so
+  // it has a reveal route of its own.
+  describe("whatsapp", () => {
+    it("reveals the inbound webhook URL", async () => {
+      const h = harness([response({ webhookUrl: "http://localhost:4000/webhooks/twilio/acme/whatsapp/s3cret" })]);
+
+      await leaf(h.command, ["channels", "whatsapp", "url"])(["acme"], context());
+
+      expect(h.calls[0]).toMatchObject({ path: "/api/instances/acme/channels/whatsapp/webhook-url" });
+      expect(h.out.join("")).toContain("s3cret");
+    });
+
+    it("warns that rotating breaks the URL Twilio currently posts to", async () => {
+      const h = harness([response({ webhookUrl: "http://localhost:4000/webhooks/twilio/acme/whatsapp/new" })]);
+
+      await leaf(h.command, ["channels", "whatsapp", "rotate"])(["acme", "--confirm", "acme"], context({ yes: true }));
+
+      expect(h.err.join("")).toContain("Twilio Console");
+      expect(h.calls[0]).toMatchObject({
+        method: "POST",
+        path: "/api/instances/acme/channels/whatsapp/rotate-webhook-secret",
+      });
+    });
+
+    it("needs the agent named twice before rotating", async () => {
+      const h = harness([]);
+
+      await expect(leaf(h.command, ["channels", "whatsapp", "rotate"])(["acme"], context({ yes: true }))).rejects.toThrow(
+        /--confirm acme/,
+      );
+    });
   });
 });
 
@@ -571,6 +706,26 @@ describe("agent conversations", () => {
       .rejects.toThrow(/--limit needs a positive integer/);
   });
 
+  it("maps --from/--to onto the route's own window parameter names", async () => {
+    const h = harness([response(conversations)]);
+
+    await leaf(h.command, ["conversations", "list"])(["acme", "--from", "2026-09-03", "--to", "2026-09-04"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/conversations",
+      query: { instanceId: "acme", updatedSince: "2026-09-03", updatedUntil: "2026-09-04" },
+    });
+  });
+
+  it("refuses a window combined with a search the engine would not window", async () => {
+    const h = harness([]);
+
+    await expect(
+      leaf(h.command, ["conversations", "list"])(["acme", "--search", "refund", "--from", "2026-09-03"], context()),
+    ).rejects.toThrow(/cannot combine --search with --from\/--to/);
+    expect(h.calls).toHaveLength(0);
+  });
+
   it("emits both source bodies unchanged as a composite JSON object", async () => {
     const detail = { conversation: conversations.conversations[0] };
     const messages = { messages: [{ id: "m1", role: "user", content: "hi", createdAt: "2026-07-20T10:00:00.000Z" }] };
@@ -592,5 +747,119 @@ describe("agent conversations", () => {
     expect(text).toContain("conversationId:");
     // A multi-line message must not break the table's column alignment.
     expect(text).toContain("line one line two");
+  });
+
+  it("names the tools a turn invoked, and marks a call left without a result", async () => {
+    const detail = { conversation: conversations.conversations[0] };
+    const messages = {
+      messages: [
+        {
+          id: "m1",
+          role: "assistant",
+          content: "done",
+          createdAt: null,
+          steps: [
+            {
+              toolCalls: [
+                { toolCallId: "c1", toolName: "search_orders", args: {} },
+                { toolCallId: "c2", toolName: "issue_refund", args: {} },
+              ],
+              toolResults: [{ toolCallId: "c1", result: {} }],
+            },
+          ],
+        },
+        { id: "m2", role: "user", content: "hi", createdAt: null, steps: null },
+      ],
+    };
+    const h = harness([response(detail), response(messages)]);
+
+    await leaf(h.command, ["conversations", "show"])(["acme", "conv-1"], context());
+
+    const text = h.out.join("");
+    expect(text).toContain("TOOLS");
+    expect(text).toContain("search_orders, issue_refund?");
+  });
+});
+
+describe("agent messages", () => {
+  const messages = {
+    items: [{ id: "m1", conversationId: "conv-1", role: "user", content: "hello there", createdAt: "2026-07-20T10:00:00.000Z" }],
+    total: 1,
+    limit: 100,
+    offset: 0,
+  };
+
+  it("requests the cross-conversation route for one agent", async () => {
+    const h = harness([response(messages)]);
+
+    await leaf(h.command, ["messages"])(["acme", "--role", "user", "--limit", "100"], context());
+
+    expect(h.calls[0]).toMatchObject({
+      path: "/api/messages",
+      query: { instanceId: "acme", role: "user", limit: "100" },
+      workspaceSlug: "ws-1",
+    });
+    expect(h.out.join("")).toContain("hello there");
+    expect(h.err.join("")).toContain("1 of 1 messages");
+  });
+
+  it("passes the response body through unchanged with --json", async () => {
+    const h = harness([response(messages)]);
+
+    await leaf(h.command, ["messages"])(["acme"], context({ json: true }));
+
+    expect(h.out.join("")).toBe(JSON.stringify(messages));
+  });
+
+  it("reports a capped total as a floor, not as the message count", async () => {
+    const h = harness([response({ ...messages, total: 10001, totalIsCapped: true })]);
+
+    await leaf(h.command, ["messages"])(["acme"], context());
+
+    expect(h.err.join("")).toContain("1 of at least 10001 messages");
+  });
+
+  // Usage errors (a missing agent slug) surface as ConfigError, which the CLI's
+  // top-level dispatcher maps to exit code 2 — this test file exercises actions
+  // directly, below that mapping.
+  it("without a slug is a usage error", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["messages"])([], context())).rejects.toThrow(ConfigError);
+    expect(h.request).not.toHaveBeenCalled();
+  });
+
+  it("truncates table content to 80 characters and points the reader to --json", async () => {
+    const tail = "TAIL-NOT-SHOWN-IN-TABLE";
+    const long = {
+      ...messages,
+      items: [{ id: "m1", conversationId: "conv-1", role: "user", content: `${"A".repeat(80)}${tail}`, createdAt: "2026-07-20T10:00:00.000Z" }],
+    };
+    const h = harness([response(long)]);
+
+    await leaf(h.command, ["messages"])(["acme"], context());
+
+    const table = h.out.join("");
+    // Pins the actual cutoff: the first 80 characters must survive, and the tail
+    // — anything past the cutoff — must not, so a wrong-length regression fails.
+    expect(table).toContain("A".repeat(80));
+    expect(table).not.toContain(tail);
+    // The disclosure that content is truncated must itself be tested, not just
+    // the count next to it — otherwise the pointer to --json can be dropped
+    // silently.
+    expect(h.err.join("")).toContain("--json");
+  });
+
+  it("does not truncate content in the --json path", async () => {
+    const tail = "TAIL-NOT-SHOWN-IN-TABLE";
+    const long = {
+      ...messages,
+      items: [{ id: "m1", conversationId: "conv-1", role: "user", content: `${"A".repeat(80)}${tail}`, createdAt: "2026-07-20T10:00:00.000Z" }],
+    };
+    const h = harness([response(long)]);
+
+    await leaf(h.command, ["messages"])(["acme"], context({ json: true }));
+
+    expect(h.out.join("")).toContain(tail);
   });
 });

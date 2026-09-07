@@ -41,6 +41,19 @@ describe("parseInvocation", () => {
     });
   });
 
+  it("should_extract_the_url_override_as_a_process_wide_flag", () => {
+    expect(parseInvocation(["agent", "list", "--url", "https://other.example.polyant.ai"], COMMANDS)).toEqual({
+      path: ["agent", "list"],
+      args: [],
+      global: {
+        url: "https://other.example.polyant.ai",
+        json: false,
+        yes: false,
+        dryRun: false,
+      },
+    });
+  });
+
   it("should_reject_a_duplicate_singleton_flag", () => {
     expect(() => parseInvocation(["agent", "list", "--target", "dev", "--target", "prod"], COMMANDS)).toThrow(
       ConfigError,
