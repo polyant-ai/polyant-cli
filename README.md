@@ -780,6 +780,52 @@ again — `agent governance set`. Creating a policy assigns it to nothing.
 workspace in the organisation. `governance metadata` is the vocabulary for a
 policy payload, including which gate type belongs to which category.
 
+### `polyant-cli dev`
+
+Dev mode: the `*.tool.ts` files on your machine, served into a **remote** agent
+for the duration of a turn. The engine equips them as ordinary tools, so ajv
+validation, governance, audit and tracing are the real ones.
+
+```bash
+# 1. a credential, printed once and never recoverable
+export POLYANT_DEV_TOKEN=$(polyant-cli --context engineering dev token issue acme --ttl-hours 4 --yes)
+
+# 2. a project whose node_modules carry tsx and the SDK
+polyant-cli dev init ./my-tools --agent acme --yes && (cd my-tools && npm install)
+
+# 3. serve them, until you interrupt it
+cd my-tools && polyant-cli --context engineering dev connect acme --watch
+
+polyant-cli --context engineering dev token status acme
+polyant-cli --context engineering dev token revoke acme --yes --confirm acme
+```
+
+`dev token issue` prints the token on **stdout and nothing else**, so it can be
+captured directly; the warning that it is shown once lives on stderr. Issuing
+invalidates every previous token for that agent and closes a session connected
+with one — `revoke` does the same and is destructive, hence `--confirm <slug>`.
+
+`dev connect` does not terminate. It reads the token from `$POLYANT_DEV_TOKEN`
+(or `--token-env <VAR>`, or `--token-file <path|->`) — there is no `--token`
+flag, because argv is visible in `ps`. Your tool files are imported by a child
+process started with the **project's own** `tsx`, which is why `tsx` and
+`@polyant-ai/plugin-sdk` must be dependencies of that project and not of this
+CLI: a tool file's `import "@polyant-ai/plugin-sdk"` resolves from where the
+file lives. `dev init` writes both.
+
+With `--json` it emits one JSON object per line on stdout, so an agent can read
+the session incrementally. Without it, the tool calls are on stdout and the
+session's own lifecycle on stderr. Anything your tool prints itself is forwarded
+to stderr as `tool: …`. `--watch` reloads the tool set on save (`tools.update`),
+keeping the previous set if the reload fails to compile.
+
+It exits `2` for a wrong token, agent or project, `3` for an engine it could not
+reach, and `0` when you interrupt it.
+
+A dev session lives in memory on **one** engine node: with more than one
+replica, turns served by the others equip no dev tools. Every `dev` read says
+so. The permission is `agent.dev:write` (admin and above).
+
 ### `polyant-cli whoami`
 
 Active target, whether the instance answers, and the agents the key can see.

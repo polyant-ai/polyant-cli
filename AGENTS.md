@@ -65,9 +65,9 @@ polyant-cli --yes --confirm acme agent delete acme        # destructive: name it
 actions — `agent delete`, `channels remove`, `channels whatsapp rotate`,
 `hooks remove`, `secrets unset`, `events rotate`, `mcp remove`, `memory remove`,
 `memory clear`, `optouts opt-in`, `workspace delete`, `role delete`,
-`member remove`, `workspace skills revoke`, `workspace plugins revoke`, and any
-non-GET `api` DELETE — additionally require `--confirm <name>` matching the thing
-being destroyed.
+`member remove`, `workspace skills revoke`, `workspace plugins revoke`,
+`dev token revoke`, and any non-GET `api` DELETE — additionally require
+`--confirm <name>` matching the thing being destroyed.
 
 ## Before the first command
 
@@ -107,9 +107,12 @@ its job. Use `monitor status` when you need a gate that fails.
 | move an agent between instances | `agent export <slug>` → `agent import --file -` |
 | who may do what | `role list`, `workspace bindings`, `apikey list` |
 | what a workspace may use | `workspace skills list <ws>`, `workspace plugins list <ws>` |
+| run your local tools against a remote agent | `dev token issue <slug>` → `dev init` → `dev connect <slug> --watch` |
 | anything not covered | `api <METHOD> <path>` |
 
 `--follow` has no deadline: bound it with `--max <n>` or you will wait forever.
+`dev connect` never returns at all — it holds a session open until interrupted,
+and exits `0` when you interrupt it.
 
 `agent chat --expect <text>` exits `1` when the reply does not contain that text,
 which makes a scenario check a one-liner.
@@ -123,7 +126,8 @@ printf %s "$OPENAI_KEY" | polyant-cli agent secrets set acme --key openai_api_ke
 ```
 
 That holds for `agent secrets set`, `org secrets set`, `agent skills env set`,
-`channels set`, `mcp set|test`, `memory add`, `hooks add|update`, `prompt set` and
+`channels set`, `mcp set|test`, `memory add`, `hooks add|update`, `prompt set`,
+`dev connect --token-file` (whose token otherwise comes from the environment) and
 `api --data`. Every structured
 payload — a hook, a channel, a scheduled task, a retention policy, a governance
 assignment, an import bundle — arrives the same way, as `--file <path|->`. Recaps report a payload's **length and source**,
