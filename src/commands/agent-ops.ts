@@ -654,15 +654,17 @@ async function retentionShow(args: string[], context: CommandContext | undefined
   const res = await call(deps, scope, { path: agentPath(slug, "/retention") });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
-  const body = (res.body ?? {}) as { policy?: Record<string, unknown> | null; defaultDays?: unknown };
+  const body = (res.body ?? {}) as { policy?: Record<string, unknown> | null };
   if (body.policy === null || body.policy === undefined) {
-    // "No policy" is not "keep nothing": the deployment default still applies,
-    // and reporting only the absence would read as the opposite.
-    return deps.io.stdout(`Agent ${slug} has no retention policy. The deployment default of ${text(body.defaultDays)} days applies.\n`);
+    // There is no deployment default any more: `RETENTION_DEFAULT_DAYS` is gone
+    // and a policy must state its own window, so no policy means nothing is ever
+    // purged. Saying "the default applies" here named a number that no longer
+    // exists and described the opposite behaviour.
+    return deps.io.stdout(`Agent ${slug} has no retention policy: nothing is purged on a schedule.\n`);
   }
   writePrettyResource(deps.io, [
     { label: "enabled", value: text(body.policy.enabled) },
-    { label: "retentionDays", value: text(body.policy.retentionDays ?? body.defaultDays) },
+    { label: "retentionDays", value: text(body.policy.retentionDays) },
     { label: "preserveGovernance", value: text(body.policy.preserveGovernance) },
     { label: "schedule", value: JSON.stringify(body.policy.schedule ?? null) },
   ]);
@@ -675,7 +677,18 @@ async function retentionSet(args: string[], context: CommandContext | undefined,
   const file = requireFile(options, "retention set");
   const body = await readPayloadObject(deps, file);
   for (const field of ["enabled", "schedule", "retentionDays", "preserveGovernance"]) {
-    if (body[field] === undefined) throw new ConfigError(`The retention payload needs a ${field} (retentionDays may be null).`);
+    if (body[field] === undefined) throw new ConfigError(`The retention payload needs a ${field}.`);
+  }
+  // The window is the most destructive value in the product and it is now
+  // declared, never defaulted: the column is NOT NULL and the route refuses a
+  // policy without it. Checked here so `null` — which the CLI used to advertise
+  // as allowed — fails naming the field instead of arriving as a 400 about a
+  // Zod union.
+  if (!Number.isInteger(body.retentionDays) || (body.retentionDays as number) <= 0) {
+    throw new ConfigError(
+      `The retention payload needs retentionDays as a positive integer; got ${JSON.stringify(body.retentionDays)}. ` +
+        "A policy has to say how much history to keep — there is no deployment-wide default to fall back on.",
+    );
   }
 
   const scope = await scopeFor(deps, context);
@@ -1227,15 +1240,16 @@ The old token stops working immediately — update every producer first.`,
   retention: {
     show: {
       summary: "show an agent's retention policy",
-      usage: "Usage: polyant-cli agent retention show <slug>\n\nNo policy still means the deployment default applies, and says so.",
+      usage: "Usage: polyant-cli agent retention show <slug>\n\nNo policy means nothing is purged on a schedule: there is no deployment-wide\nwindow to fall back on.",
       action: retentionShow,
     },
     set: {
       summary: "set the retention policy from a JSON file or stdin",
       usage: `Usage: polyant-cli agent retention set <slug> --file <path|->
 
-Needs enabled, schedule, retentionDays (may be null) and preserveGovernance.
-Purging is permanent: the engine has no archive.`,
+Needs enabled, schedule, retentionDays and preserveGovernance. retentionDays is
+a positive integer and is refused absent or null: a policy has to state how much
+history it keeps. Purging is permanent — the engine has no archive.`,
       action: retentionSet,
       mutates: true,
     },

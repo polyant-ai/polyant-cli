@@ -110,6 +110,7 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | 0.2.x | 1.1.0 and 1.1.0-ee | adds `agent mcp`, `agent a2a`, `agent memory`, `agent optouts`, `agent events url` and `agent channels whatsapp`; `agent update` gains `--stt-provider` |
 | 0.3.x | the first engine release after 1.1.0-ee | adds `monitor ai-logs`, `monitor traces` and `agent messages`; the three routes merged to the engine's develop on 2026-09-01, so against 1.1.0-ee or older all three answer `404` |
 | 0.4.x | the same, plus the engine's develop as of 2026-09-02 | adds `workspace skills` and `workspace plugins`; `agent update` gains `--memory-scope`, `monitor events` gains `--conversation`, `agent models` gains a VISION column, and `agent channels show` reports an unreadable config and an engine-side disable |
+| 0.5.x | the engine's develop as of 2026-09-14 | adds `org providers`, `org connections`, `workspace providers`, `workspace connections`, `org audit`, `org knowledge`, `workspace knowledge`, `agent shared-knowledge`, `agent checks`, `agent health`, `analytics checks` and `member invitations`; `agent update` gains `--set` and `--provider-connection`, and `whoami` reports which credential is on the header |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
 `agent a2a enable` is a `400` — the field does not exist there. Everything else
@@ -145,12 +146,43 @@ parses this CLI's output:
   --count-only` passes the engine's answer through, so the counts it reports are
   wider than they were.
 
-When a command starts answering `404` or `403`, the engine's controllers are the
-contract: the permission decorator on the route (`@RequirePermission`, or
-`@PlatformAdminOnly` for the platform lane) and the `@Query` parameters it
-actually declares. A generated OpenAPI artefact has been planned but is not
-served — there is no `GET /api/openapi.json` to diff against, and no
-`api-index.md` beside it.
+When a command starts answering `404` or `403`, the engine now publishes the
+contract rather than leaving it to be read off the controllers: `GET
+/api/openapi.json` serves the generated document, and `packages/engine/api-index.md`
+in the engine repository is the condensed one-row-per-route version of the same
+thing — verb, path, required permission, auth mechanism. Diff either against the
+command you are running before reading a `403` as a bug. The permission decorator
+on the route (`@RequirePermission`, or `@PlatformAdminOnly` for the platform lane)
+remains the authority the document is generated from.
+
+Six retention and provider changes on that develop are visible without a new
+command:
+
+- A retention policy must state its window. `retention_days` is `NOT NULL` and the
+  route refuses a policy without it, so `agent retention set` now rejects a
+  payload whose `retentionDays` is null instead of forwarding it. There is no
+  deployment-wide default left to inherit: `agent retention show` reports "no
+  policy" as "nothing is purged", which is what it now means.
+- `PATCH /api/instances/:slug` accepts `providerConnectionId`, and six per-agent
+  settings that used to be silently dropped — `datetimeTimezone`,
+  `datetimeLocale`, `dedupSimilarityThreshold`, `messageSoftDebounceMs`,
+  `messageTypingDelayMs`, `messageMaxRestarts` — are actually persisted. The
+  engine still IGNORES a field it does not treat as writable, answering `200`
+  with a fresh `updatedAt`, so `agent update` checks the instance it gets back
+  against what it asked for and fails on a field that did not land.
+- An organisation's provider credentials became named **connections**, and the
+  migration carried each existing secret over as one called "Predefinita", lent
+  to every workspace. `org secrets` still works and still describes the old
+  shape; `org connections` is where a second credential per provider, or a
+  workspace that may not use one, becomes expressible.
+- Providers and models are governed on three tiers. `org providers show` reports
+  the organisation's admission — a platform-admin decision this key cannot make —
+  and `workspace providers` is the half an organisation's own admin owns.
+- Documents can live in a library owned by the organisation or by a workspace,
+  granted onward and switched on per agent. `agent knowledge` is unchanged and
+  still means the agent's OWN documents.
+- Eighty mutating routes record what they did, and an organisation can read its
+  own trail through `org audit management`.
 
 One family is deliberately absent. Every `/api/platform/*` route — platform
 plugins, platform skills, deployment-wide analytics and audit logs — is declared
@@ -222,6 +254,16 @@ do, so a leaked shell profile is not a leaked account. Two consequences to expec
   `/api/me/tokens`, `/api/invitations/accept`) refuse a personal token outright,
   and so does the whole platform lane below. `api` calls to those answer `403`,
   and that is the engine's decision, not a missing capability here.
+
+**A personal token cannot be issued from here, and neither can a management key
+issue one.** `/api/me/tokens` refuses a token (a credential that can mint its
+successor survives its own revocation) and refuses a management key too (there is
+no user row to attach the token to) — so both of the CLI's credentials are out,
+and there is no `polyant-cli token` family to add. Issue one from the account page
+in the web console, then put it in the environment variable `keyEnv` names.
+`whoami` reports which of the two it found, and with a token names the person it
+acts as, since `/api/service-context` is closed to a human principal exactly as
+`/api/me` is closed to a machine one.
 
 ```yaml
 default: staging
@@ -480,6 +522,13 @@ polyant-cli agent knowledge list acme
 polyant-cli agent knowledge add acme --file faq.md --yes
 polyant-cli agent knowledge export acme > kb.json
 
+polyant-cli agent shared-knowledge show acme
+polyant-cli agent shared-knowledge enable acme d-1 --yes
+
+polyant-cli agent checks show acme --days 30
+polyant-cli agent checks dismiss acme tools-failing --note "known, fix planned" --yes
+polyant-cli agent health acme
+
 polyant-cli agent tasks list acme
 polyant-cli agent tasks create acme --file digest.json --yes
 polyant-cli agent tasks run acme <taskId> --yes
@@ -539,8 +588,33 @@ hooks are replaced, not merged — and needs `--confirm <slug>`. Without a slug 
 creates a new agent in the addressed workspace instead. Same body, opposite blast
 radius.
 
-`agent retention show` reports the deployment default when an agent has no policy
-of its own, because "no policy" is not "keep nothing".
+`agent retention show` reports "no policy" as **nothing is purged**. The engine
+used to fall back to a deployment-wide window; it does not any more — the column
+is `NOT NULL` and `agent retention set` refuses a payload without a positive
+`retentionDays`, because the window is the most destructive value in the product
+and it is now declared rather than inherited.
+
+`agent update --set <field>=<value>` reaches the writable settings with no flag of
+their own — timezone and locale, the debounce and typing delays, the cache TTL,
+the opt-out wording. The value is read as JSON when it parses as one, so
+`cacheEnabled=true` sends a boolean and `datetimeTimezone=Europe/Rome` a string;
+`agent show <slug> --json` lists the field names. The engine ignores a field it
+does not treat as writable — with a `200` and a fresh `updatedAt`, which is
+exactly the shape that let a panel report a save that never happened — so the CLI
+compares the instance it gets back against what it asked for and fails on a field
+that did not land.
+
+`agent checks` is the supervision verdict: what the engine has decided is wrong
+with an agent, counted over a window of recent activity. That is a different
+question from `monitor status`, which reports what an agent IS. The engine serves
+check IDs and i18n keys rather than sentences — the same verdicts feed the panel
+in every language — so the CLI prints the ID, the severity and the measurement
+that raised it. A dismissal stops the check counting at **every** tier, including
+`analytics checks` and the organisation's dashboard, and it silences the verdict
+and not the cause. `agent health` is the raw per-tool and per-hook counts the
+checks are computed from, and it keeps the turns where a gate produced no verdict
+apart from the turns a gate blocked: those proceeded with a check that did not
+run, and zero there is what tells a quiet agent from a blind one.
 
 `agent mcp set` is a **replacement**, not a patch: the payload needs `name`,
 `url`, `authMode` (`none`, `static` or `oauth`) and `config` together, and what
@@ -693,6 +767,30 @@ polyant-cli org secrets show
 printf %s "$OPENAI_KEY" | polyant-cli org secrets set --key openai_api_key --file - --yes
 polyant-cli org plugins
 
+polyant-cli member invitations list --pending-only
+polyant-cli member invitations create ada@example.com --role member --workspace labs --yes
+polyant-cli member invitations revoke i-1 --yes --confirm i-1
+
+polyant-cli org audit management --action secret.write --actor ada@example.com
+polyant-cli org audit authz --workspace labs
+
+polyant-cli org providers show
+polyant-cli org providers managed-only --on --yes
+polyant-cli org connections list
+printf '{"api_key":"%s"}' "$OPENAI_KEY" | polyant-cli org connections create Produzione --provider openai --file - --yes
+polyant-cli org connections update c-1 --name Legacy --yes
+polyant-cli org connections delete c-1 --yes --confirm c-1
+
+polyant-cli workspace providers list labs
+polyant-cli workspace providers admit labs anthropic --yes
+polyant-cli workspace providers model labs openai gpt-4o-mini --off --yes
+polyant-cli workspace connections assign labs c-1 --yes
+
+polyant-cli org knowledge list
+polyant-cli org knowledge add --file ./handbook.pdf --yes
+polyant-cli org knowledge grant d-1 labs --yes
+polyant-cli workspace knowledge list labs
+
 polyant-cli workspace skills list labs
 polyant-cli workspace skills assign labs billing --yes
 polyant-cli workspace skills revoke labs billing --yes --confirm billing
@@ -741,6 +839,56 @@ actually decides a workspace-scoped permission. It resolves each workspace id ba
 to its slug. Both it and `workspace member` are Enterprise: on a deployment
 without the licensed feature the engine answers `403`, the same shape as a missing
 permission — `whoami` lists the features so the two can be told apart.
+
+`member invitations` is how somebody gets INTO the organisation; every other
+member command addresses a person who is already in it. The token is printed once
+and only its hash is kept, and `emailSent` says whether the invitation was
+actually posted — which is exactly when you need the token by hand. An address the
+organisation's SSO sign-in list would later lock out is refused at creation rather
+than at acceptance, so an invitation that cannot work never exists.
+
+`org audit` reads the two trails the engine keeps apart, and so does the CLI.
+`management` is one row per mutating management route — who changed what, and the
+metadata the route recorded, which is the only thing that says WHAT changed.
+`authz` is who was allowed or refused. A refusal leaves no row in the first and a
+successful change leaves none in the second, so folding them together would
+produce a stream where an absent row means either. Neither is `monitor events`,
+which lists an agent's tool events: what an agent did on a turn, not what a person
+did to the configuration. The management trail is not behind the advanced-audit
+entitlement — the record of who changed what is the base compliance trail — while
+the authorization one is.
+
+`org providers`, `org connections`, `workspace providers` and `workspace
+connections` are the provider governance surface, and they are two orthogonal
+things. **Admissibility** intersects across three tiers: the platform admits a
+provider to an organisation, the organisation admits it to a workspace, and an
+agent needs both — so `workspace providers admit` is refused locally for a
+provider the organisation does not hold, because the row would change nothing.
+Models go the other way: they are switched **off**, never on, at the organisation
+or the workspace tier, and either veto is enough, so a catalogue refresh reaches
+the tenant that paid for it instead of waiting for someone to enable each model.
+**Connections** are named credentials owned by the organisation and lent to
+workspaces, so whoever builds an agent picks one by name with `agent update
+--provider-connection` and never sees the key. Credentials are read from a file or
+stdin, never a flag, and are checked against the shape the engine reports for that
+provider before anything is sent. Deleting a connection, or revoking it from a
+workspace, **stops** the agents on it rather than falling back to another
+credential — a fallback would mean revoking a key revoked nothing while the spend
+moved. `org providers managed-only --on` is the switch that makes a named
+connection compulsory; turn it on after the connections exist and the workspaces
+have them, because an agent carrying its own key stops on its next turn.
+
+`org knowledge` and `workspace knowledge` are the shared libraries, and
+`agent shared-knowledge` is the agent's switch over them. A document reaches a
+turn only when all three tiers agree: it is in a library, the workspace is granted
+it, and the agent has switched it on. This is not `agent knowledge`, which is the
+agent's own documents — uploaded to it, deleted with it, reachable by nothing else.
+The uploads are the only multipart writes in this CLI, so they take a real path
+and not `-`: a multipart part carries a filename and stdin has none.
+`agent shared-knowledge show` marks a document the agent cannot use rather than
+hiding it — a library indexed with one embedder and an agent configured with
+another is the hardest thing to diagnose from a distance — and reports separately
+a document that was switched on and later withdrawn, which is a loss to act on.
 
 `org list` is also `org show`: a management key sees one organisation and the
 engine serves no per-organisation detail route. `member show` selects locally over
@@ -867,6 +1015,15 @@ so. The permission is `agent.dev:write` (admin and above).
 
 Active target, whether the instance answers, and the agents the key can see.
 Add `--json` for a single JSON object.
+
+It first names **which credential** is on the header, from the key's own prefix
+and with no request: a `pk_` management key, a `pat_` personal token, or an
+unrecognised prefix said as such rather than assumed. That decides the rest, since
+the two reach different identity routes — `/api/service-context` is management-key
+only and `/api/me` is the personal token's — so a `403` further on is read against
+the credential that actually produced it. With a personal token the report names
+the person it acts as instead of the key, and says plainly that permissions are
+not verified because that route is not the one a token may read.
 
 Permissions come from `GET /api/service-context` when the engine serves it: the
 report then names the key's organisation, its effective permission keys, and the

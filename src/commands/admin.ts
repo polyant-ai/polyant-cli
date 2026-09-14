@@ -17,8 +17,12 @@ import { ORG_NOTE, orgPath, preflight, readScope, report, requirePositional, rol
 import { call, expectArray, processServiceDependencies, scopeFor, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
 import { buildNode, type Node } from "../runtime/tree.js";
 import type { ResolvedScope } from "../runtime/scope.js";
+import { orgAuditFamily } from "./audit.js";
 import { governanceFamily } from "./governance.js";
+import { memberInvitationsFamily } from "./invitations.js";
+import { KNOWLEDGE_FAMILY_EXTRAS } from "./knowledge-library.js";
 import { ORG_FAMILY_EXTRAS, apiKeyFamily } from "./org-ops.js";
+import { PROVIDER_FAMILY_EXTRAS } from "./providers.js";
 import { skillFamily } from "./skills.js";
 
 // --- organisations ---------------------------------------------------------
@@ -388,11 +392,19 @@ const FAMILIES: Record<string, Record<string, Node>> = {
 const FAMILY_SUMMARIES: Record<string, string> = {
   org: "inspect the organisation, rename it, and share provider credentials",
   "org secrets": "the provider credentials every agent in the organisation falls back to",
+  "org audit": "who changed what, and who was refused",
+  "org providers": "which providers and models this organisation may run",
+  "org connections": "the organisation's named provider credentials",
+  "org knowledge": "the organisation's shared knowledge library",
   workspace: "manage the organisation's workspaces and who is bound to them",
   "workspace member": "bind a member to one workspace",
   "workspace skills": "which of the organisation's skills one workspace may use",
   "workspace plugins": "which of the organisation's plugins one workspace may use",
+  "workspace providers": "which providers and models one workspace may run",
+  "workspace connections": "which named credentials one workspace may use",
+  "workspace knowledge": "one workspace's own knowledge library",
   member: "inspect the organisation's members and set their roles",
+  "member invitations": "how somebody gets into the organisation",
   role: "manage the organisation's custom roles",
   apikey: "issue and revoke the management API keys the CLI authenticates with",
   skill: "manage the organisation's skill catalog",
@@ -400,16 +412,34 @@ const FAMILY_SUMMARIES: Record<string, string> = {
   "governance policy": "the organisation's governance policy catalog",
 };
 
+/** Subtrees that are one node each, and would not earn a module-wide map. */
+const EXTRA_SUBTREES: Record<string, Record<string, Node>> = {
+  org: { audit: orgAuditFamily },
+  member: { invitations: memberInvitationsFamily },
+};
+
 /**
- * The administration families. `org`, `workspace` and `member` each gain a
- * subtree from `org-ops.ts`; merging them here keeps one `org` command rather
- * than splitting the same noun across two places in the help.
+ * The administration families. `org`, `workspace` and `member` each gain
+ * subtrees from `org-ops.ts`, `providers.ts`, `knowledge-library.ts`,
+ * `audit.ts` and `invitations.ts`; merging them here keeps one `org` command
+ * rather than splitting the same noun across five places in the help.
  */
 export function createAdminCommands(overrides: Partial<ServiceDependencies> = {}): Record<string, Command> {
   const deps = { ...processServiceDependencies, ...overrides };
   const families: Record<string, Command> = {};
   for (const [name, actions] of Object.entries(FAMILIES)) {
-    families[name] = buildNode({ ...actions, ...(ORG_FAMILY_EXTRAS[name] ?? {}) }, deps, [name], FAMILY_SUMMARIES);
+    families[name] = buildNode(
+      {
+        ...actions,
+        ...(ORG_FAMILY_EXTRAS[name] ?? {}),
+        ...(PROVIDER_FAMILY_EXTRAS[name] ?? {}),
+        ...(KNOWLEDGE_FAMILY_EXTRAS[name] ?? {}),
+        ...(EXTRA_SUBTREES[name] ?? {}),
+      },
+      deps,
+      [name],
+      FAMILY_SUMMARIES,
+    );
   }
   return families;
 }

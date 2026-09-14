@@ -6,6 +6,7 @@ import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
 import { ORG_NOTE, orgPath, readScope } from "../runtime/org.js";
+import { analyticsChecks } from "./supervision.js";
 import { call, maybe, processServiceDependencies, scopeFor, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
 
 const RANGE_FLAGS = { value: ["--from", "--to"] } as const;
@@ -155,6 +156,11 @@ export function createAnalyticsCommand(overrides: Partial<ServiceDependencies> =
         summary: "one agent's cost, usage and slowest tools",
         usage: "Usage: polyant-cli analytics agent <slug> [--from <iso>] [--to <iso>]",
         run: (args, context) => agent(args, context, deps),
+      },
+      checks: {
+        summary: analyticsChecks.summary,
+        usage: analyticsChecks.usage,
+        run: (args, context) => analyticsChecks.action(args, context, deps),
       },
       org: {
         summary: "every workspace in the organisation, aggregated",

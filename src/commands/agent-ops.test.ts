@@ -240,13 +240,24 @@ describe("agent events", () => {
 });
 
 describe("agent retention", () => {
-  // "No policy" is not "keep nothing" — the deployment default still applies.
-  it("says the deployment default applies when there is no policy", async () => {
-    const h = harness([response({ policy: null, defaultDays: 90 })]);
+  // There is no deployment-wide window any more, so no policy means no purging.
+  it("says nothing is purged when there is no policy", async () => {
+    const h = harness([response({ policy: null })]);
 
     await leaf(h.command, ["retention", "show"])(["acme"], context());
 
-    expect(h.out.join("")).toContain("no retention policy. The deployment default of 90 days applies");
+    expect(h.out.join("")).toContain("no retention policy: nothing is purged on a schedule");
+  });
+
+  it("refuses a null retentionDays, which the route no longer accepts", async () => {
+    const h = harness([], {
+      readPayload: async () =>
+        JSON.stringify({ enabled: true, schedule: { type: "cron", expression: "0 3 * * *" }, retentionDays: null, preserveGovernance: true }),
+    });
+
+    await expect(leaf(h.command, ["retention", "set"])(["acme", "--file", "-"], context({ yes: true }))).rejects.toThrow(
+      /retentionDays as a positive integer/,
+    );
   });
 
   it("names the field a retention payload is missing", async () => {

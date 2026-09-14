@@ -25,6 +25,14 @@ export interface ServiceDependencies {
    * a command-line flag where it would land in shell history and `ps` output.
    */
   readPayload(source: string): Promise<string>;
+  /**
+   * The same file as bytes, for the two upload routes that take multipart
+   * rather than JSON. Separate from `readPayload` because a library document is
+   * a PDF or a DOCX as often as it is text, and decoding those as UTF-8 to
+   * re-encode them would corrupt the upload silently. There is no "-" here: a
+   * multipart part needs a filename, and stdin has none.
+   */
+  readBytes(source: string): Promise<Uint8Array>;
 }
 
 export const processServiceDependencies: ServiceDependencies = {
@@ -34,6 +42,7 @@ export const processServiceDependencies: ServiceDependencies = {
   env: process.env,
   io: processConfirmationIO,
   readPayload: (source) => (source === "-" ? readStdin() : readFile(source, "utf8")),
+  readBytes: async (source) => new Uint8Array(await readFile(source)),
 };
 
 /**

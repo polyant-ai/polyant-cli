@@ -23,6 +23,7 @@ function deps(env: Record<string, string | undefined> = { POLYANT_KEY_DEV: "pk_d
     env,
     io: { stdout: () => {}, stderr: () => {}, input: { isTTY: false, readLine: async () => "" } },
     readPayload: async () => "",
+    readBytes: async () => new Uint8Array(),
   };
 }
 

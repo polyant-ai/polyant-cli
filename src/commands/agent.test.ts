@@ -245,13 +245,62 @@ describe("agent update", () => {
     expect(h.calls[1]).toMatchObject({ method: "PATCH", path: "/api/instances/acme", body: { model: "claude-opus-5", status: "active" } });
   });
 
+  // A flag per writable field would be a wall of options; a hand-written list of
+  // them would be the drift that let six settings reach the API unpersisted.
+  it("reaches a field with no flag of its own through --set, typing the value as JSON", async () => {
+    const h = harness([
+      response({ instance: AGENT }),
+      response({ instance: { ...AGENT, datetimeTimezone: "Europe/Rome", cacheEnabled: true, messageTypingDelayMs: 250 } }),
+    ]);
+
+    await leaf(h.command, ["update"])(
+      ["acme", "--set", "datetimeTimezone=Europe/Rome", "--set", "cacheEnabled=true", "--set", "messageTypingDelayMs=250"],
+      context({ yes: true }),
+    );
+
+    expect(h.calls[1]).toMatchObject({
+      method: "PATCH",
+      body: { datetimeTimezone: "Europe/Rome", cacheEnabled: true, messageTypingDelayMs: 250 },
+    });
+  });
+
+  // The engine copies a PATCH through its own list of writable keys and ignores
+  // the rest with a 200 — which is the bug that let a panel report a save that
+  // never happened. The CLI checks the answer instead of trusting the status.
+  it("fails when the engine answers 200 and did not write the field", async () => {
+    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+
+    await expect(
+      leaf(h.command, ["update"])(["acme", "--set", "datetimeTimezone=Europe/Rome"], context({ yes: true })),
+    ).rejects.toThrow(/did not write datetimeTimezone/);
+  });
+
+  it("refuses --set on a field the engine only reports", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["update"])(["acme", "--set", "createdAt=now"], context({ yes: true }))).rejects.toThrow(
+      /createdAt is reported by the engine but cannot be written/,
+    );
+  });
+
+  it("points an agent at a named provider connection", async () => {
+    const h = harness([response({ instance: AGENT }), response({ instance: { ...AGENT, providerConnectionId: "c-1" } })]);
+
+    await leaf(h.command, ["update"])(["acme", "--provider-connection", "c-1"], context({ yes: true }));
+
+    expect(h.calls[1]).toMatchObject({ method: "PATCH", body: { providerConnectionId: "c-1" } });
+  });
+
   it("refuses an update with no field to change", async () => {
     const h = harness([]);
     await expect(leaf(h.command, ["update"])(["acme"], context({ yes: true }))).rejects.toThrow(/at least one field/);
   });
 
   it("sets the speech-to-text provider, disabled included", async () => {
-    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+    // The PATCH answers with the instance AS WRITTEN — which is what `update`
+    // verifies its request against, so a fixture that echoed the old row would
+    // be describing an engine that silently ignored the field.
+    const h = harness([response({ instance: AGENT }), response({ instance: { ...AGENT, sttProvider: "disabled" } })]);
 
     await leaf(h.command, ["update"])(["acme", "--stt-provider", "disabled"], context({ yes: true }));
 
@@ -267,7 +316,7 @@ describe("agent update", () => {
   });
 
   it("narrows memory to one conversation, and names the previous scope in the recap", async () => {
-    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+    const h = harness([response({ instance: AGENT }), response({ instance: { ...AGENT, memoryScope: "conversation" } })]);
 
     await leaf(h.command, ["update"])(["acme", "--memory-scope", "conversation"], context({ yes: true }));
 

@@ -34,6 +34,8 @@ import { buildNode, type Node } from "../runtime/tree.js";
 import { preflight, reportWrite, requireSlug } from "../runtime/workspace.js";
 import type { ResolvedScope } from "../runtime/scope.js";
 import { AGENT_FAMILY_EXTRAS } from "./agent-ops.js";
+import { agentSharedKnowledgeFamily } from "./knowledge-library.js";
+import { agentSupervisionFamily } from "./supervision.js";
 import { AGENT_DATA_EXTRAS } from "./agent-data.js";
 import { AGENT_INTEROP_EXTRAS } from "./agent-interop.js";
 import { chat, CHAT_USAGE } from "./agent-chat.js";
@@ -122,8 +124,76 @@ function optional(options: readonly string[], flag: string, field: string): Reco
 }
 
 const UPDATE_FLAGS = {
-  value: ["--name", "--description", "--provider", "--model", "--status", "--stt-provider", "--memory-scope", "--confirm"],
+  value: [
+    "--name",
+    "--description",
+    "--provider",
+    "--model",
+    "--status",
+    "--stt-provider",
+    "--memory-scope",
+    "--provider-connection",
+    "--set",
+    "--confirm",
+  ],
 } as const;
+
+/**
+ * Fields the DTO reports but nothing may write. Everything else the agent's own
+ * read carries is offered to `--set`, so a field the engine adds is settable
+ * here the day it ships instead of waiting for a flag.
+ */
+const READ_ONLY_FIELDS = new Set(["id", "slug", "workspaceId", "workspaceSlug", "createdAt", "updatedAt"]);
+
+/**
+ * `--set field=value`, repeatable, for the twenty-odd writable settings that do
+ * not have a flag of their own — timezone, debounce, cache TTL, the opt-out
+ * wording. A flag each would be a wall of options for fields most callers never
+ * touch, and a hand-written list of them would be the exact drift that let six
+ * settings reach the API and never be persisted.
+ *
+ * The value is read as JSON when it parses as one, so `--set cacheEnabled=true`
+ * sends a boolean and `--set cacheTtl=300` a number; anything else is the string
+ * it looks like, so `--set datetimeTimezone=Europe/Rome` needs no quoting.
+ */
+function parseSetFlags(options: readonly string[]): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (let index = 0; index < options.length; index += 1) {
+    if (options[index] !== "--set") continue;
+    const pair = options[index + 1];
+    if (pair === undefined || pair.startsWith("--")) throw new ConfigError("--set needs <field>=<value>.");
+    const separator = pair.indexOf("=");
+    if (separator <= 0) throw new ConfigError(`--set needs <field>=<value>; got ${JSON.stringify(pair)}.`);
+    const field = pair.slice(0, separator);
+    const raw = pair.slice(separator + 1);
+    if (READ_ONLY_FIELDS.has(field)) throw new ConfigError(`${field} is reported by the engine but cannot be written.`);
+    if (Object.hasOwn(body, field)) throw new ConfigError(`--set names ${field} twice.`);
+    try {
+      body[field] = JSON.parse(raw) as unknown;
+    } catch {
+      body[field] = raw;
+    }
+  }
+  return body;
+}
+
+/**
+ * The engine copies a PATCH body through its own list of writable keys and
+ * ignores anything else — silently, with a 200 and a fresh `updatedAt`. So the
+ * write is verified against the instance the route ANSWERS with rather than
+ * trusted: an ignored field would otherwise be reported here as a change that
+ * happened.
+ */
+function unwrittenFields(requested: Record<string, unknown>, after: Record<string, unknown> | undefined): string[] {
+  if (after === undefined) return [];
+  return Object.keys(requested).filter((field) => {
+    // Compared loosely: the engine normalises some values (a numeric string to a
+    // number), and a strict comparison would report those as failures.
+    const wanted = requested[field];
+    const got = after[field];
+    return JSON.stringify(wanted) !== JSON.stringify(got) && String(wanted) !== String(got);
+  });
+}
 
 /**
  * The engine's own union. "disabled" is the one that matters: an unrecognised
@@ -162,14 +232,16 @@ async function update(args: string[], context: CommandContext | undefined, deps:
   const slug = requireSlug(args, "update");
   const options = args.slice(1);
   assertKnown(options, UPDATE_FLAGS, "agent update option");
-  const body: Record<string, string> = {
+  const body: Record<string, unknown> = {
     ...optional(options, "--name", "name"),
     ...optional(options, "--description", "description"),
     ...optional(options, "--provider", "provider"),
     ...optional(options, "--model", "model"),
     ...optional(options, "--status", "status"),
+    ...optional(options, "--provider-connection", "providerConnectionId"),
     ...sttProvider(options),
     ...memoryScope(options),
+    ...parseSetFlags(options),
   };
   if (Object.keys(body).length === 0) throw new ConfigError("polyant-cli agent update needs at least one field to change.");
 
@@ -182,13 +254,22 @@ async function update(args: string[], context: CommandContext | undefined, deps:
 
   const changes = Object.entries(body).map(([field, value]) => {
     const previous = (current as unknown as Record<string, unknown>)[field];
-    return String(previous) === value
+    return String(previous) === String(value)
       ? `Leave ${field} unchanged at ${JSON.stringify(value)}.`
       : `Change ${field} from ${JSON.stringify(text(previous))} to ${JSON.stringify(value)}.`;
   });
   if (!(await preflight(deps, scope, context, options, { title: `Update agent ${slug}`, changes }))) return;
 
   const res = await call(deps, scope, { method: "PATCH", path: `/api/instances/${encodeURIComponent(slug)}`, body });
+  const after = (res.body as Partial<AgentDetailResponse> | null)?.instance as unknown as Record<string, unknown> | undefined;
+  const ignored = unwrittenFields(body, after);
+  if (ignored.length > 0) {
+    throw new ConfigError(
+      `The engine accepted the request and did not write ${ignored.join(", ")}. ` +
+        "A field it does not treat as writable is ignored with a 200 and a fresh updatedAt, so this is a mistyped " +
+        "name or an engine older than the field — not a value that was rejected.",
+    );
+  }
   reportWrite(deps, context, res, `Updated agent ${slug}.`);
 }
 
@@ -924,6 +1005,21 @@ const LEAVES: Record<string, Node> = {
     usage: `Usage: polyant-cli agent update <slug> [--name <name>] [--description <text>] [--status <status>]
                                  [--provider <name>] [--model <id>] [--stt-provider <p>]
                                  [--memory-scope <agent|conversation>]
+                                 [--provider-connection <id>] [--set <field>=<value> ...]
+
+--set reaches the writable settings with no flag of their own: the timezone and
+locale, the debounce and typing delays, the cache TTL, the opt-out wording. The
+value is read as JSON when it parses as one, so cacheEnabled=true sends a boolean
+and datetimeTimezone=Europe/Rome a string. Run \`agent show <slug> --json\` for the
+field names.
+
+The engine IGNORES a field it does not treat as writable — with a 200 and a fresh
+updatedAt — so the response is checked against what was asked and a field that
+did not land fails here instead of reporting a change that never happened.
+
+--provider-connection points the agent at one of the organisation's named
+credentials (\`org connections list\`), and is required once the organisation has
+managed connections on.
 
 --stt-provider is one of openai, aws, deepgram or disabled. "disabled" is a real
 setting, not an absent one: the agent then tells a sender that voice messages
@@ -1119,7 +1215,9 @@ const AGENT_SUMMARIES: Record<string, string> = {
   "agent optouts": "manage the contacts that have opted out of this agent",
   "agent prompt": "manage an agent's prompt",
   "agent retention": "manage an agent's data retention",
+  "agent checks": "the supervision verdicts raised on this agent",
   "agent secrets": "manage an agent's secrets",
+  "agent shared-knowledge": "the shared library documents this agent draws on",
   "agent skills": "manage the skills an agent has enabled",
   "agent skills env": "manage a skill's environment on one agent",
   "agent tasks": "manage an agent's scheduled tasks",
@@ -1134,7 +1232,19 @@ const AGENT_SUMMARIES: Record<string, string> = {
  */
 export function createAgentCommand(overrides: Partial<AgentCommandDependencies> = {}): Command {
   const deps = { ...processServiceDependencies, ...overrides };
-  return buildNode({ ...LEAVES, ...AGENT_FAMILY_EXTRAS, ...AGENT_INTEROP_EXTRAS, ...AGENT_DATA_EXTRAS }, deps, ["agent"], AGENT_SUMMARIES);
+  return buildNode(
+    {
+      ...LEAVES,
+      ...AGENT_FAMILY_EXTRAS,
+      ...AGENT_INTEROP_EXTRAS,
+      ...AGENT_DATA_EXTRAS,
+      ...agentSupervisionFamily,
+      "shared-knowledge": agentSharedKnowledgeFamily,
+    },
+    deps,
+    ["agent"],
+    AGENT_SUMMARIES,
+  );
 }
 
 export const agentCommand = createAgentCommand();

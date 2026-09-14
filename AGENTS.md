@@ -125,12 +125,16 @@ Anything sensitive is read from a file or stdin, never from a flag:
 printf %s "$OPENAI_KEY" | polyant-cli agent secrets set acme --key openai_api_key --file - --yes
 ```
 
-That holds for `agent secrets set`, `org secrets set`, `agent skills env set`,
-`channels set`, `mcp set|test`, `memory add`, `hooks add|update`, `prompt set`,
-`dev connect --token-file` (whose token otherwise comes from the environment) and
-`api --data`. Every structured
+That holds for `agent secrets set`, `org secrets set`, `org connections
+create|update`, `agent skills env set`, `channels set`, `mcp set|test`,
+`memory add`, `hooks add|update`, `prompt set`, `dev connect --token-file` (whose
+token otherwise comes from the environment) and `api --data`. Every structured
 payload — a hook, a channel, a scheduled task, a retention policy, a governance
-assignment, an import bundle — arrives the same way, as `--file <path|->`. Recaps report a payload's **length and source**,
+assignment, an import bundle — arrives the same way, as `--file <path|->`. The
+two library uploads (`org knowledge add`, `workspace knowledge add`) are the
+exception on the `-` half alone: they are multipart, a part carries a filename,
+and stdin has none, so they take a real path and refuse `-` rather than inventing
+a name. Recaps report a payload's **length and source**,
 never its content. `secrets show` and `channels show` report key *names* and
 whether they are configured — the engine never serves a stored value and neither
 does the CLI.
