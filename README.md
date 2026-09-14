@@ -162,7 +162,17 @@ The key is not rejected at the door. `AuthGuard` validates it and resolves the
 principal exactly as it does everywhere else; `PermissionGuard` immediately after
 it takes the platform-admin lane and refuses. So the answer is
 **`403 "Current platform administrator standing required"`** — exit code `2`, not
-`401` — and no key, however permissioned, can change it. Those surfaces are
+`401` — and no key, however permissioned, can change it.
+
+**A personal token is refused there too, and for a different reason.** It *is* a
+human principal, so the sentence above does not cover it — but that tier bypasses
+all authorization and one of its routes returns a generated password in the
+response body, so a token sitting in an environment variable would be a bearer
+credential for the whole deployment. Every route on the tier refuses one even when
+its holder is a platform admin, with
+**`403 "A personal API token cannot act as a platform administrator"`**. Reading
+the two messages apart is the quickest way to tell which credential your
+environment is actually supplying. Those surfaces are
 unreachable from any CLI rather than unimplemented here, and are administered from
 the web console.
 
@@ -185,6 +195,33 @@ than this CLI.
 ## Configuration
 
 `polyant.yaml` at the workspace root is versioned; `.env` is not.
+
+### Which credential goes in `keyEnv`
+
+`X-Polyant-Key` carries two different credentials, told apart by their prefix, and
+`keyEnv` names an environment variable holding either one. The CLI sends whichever
+it finds — no flag, no code path of its own — but they do not behave the same.
+
+| | `pk_…` management key | `pat_…` personal token |
+|---|---|---|
+| Authenticates | a service, scoped to one organization | the person who issued it |
+| Permissions | an explicit set stored on the key | that person's live role bindings |
+| Survives its creator leaving | **yes** | no |
+
+**Use a management key for anything unattended** — CI, cron, a shared runner. A
+pipeline authenticated as an employee either breaks the day they are offboarded or
+keeps running under an account that should have been closed.
+
+A personal token is for a workstation: your own scripts, on your own authority,
+stopping when your access does. It can also be *restricted* to less than you can
+do, so a leaked shell profile is not a leaked account. Two consequences to expect:
+
+- Anything the holder cannot do, the token cannot do — and a permission gained or
+  lost changes the answer immediately, without reissuing anything.
+- The credential-management routes (`POST /api/me/password`, `/api/me/two-factor`,
+  `/api/me/tokens`, `/api/invitations/accept`) refuse a personal token outright,
+  and so does the whole platform lane below. `api` calls to those answer `403`,
+  and that is the engine's decision, not a missing capability here.
 
 ```yaml
 default: staging
@@ -265,8 +302,8 @@ guessing which side is wrong. Closing it needs a version on the engine's
 ### `polyant-cli config`
 
 Manage the local, versioned `polyant.yaml`; these commands make no API calls
-and never ask for, write, or send a management-key value. `keyEnv` always means
-the name of an environment variable.
+and never ask for, write, or send a credential value — a management key or a
+personal token alike. `keyEnv` always means the name of an environment variable.
 
 ```bash
 # Prompts only for target name, base URL, and key environment-variable name.
@@ -779,6 +816,52 @@ again — `agent governance set`. Creating a policy assigns it to nothing.
 `governance analytics` covers the addressed workspace; `--org` aggregates every
 workspace in the organisation. `governance metadata` is the vocabulary for a
 policy payload, including which gate type belongs to which category.
+
+### `polyant-cli dev`
+
+Dev mode: the `*.tool.ts` files on your machine, served into a **remote** agent
+for the duration of a turn. The engine equips them as ordinary tools, so ajv
+validation, governance, audit and tracing are the real ones.
+
+```bash
+# 1. a credential, printed once and never recoverable
+export POLYANT_DEV_TOKEN=$(polyant-cli --context engineering dev token issue acme --ttl-hours 4 --yes)
+
+# 2. a project whose node_modules carry tsx and the SDK
+polyant-cli dev init ./my-tools --agent acme --yes && (cd my-tools && npm install)
+
+# 3. serve them, until you interrupt it
+cd my-tools && polyant-cli --context engineering dev connect acme --watch
+
+polyant-cli --context engineering dev token status acme
+polyant-cli --context engineering dev token revoke acme --yes --confirm acme
+```
+
+`dev token issue` prints the token on **stdout and nothing else**, so it can be
+captured directly; the warning that it is shown once lives on stderr. Issuing
+invalidates every previous token for that agent and closes a session connected
+with one — `revoke` does the same and is destructive, hence `--confirm <slug>`.
+
+`dev connect` does not terminate. It reads the token from `$POLYANT_DEV_TOKEN`
+(or `--token-env <VAR>`, or `--token-file <path|->`) — there is no `--token`
+flag, because argv is visible in `ps`. Your tool files are imported by a child
+process started with the **project's own** `tsx`, which is why `tsx` and
+`@polyant-ai/plugin-sdk` must be dependencies of that project and not of this
+CLI: a tool file's `import "@polyant-ai/plugin-sdk"` resolves from where the
+file lives. `dev init` writes both.
+
+With `--json` it emits one JSON object per line on stdout, so an agent can read
+the session incrementally. Without it, the tool calls are on stdout and the
+session's own lifecycle on stderr. Anything your tool prints itself is forwarded
+to stderr as `tool: …`. `--watch` reloads the tool set on save (`tools.update`),
+keeping the previous set if the reload fails to compile.
+
+It exits `2` for a wrong token, agent or project, `3` for an engine it could not
+reach, and `0` when you interrupt it.
+
+A dev session lives in memory on **one** engine node: with more than one
+replica, turns served by the others equip no dev tools. Every `dev` read says
+so. The permission is `agent.dev:write` (admin and above).
 
 ### `polyant-cli whoami`
 

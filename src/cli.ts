@@ -6,6 +6,7 @@ import { adminCommands } from "./commands/admin.js";
 import { analyticsCommand } from "./commands/analytics.js";
 import { apiCommand } from "./commands/api.js";
 import { configCommand } from "./commands/config.js";
+import { devCommand } from "./commands/dev.js";
 import { monitorCommand } from "./commands/monitor.js";
 import { whoamiCommand } from "./commands/whoami.js";
 import { CliError, ConfigError, ExitCode, type ExitCodeValue } from "./exit.js";
@@ -21,6 +22,7 @@ export const COMMANDS: Record<string, Command> = {
   analytics: analyticsCommand,
   api: apiCommand,
   config: configCommand,
+  dev: devCommand,
   monitor: monitorCommand,
   // org, workspace, member, role — organisation administration, which the design
   // spec exposes as top-level families rather than under one `admin` prefix.
