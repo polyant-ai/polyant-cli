@@ -182,6 +182,32 @@ describe("dev connect: how the child is started", () => {
     expect(h.spawnedOptions()?.cwd).toBe("/srv/kit");
     expect(JSON.parse(h.spawnedOptions()?.env[DEV_RUNNER_ENV.paths] as string)).toEqual(["/srv/kit/src/tools"]);
   });
+
+  it("defaults hooks to the project directory, the same as tools", async () => {
+    // One tree holding both needs no option: each loader matches its own
+    // filename suffix.
+    const h = connectHarness();
+    const { settled } = await start(h, ["acme"]);
+    h.fake.exit(0);
+    await settled;
+
+    expect(JSON.parse(h.spawnedOptions()?.env[DEV_RUNNER_ENV.hookPaths] as string)).toEqual(["/work/tools"]);
+  });
+
+  it("resolves --hooks against the project directory, independently of --tools", async () => {
+    const h = connectHarness();
+    h.files.set("/srv/kit/node_modules/.bin/tsx", "#!/bin/sh");
+    h.files.set("/srv/kit/node_modules/@polyant-ai/plugin-sdk/package.json", "{}");
+
+    const { settled } = await start(h, [
+      "acme", "--dir", "/srv/kit", "--tools", "src/tools", "--hooks", "src/hooks",
+    ]);
+    h.fake.exit(0);
+    await settled;
+
+    expect(JSON.parse(h.spawnedOptions()?.env[DEV_RUNNER_ENV.paths] as string)).toEqual(["/srv/kit/src/tools"]);
+    expect(JSON.parse(h.spawnedOptions()?.env[DEV_RUNNER_ENV.hookPaths] as string)).toEqual(["/srv/kit/src/hooks"]);
+  });
 });
 
 describe("dev connect: the preflight read", () => {

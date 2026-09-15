@@ -261,11 +261,18 @@ async function tokenStatus(args: string[], context: CommandContext | undefined, 
   warnAboutNode(deps, body);
 }
 
-const CONNECT_USAGE = `Usage: polyant-cli dev connect <slug> [--dir <path>] [--tools <path>] [--watch]
-                                  [--token-env <VAR>] [--token-file <path|->]
+const CONNECT_USAGE = `Usage: polyant-cli dev connect <slug> [--dir <path>] [--tools <path>] [--hooks <path>]
+                                  [--watch] [--token-env <VAR>] [--token-file <path|->]
 
-Serves the project's local *.tool.ts files to a remote agent, one turn at a
-time, and does not return until interrupted.
+Serves the project's local *.tool.ts and *.hook.ts files to a remote agent and
+does not return until interrupted. Tools are called by the model, one turn at a
+time; hooks run on the turn's lifecycle events.
+
+--tools and --hooks both default to the project directory: each loader matches
+its own filename suffix, so one tree holding both needs neither option. A hook
+file says how it enters the pipeline with a \`dev\` export beside its definition:
+\`devHook({ overrides })\` to run in place of one the agent already has,
+\`devHook({ bindTo })\` to run on an event for the length of the session.
 
 The token comes from the environment ($POLYANT_DEV_TOKEN unless --token-env
 names another variable) or from a file; there is no --token flag, because argv
@@ -274,6 +281,7 @@ is visible in \`ps\`. Issue one with \`polyant-cli dev token issue <slug>\`.
 The project must carry \`tsx\` and \`@polyant-ai/plugin-sdk\` in its own
 node_modules: a *.tool.ts file is imported by a child process started in that
 directory, which is the only place it resolves from. \`dev init\` writes both.
+Hooks need SDK 1.8 or newer; an older one serves tools and no hooks.
 
 With --json, one JSON object per line on stdout, streamable. Without it, the
 tool calls are on stdout and everything else on stderr.

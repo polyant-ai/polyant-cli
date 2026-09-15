@@ -55,6 +55,25 @@ describe("the dev runner source", () => {
     expect(DEV_RUNNER_SOURCE).not.toContain("process.exit(");
   });
 
+  // An SDK older than 1.8 has no hook loader. The runner degrades to tools
+  // only instead of dying on an undefined function, because a project pinned to
+  // an older SDK is a normal state, not a broken one.
+  it("degrades to tools only against an SDK with no hook support", () => {
+    expect(DEV_RUNNER_SOURCE).toContain("dev.loadHooksFromPaths ?");
+    expect(DEV_RUNNER_SOURCE).toContain("handle.updateHooks");
+  });
+
+  // A project may be all hooks and no tools: neither alone is the floor.
+  it("refuses to start only when there is neither a tool nor a hook", () => {
+    expect(DEV_RUNNER_SOURCE).toContain("tools.length === 0 && hooks.length === 0");
+  });
+
+  // Tools and hooks default to the same directory, so watching the list as
+  // given would fire every reload twice.
+  it("de-duplicates the watched paths", () => {
+    expect(DEV_RUNNER_SOURCE).toContain("new Set(paths.concat(hookPaths))");
+  });
+
   it("is valid JavaScript", () => {
     // Parsed, not run: a syntax error would otherwise surface as a child that
     // died with an exit code and no explanation.
