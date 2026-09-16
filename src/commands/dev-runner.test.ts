@@ -41,6 +41,16 @@ describe("the dev runner source", () => {
     expect(DEV_RUNNER_SOURCE).not.toContain("/dev-mode/socket");
   });
 
+  // An SDK below 1.8 has no hook loader. Degrading to tools-only is right; doing
+  // it in silence is not, because the operator then sees hooks that never run
+  // and no reason anywhere.
+  it("says so when an older SDK drops the project's hooks", () => {
+    expect(DEV_RUNNER_SOURCE).toContain("if (!dev.loadHooksFromPaths && hookPaths.length > 0)");
+    expect(DEV_RUNNER_SOURCE).toMatch(/predates 1\.8 and cannot load hooks/);
+    // On stderr: stdout is the marked event channel the parent parses.
+    expect(DEV_RUNNER_SOURCE).toMatch(/process\.stderr\.write\(\s*\n?\s*"note: this project's @polyant-ai\/plugin-sdk/);
+  });
+
   it("marks every event line, so a tool's own output cannot pass for one", () => {
     expect(DEV_RUNNER_SOURCE).toContain(`const MARKER = ${JSON.stringify(DEV_EVENT_MARKER)}`);
     expect(DEV_RUNNER_SOURCE).toContain("MARKER + JSON.stringify(event)");

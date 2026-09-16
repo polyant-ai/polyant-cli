@@ -105,6 +105,15 @@ void (async () => {
     tools = await dev.loadToolsFromPaths(paths, { cacheBust: watch });
     // \`loadHooksFromPaths\` arrived in SDK 1.8: an older SDK in the project has
     // tools and no hooks, which is the state to degrade into rather than crash.
+    // Silently, though, a project written against the hook feature looks like
+    // one whose hooks the engine declined — so say which it is, once, when the
+    // project actually has hook files to lose.
+    if (!dev.loadHooksFromPaths && hookPaths.length > 0) {
+      process.stderr.write(
+        "note: this project's @polyant-ai/plugin-sdk predates 1.8 and cannot load hooks — " +
+          "its *.hook.ts files will not be served. Update the SDK dependency to serve them.\\n",
+      );
+    }
     hooks = dev.loadHooksFromPaths ? await dev.loadHooksFromPaths(hookPaths, { cacheBust: watch }) : [];
   } catch (err) {
     return fatal(2, reason(err));
