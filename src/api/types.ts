@@ -4,10 +4,11 @@
  * Response shapes, in one module on purpose: every command reads them from here,
  * so the blast radius of an engine change is one file.
  *
- * Hand-written, and staying that way. The engine's OpenAPI document
- * (`/api/openapi.json`) declares no schemas — it is hand-built without
- * @nestjs/swagger — so generating from it would produce `unknown` for every body
- * and response. Only the fields the CLI actually reads are declared.
+ * Hand-written, and staying that way. `/api/docs` on the selected target is the
+ * interactive route catalogue and `/api/openapi.json` is its raw contract, but
+ * some request body schemas are not yet published. Use the route documentation
+ * or engine source for those payloads; only the response fields the CLI actually
+ * reads are declared here.
  */
 
 /** GET /health — public, not throttled. */
@@ -29,6 +30,42 @@ export interface ListAgentsResponse {
   instances: AgentSummary[];
 }
 
+export interface ScheduledTask {
+  id: string;
+  name: string;
+  scheduleHuman?: string;
+  enabled: boolean;
+  nextRunAt: string | null;
+  outboundChannel: string | null;
+}
+
+export interface ScheduledTasksResponse {
+  tasks: ScheduledTask[];
+}
+
+export interface OrganizationTask extends ScheduledTask {
+  workspace: string;
+  agent: string;
+}
+
+export interface AgentCheck {
+  id: string;
+  severity: string;
+  titleKey: string;
+  bodyKey: string;
+  params?: Record<string, string | number>;
+  section: string;
+  sectionKey: string;
+}
+
+export interface AgentChecksResponse {
+  instanceId?: string;
+  name?: string;
+  checks: AgentCheck[];
+  dismissed: AgentCheck[];
+  tally?: { broken?: number; warning?: number };
+}
+
 /** The `/api/instances` DTO fields the agent commands render or diff. */
 export interface AgentDetail extends AgentSummary {
   id: string;
@@ -47,6 +84,8 @@ export interface AgentDetail extends AgentSummary {
   description: string | null;
   provider: string | null;
   model: string | null;
+  effectiveProvider?: string | null;
+  effectiveModel?: string | null;
   memoryEnabled: boolean;
   /**
    * How wide the agent's long-term memory reaches: "agent" (one pool for every

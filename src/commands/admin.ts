@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type {
   MembersResponse,
+  AgentSummary,
+  ListAgentsResponse,
+  OrganizationTask,
   OrganizationsResponse,
   RolePermissionsResponse,
   RoleSummary,
   RolesResponse,
-  WorkspaceSummary,
   WorkspacesResponse,
+  ScheduledTask,
+  ScheduledTasksResponse,
 } from "../api/types.js";
 import type { Command, CommandContext } from "../command.js";
 import { ConfigError } from "../exit.js";
@@ -44,6 +48,104 @@ async function orgList(args: string[], context: CommandContext | undefined, deps
       headers: ["SLUG", "NAME", "ID", "DEFAULT"],
       rows: organizations.map((org) => [org.slug, text(org.name), text(org.id), org.isDefault === true ? "yes" : "no"]),
       emptyMessage: "This key can see no organisation.",
+    })}\n`,
+  );
+}
+
+async function orgCreate(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const slug = requirePositional(args, "org create");
+  const options = args.slice(1);
+  assertKnown(options, { value: ["--name", "--confirm"] }, "org create option");
+  const name = takeValue(options, "--name");
+  if (name === undefined) throw new ConfigError("polyant-cli org create needs --name <name>.");
+  const scope = await scopeFor(deps, context, "target");
+  if (!(await preflight(deps, scope, slug, context, options, {
+    title: `Create organisation ${slug}`,
+    changes: [
+      `Create organisation ${slug} named ${JSON.stringify(name)}.`,
+      "Create its default workspace as general.",
+    ],
+  }))) return;
+  const res = await call(deps, scope, {
+    method: "POST",
+    path: "/api/organizations",
+    body: { slug, name },
+  });
+  report(deps, context, res.raw, `Created organisation ${slug} with default workspace general.`);
+}
+
+const TASK_PAGE_SIZE = 500;
+
+async function organizationTasks(
+  deps: ServiceDependencies,
+  scope: ResolvedScope,
+  workspaces: Array<{ slug: string }>,
+): Promise<OrganizationTask[]> {
+  const rows: OrganizationTask[] = [];
+  for (const workspace of workspaces) {
+    const workspaceScope = { ...scope, workspace: workspace.slug };
+    const agentsRes = await call(deps, workspaceScope, { path: "/api/instances" });
+    const agents = expectArray<AgentSummary>(
+      (agentsRes.body as Partial<ListAgentsResponse> | null)?.instances,
+      "GET /api/instances",
+    );
+    for (const agent of agents) {
+      for (let offset = 0; ; offset += TASK_PAGE_SIZE) {
+        const tasksRes = await call(deps, workspaceScope, {
+          path: `/api/instances/${encodeURIComponent(agent.slug)}/scheduled-tasks`,
+          query: { limit: String(TASK_PAGE_SIZE), offset: String(offset) },
+        });
+        const tasks = expectArray<ScheduledTask>(
+          (tasksRes.body as Partial<ScheduledTasksResponse> | null)?.tasks,
+          "GET scheduled tasks",
+        );
+        rows.push(...tasks.map((task) => ({
+          ...task,
+          workspace: workspace.slug,
+          agent: agent.slug,
+        })));
+        if (tasks.length < TASK_PAGE_SIZE) break;
+      }
+    }
+  }
+  return rows;
+}
+
+async function orgTasksList(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  assertKnown(args, {}, "org tasks list option");
+  const scope = await scopeFor(deps, context, "target");
+  const contextRes = await call(deps, scope, { path: "/api/service-context" });
+  const serviceContext = contextRes.body as {
+    organization?: { slug?: unknown };
+    workspaces?: unknown;
+  } | null;
+  const org = serviceContext?.organization?.slug;
+  if (typeof org !== "string" || org.length === 0) {
+    throw new ConfigError("GET /api/service-context did not identify this key's organisation.");
+  }
+  const requestedOrg = context?.global.org ?? scope.org;
+  if (requestedOrg !== undefined && requestedOrg !== org) {
+    throw new ConfigError(`This key belongs to organisation ${JSON.stringify(org)}, not ${JSON.stringify(requestedOrg)}.`);
+  }
+  const workspaces = expectArray<{ slug: string }>(
+    serviceContext?.workspaces,
+    "GET /api/service-context",
+  );
+  const rows = await organizationTasks(deps, scope, workspaces);
+  if (wantsJson(context)) return writeRawResponse(deps.io, JSON.stringify(rows));
+  deps.io.stdout(
+    `${renderTable({
+      headers: ["WORKSPACE", "AGENT", "ID", "NAME", "SCHEDULE", "ENABLED", "NEXT RUN"],
+      rows: rows.map((task) => [
+        task.workspace,
+        task.agent,
+        text(task.id),
+        text(task.name),
+        text(task.scheduleHuman),
+        task.enabled ? "yes" : "no",
+        text(task.nextRunAt),
+      ]),
+      emptyMessage: `Organisation ${org} has no scheduled tasks.`,
     })}\n`,
   );
 }
@@ -312,10 +414,23 @@ async function roleDelete(args: string[], context: CommandContext | undefined, d
 
 const FAMILIES: Record<string, Record<string, Node>> = {
   org: {
+    create: {
+      summary: "create an organisation with its default workspace",
+      usage: "Usage: polyant-cli org create <slug> --name <name>\n\nCreates the default workspace as general. Requires a current platform-administrator personal token.",
+      action: orgCreate,
+      mutates: true,
+    },
     list: {
       summary: "show the organisation this key belongs to",
       usage: `Usage: polyant-cli org list\n\nA management key is scoped to one organisation, and the engine serves no\nper-organisation detail route, so this listing is the detail.`,
       action: orgList,
+    },
+    tasks: {
+      list: {
+        summary: "list scheduled tasks across the organisation",
+        usage: `Usage: polyant-cli org tasks list\n\nCollects every workspace and agent before printing, so failures never produce a partial table. ${ORG_NOTE}`,
+        action: orgTasksList,
+      },
     },
     rename: {
       summary: "rename the organisation",
@@ -396,6 +511,7 @@ const FAMILY_SUMMARIES: Record<string, string> = {
   "org providers": "which providers and models this organisation may run",
   "org connections": "the organisation's named provider credentials",
   "org knowledge": "the organisation's shared knowledge library",
+  "org tasks": "scheduled tasks across every workspace and agent",
   workspace: "manage the organisation's workspaces and who is bound to them",
   "workspace member": "bind a member to one workspace",
   "workspace skills": "which of the organisation's skills one workspace may use",

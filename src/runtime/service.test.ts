@@ -32,6 +32,18 @@ function context(global: Partial<GlobalOptions>): CommandContext {
 }
 
 describe("scopeFor", () => {
+  it("should_resolve_a_target_only_scope_without_a_workspace_note", async () => {
+    const stderr: string[] = [];
+    const targetDeps = deps();
+    targetDeps.io.stderr = (text) => stderr.push(text);
+
+    const scope = await scopeFor(targetDeps, context({}), "target");
+
+    expect(scope.target.baseUrl).toBe("http://localhost:4000");
+    expect(scope.workspace).toBeUndefined();
+    expect(stderr).toEqual([]);
+  });
+
   it("should_apply_the_global_url_override_to_the_resolved_target", async () => {
     const scope = await scopeFor(deps(), context({ url: "https://other.example.polyant.ai" }), "read");
     expect(scope.target.baseUrl).toBe("https://other.example.polyant.ai");

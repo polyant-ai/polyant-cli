@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type { CommandContext } from "../command.js";
+import type { AgentCheck, AgentChecksResponse } from "../api/types.js";
+import { CliError, ExitCode } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
@@ -21,17 +23,6 @@ import { agentPath, preflight, reportWrite, requireSecond, requireSlug } from ".
  * inventing prose here would be a second wording nobody maintains.
  */
 
-interface CheckRow {
-  id: string;
-  severity: string;
-  titleKey: string;
-  bodyKey: string;
-  params?: Record<string, string | number>;
-  /** The panel tab the reader is sent to. An alert without a destination is a complaint. */
-  section: string;
-  sectionKey: string;
-}
-
 interface AgentChecksBody {
   instanceId?: unknown;
   name?: unknown;
@@ -41,12 +32,12 @@ interface AgentChecksBody {
   tally?: { broken?: unknown; warning?: unknown };
 }
 
-function paramsCell(params: CheckRow["params"]): string {
+function paramsCell(params: AgentCheck["params"]): string {
   const entries = Object.entries(params ?? {});
   return entries.length === 0 ? "-" : entries.map(([key, value]) => `${key}=${value}`).join(" ");
 }
 
-function checkTable(checks: readonly CheckRow[], empty: string): string {
+function checkTable(checks: readonly AgentCheck[], empty: string): string {
   return renderTable({
     headers: ["ID", "SEVERITY", "SECTION", "DETAIL"],
     rows: checks.map((check) => [text(check.id), text(check.severity), text(check.section), paramsCell(check.params)]),
@@ -69,8 +60,8 @@ async function checksShow(args: string[], context: CommandContext | undefined, d
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
   const body = (res.body ?? {}) as AgentChecksBody;
-  const checks = expectArray<CheckRow>(body.checks, `GET ${path}`);
-  const dismissed = Array.isArray(body.dismissed) ? (body.dismissed as CheckRow[]) : [];
+  const checks = expectArray<AgentCheck>(body.checks, `GET ${path}`);
+  const dismissed = Array.isArray(body.dismissed) ? (body.dismissed as AgentCheck[]) : [];
   // An empty list is the answer, not an empty state: "nothing fired" is what
   // lets a workspace say an agent is in order.
   deps.io.stdout(`${checkTable(checks, `Agent ${slug} raised nothing in the window.`)}\n`);
@@ -78,6 +69,35 @@ async function checksShow(args: string[], context: CommandContext | undefined, d
     deps.io.stdout(`\nSilenced on this agent:\n${checkTable(dismissed, "")}\n`);
   }
   deps.io.stderr(`broken: ${text(body.tally?.broken)}  warning: ${text(body.tally?.warning)}  (counts exclude the silenced)\n`);
+}
+
+async function checkup(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const slug = requireSlug(args, "checkup");
+  const options = args.slice(1);
+  assertKnown(options, { value: ["--days"] }, "agent checkup option");
+  const scope = await scopeFor(deps, context, "read");
+  const path = agentPath(slug, "/checks");
+  const res = await call(deps, scope, { path, query: windowDays(options) });
+  const body = (res.body ?? {}) as Partial<AgentChecksResponse>;
+  const checks = expectArray<AgentCheck>(body.checks, `GET ${path}`);
+
+  if (wantsJson(context)) {
+    writeRawResponse(deps.io, res.raw);
+  } else {
+    deps.io.stderr(`broken: ${text(body.tally?.broken)}  warning: ${text(body.tally?.warning)}\n`);
+    deps.io.stdout(`${renderTable({
+      headers: ["SEVERITY", "CHECK", "SECTION", "PARAMS"],
+      rows: checks.map((check) => [
+        text(check.severity),
+        text(check.id),
+        text(check.section),
+        check.params === undefined ? "-" : JSON.stringify(check.params),
+      ]),
+      emptyMessage: `No active checks for agent ${slug}.`,
+    })}\n`);
+  }
+
+  if (checks.length > 0) throw new CliError(`Agent ${slug} has ${checks.length} active check(s).`, ExitCode.Difference);
 }
 
 interface DismissalRow {
@@ -221,7 +241,7 @@ async function workspaceChecks(args: string[], context: CommandContext | undefin
         text(agent.name),
         text(agent.tally?.broken),
         text(agent.tally?.warning),
-        (Array.isArray(agent.checks) ? (agent.checks as CheckRow[]) : []).map((check) => check.id).join(", ") || "-",
+        (Array.isArray(agent.checks) ? (agent.checks as AgentCheck[]) : []).map((check) => check.id).join(", ") || "-",
       ]),
       emptyMessage: "This workspace has no agents.",
     })}\n`,
@@ -233,6 +253,14 @@ const CHECK_NOTE =
 
 /** The `agent checks` and `agent health` subtree. */
 export const agentSupervisionFamily: Record<string, Node> = {
+  checkup: {
+    summary: "check whether an agent needs operational attention",
+    usage: `Usage: polyant-cli agent checkup <slug> [--days <n>]
+
+Prints live checks only and exits 1 when any are present, so automation can
+distinguish an unhealthy agent from a command failure.`,
+    action: checkup,
+  },
   checks: {
     show: {
       summary: "what the engine finds wrong with this agent",

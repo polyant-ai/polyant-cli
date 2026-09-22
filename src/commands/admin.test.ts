@@ -71,6 +71,17 @@ function leaf(commands: Record<string, Command>, family: string, action: string)
   return node.run.bind(node);
 }
 
+function nestedLeaf(commands: Record<string, Command>, ...path: string[]) {
+  let node: Command | undefined;
+  let children: Record<string, Command> | undefined = commands;
+  for (const name of path) {
+    node = children?.[name];
+    children = node?.children;
+  }
+  if (node?.run === undefined) throw new Error(`No such action: ${path.join(" ")}`);
+  return node.run.bind(node);
+}
+
 describe("organisation resolution", () => {
   // A management key belongs to one organisation and service-context reports it,
   // so --org is a way to be explicit rather than something to look up.
@@ -126,6 +137,165 @@ describe("org list", () => {
     await leaf(h.commands, "org", "list")([], context({ json: true }));
 
     expect(h.out.join("")).toBe(JSON.stringify(body));
+  });
+});
+
+describe("org create", () => {
+  it("creates an organisation and its general workspace", async () => {
+    const h = harness([response({ organization: { slug: "acme" }, workspaceSlug: "general" }, 201)]);
+
+    await leaf(h.commands, "org", "create")(["acme", "--name", "Acme"], context({ yes: true }));
+
+    expect(h.calls).toEqual([
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/organizations",
+        body: { slug: "acme", name: "Acme" },
+      }),
+    ]);
+    expect(h.out.join("")).toContain(
+      "Created organisation acme with default workspace general.",
+    );
+  });
+
+  it("passes the engine response through in JSON mode", async () => {
+    const body = { organization: { slug: "acme" }, workspaceSlug: "general" };
+    const h = harness([response(body, 201)]);
+
+    await leaf(h.commands, "org", "create")(
+      ["acme", "--name", "Acme"],
+      context({ json: true, yes: true }),
+    );
+
+    expect(h.out.join("")).toBe(JSON.stringify(body));
+  });
+
+  it("dry-runs without a request and names the general workspace", async () => {
+    const h = harness([]);
+
+    await leaf(h.commands, "org", "create")(
+      ["acme", "--name", "Acme"],
+      context({ dryRun: true }),
+    );
+
+    expect(h.request).not.toHaveBeenCalled();
+    expect(h.err.join("")).toContain("Create its default workspace as general.");
+  });
+
+  it("requires a name before resolving scope", async () => {
+    const h = harness([]);
+
+    await expect(
+      leaf(h.commands, "org", "create")(["acme"], context({ yes: true })),
+    ).rejects.toThrow(/needs --name/);
+    expect(h.request).not.toHaveBeenCalled();
+  });
+
+  it("requires confirmation on production", async () => {
+    const h = harness([]);
+
+    await expect(
+      leaf(h.commands, "org", "create")(
+        ["acme", "--name", "Acme"],
+        context({ target: "prod" }),
+      ),
+    ).rejects.toThrow(/targets production/);
+    expect(h.request).not.toHaveBeenCalled();
+  });
+});
+
+describe("org tasks list", () => {
+  const task = (id: string) => ({
+    id,
+    name: `Task ${id}`,
+    scheduleHuman: "daily",
+    enabled: true,
+    nextRunAt: null,
+    outboundChannel: null,
+  });
+
+  it("visits every workspace and agent before rendering one snapshot", async () => {
+    const h = harness([
+      response({
+        organization: { slug: "acme" },
+        workspaces: [{ slug: "general" }, { slug: "sales" }],
+      }),
+      response({ instances: [{ slug: "alpha" }, { slug: "beta" }] }),
+      response({ tasks: [task("t1")] }),
+      response({ tasks: [] }),
+      response({ instances: [{ slug: "gamma" }] }),
+      response({ tasks: [task("t2")] }),
+    ]);
+
+    await nestedLeaf(h.commands, "org", "tasks", "list")([], context({ org: "acme" }));
+
+    expect(h.calls.map((call) => [call.path, call.workspaceSlug])).toEqual([
+      ["/api/service-context", undefined],
+      ["/api/instances", "general"],
+      ["/api/instances/alpha/scheduled-tasks", "general"],
+      ["/api/instances/beta/scheduled-tasks", "general"],
+      ["/api/instances", "sales"],
+      ["/api/instances/gamma/scheduled-tasks", "sales"],
+    ]);
+    expect(h.out.join("").split("\n")[0].replace(/\s+/g, " ").trim()).toBe(
+      "WORKSPACE AGENT ID NAME SCHEDULE ENABLED NEXT RUN",
+    );
+  });
+
+  it("fetches another page after a full 500-row page", async () => {
+    const firstPage = Array.from({ length: 500 }, (_, index) => task(`t${index}`));
+    const h = harness([
+      response({ organization: { slug: "acme" }, workspaces: [{ slug: "general" }] }),
+      response({ instances: [{ slug: "alpha" }] }),
+      response({ tasks: firstPage }),
+      response({ tasks: [task("last")] }),
+    ]);
+
+    await nestedLeaf(h.commands, "org", "tasks", "list")([], context({ org: "acme", json: true }));
+
+    expect(h.calls.at(-1)?.query).toEqual({ limit: "500", offset: "500" });
+  });
+
+  it("writes one flat JSON array with workspace and agent", async () => {
+    const h = harness([
+      response({ organization: { slug: "acme" }, workspaces: [{ slug: "general" }] }),
+      response({ instances: [{ slug: "alpha" }] }),
+      response({ tasks: [task("t1")] }),
+    ]);
+
+    await nestedLeaf(h.commands, "org", "tasks", "list")([], context({ org: "acme", json: true }));
+
+    expect(JSON.parse(h.out.join(""))).toEqual([
+      expect.objectContaining({ id: "t1", workspace: "general", agent: "alpha" }),
+    ]);
+  });
+
+  it("writes nothing when an intermediate request fails", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(response({
+        organization: { slug: "acme" },
+        workspaces: [{ slug: "general" }],
+      }))
+      .mockResolvedValueOnce(response({ instances: [{ slug: "alpha" }] }))
+      .mockRejectedValueOnce(new Error("boom"));
+    const h = harness([], { request });
+
+    await expect(
+      nestedLeaf(h.commands, "org", "tasks", "list")([], context({ org: "acme" })),
+    ).rejects.toThrow("boom");
+    expect(h.out).toEqual([]);
+  });
+
+  it("refuses an explicit organisation that does not belong to the key", async () => {
+    const h = harness([
+      response({ organization: { slug: "actual" }, workspaces: [{ slug: "general" }] }),
+    ]);
+
+    await expect(
+      nestedLeaf(h.commands, "org", "tasks", "list")([], context({ org: "requested" })),
+    ).rejects.toThrow(/belongs to organisation "actual"/);
+    expect(h.calls).toHaveLength(1);
   });
 });
 

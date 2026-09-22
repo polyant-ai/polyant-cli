@@ -29,6 +29,8 @@ const AGENT = {
   status: "active",
   provider: "anthropic",
   model: "claude-sonnet-4",
+  effectiveProvider: "anthropic",
+  effectiveModel: "claude-sonnet-4",
   authEnabled: true,
   memoryEnabled: true,
   memoryScope: "agent",
@@ -155,14 +157,35 @@ describe("agent write scope", () => {
 });
 
 describe("agent show", () => {
-  it("labels the fields an operator acts on", async () => {
+  it("shows stored and effective model configuration independently", async () => {
     const h = harness([response({ instance: AGENT })]);
 
     await leaf(h.command, ["show"])(["acme"], context());
 
     expect(h.calls[0].path).toBe("/api/instances/acme");
-    expect(h.out.join("")).toContain("model:");
-    expect(h.out.join("")).toContain("claude-sonnet-4");
+    expect(h.out.join("")).toMatch(/provider \(stored\): +anthropic/);
+    expect(h.out.join("")).toMatch(/model \(stored\): +claude-sonnet-4/);
+    expect(h.out.join("")).toMatch(/provider \(effective\): +anthropic/);
+    expect(h.out.join("")).toMatch(/model \(effective\): +claude-sonnet-4/);
+  });
+
+  it("reveals fallback values when provider and model are not stored", async () => {
+    const h = harness([response({
+      instance: {
+        ...AGENT,
+        provider: null,
+        model: null,
+        effectiveProvider: "openai",
+        effectiveModel: "gpt-4o",
+      },
+    })]);
+
+    await leaf(h.command, ["show"])(["acme"], context());
+
+    expect(h.out.join("")).toMatch(/provider \(stored\): +-/);
+    expect(h.out.join("")).toMatch(/model \(stored\): +-/);
+    expect(h.out.join("")).toMatch(/provider \(effective\): +openai/);
+    expect(h.out.join("")).toMatch(/model \(effective\): +gpt-4o/);
   });
 
   // `instances.slug` is unique per deployment, so --workspace cannot change which
@@ -406,6 +429,19 @@ describe("agent prompt", () => {
       path: "/api/instances/acme/prompts",
       body: { sections: [{ key: "identity", content: "You are the Acme agent." }] },
     });
+  });
+
+  it("reads current state but sends no PATCH on a dry run", async () => {
+    const h = harness([response(prompts)], { readPayload: async () => "New identity" });
+
+    await leaf(h.command, ["prompt", "set"])(
+      ["acme", "--section", "identity", "--file", "-"],
+      context({ dryRun: true }),
+    );
+
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]).toMatchObject({ path: "/api/instances/acme/prompts" });
+    expect(h.calls.some((call) => call.method === "PATCH")).toBe(false);
   });
 });
 

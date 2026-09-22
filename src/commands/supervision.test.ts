@@ -4,6 +4,7 @@ import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
 import type { WorkspaceConfig } from "../config.js";
 import type { GlobalOptions } from "../runtime/global-options.js";
+import { CliError, ExitCode } from "../exit.js";
 import { createAnalyticsCommand } from "./analytics.js";
 import { createAgentCommand, type AgentCommandDependencies } from "./agent.js";
 
@@ -144,6 +145,54 @@ describe("agent checks", () => {
     await leaf(h.agent, ["checks", "restore"])(["acme", "tools-failing"], context({ yes: true }));
 
     expect(h.calls[0]).toMatchObject({ method: "DELETE", path: "/api/instances/acme/check-dismissals/tools-failing" });
+  });
+});
+
+describe("agent checkup", () => {
+  it("prints only live checks, then exits with the difference code", async () => {
+    const h = harness([response(CHECKS)]);
+
+    let error: unknown;
+    try {
+      await leaf(h.agent, ["checkup"])(["acme"], context());
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(h.calls[0]).toMatchObject({ path: "/api/instances/acme/checks", query: {} });
+    expect(h.out.join("").split("\n")[0].replace(/\s+/g, " ").trim()).toBe(
+      "SEVERITY CHECK SECTION PARAMS",
+    );
+    expect(h.out.join("")).toContain("tools-failing");
+    expect(h.out.join("")).not.toContain("hooks-orphaned");
+    expect(error).toBeInstanceOf(CliError);
+    expect((error as CliError).code).toBe(ExitCode.Difference);
+  });
+
+  it("passes --days and rejects non-positive values", async () => {
+    const h = harness([response({ ...CHECKS, checks: [] })]);
+    await leaf(h.agent, ["checkup"])(["acme", "--days", "30"], context());
+    expect(h.calls[0].query).toEqual({ days: "30" });
+
+    const bad = harness([]);
+    await expect(leaf(bad.agent, ["checkup"])(["acme", "--days", "0"], context()))
+      .rejects.toThrow(/--days needs a positive integer/);
+  });
+
+  it("forwards the raw DTO in JSON mode before exiting with a difference", async () => {
+    const h = harness([response(CHECKS)]);
+
+    await expect(leaf(h.agent, ["checkup"])(["acme"], context({ json: true })))
+      .rejects.toMatchObject({ code: ExitCode.Difference });
+    expect(h.out.join("")).toBe(JSON.stringify(CHECKS));
+  });
+
+  it("returns cleanly when there are no live checks", async () => {
+    const h = harness([response({ ...CHECKS, checks: [], dismissed: CHECKS.dismissed })]);
+
+    await leaf(h.agent, ["checkup"])(["acme"], context());
+
+    expect(h.out.join("")).toContain("No active checks for agent acme.");
   });
 });
 

@@ -77,8 +77,10 @@ async function show(args: string[], context: CommandContext | undefined, deps: A
     { label: "name", value: text(agent.name) },
     { label: "description", value: text(agent.description) },
     { label: "status", value: text(agent.status) },
-    { label: "provider", value: text(agent.provider) },
-    { label: "model", value: text(agent.model) },
+    { label: "provider (stored)", value: text(agent.provider) },
+    { label: "model (stored)", value: text(agent.model) },
+    { label: "provider (effective)", value: text(agent.effectiveProvider) },
+    { label: "model (effective)", value: text(agent.effectiveModel) },
     { label: "authEnabled", value: text(agent.authEnabled) },
     { label: "a2aEnabled", value: agent.a2aEnabled === true ? "true" : "false" },
     { label: "memoryEnabled", value: text(agent.memoryEnabled) },
@@ -1046,7 +1048,10 @@ the key they were written with, so a flip changes what NEW turns can recall.`,
     },
     set: {
       summary: "replace one prompt section from a file or stdin",
-      usage: "Usage: polyant-cli agent prompt set <slug> --section <key> --file <path|->",
+      usage: `Usage: polyant-cli agent prompt set <slug> --section <key> --file <path|->
+
+This command reads current state to build an accurate recap. With --dry-run it
+still performs that read, but sends no writes.`,
       action: promptSet,
       mutates: true,
     },

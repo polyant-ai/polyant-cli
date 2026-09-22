@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type { CommandContext } from "../command.js";
+import type { ScheduledTask, ScheduledTasksResponse } from "../api/types.js";
 import { ConfigError } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
@@ -376,15 +377,6 @@ async function knowledgeImport(args: string[], context: CommandContext | undefin
 
 // --- scheduled tasks ---------------------------------------------------------
 
-interface TaskRow {
-  id: string;
-  name: string;
-  scheduleHuman?: string;
-  enabled: boolean;
-  nextRunAt: string | null;
-  outboundChannel: string | null;
-}
-
 async function tasksList(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   const slug = requireSlug(args, "tasks list");
   const options = args.slice(1);
@@ -397,7 +389,10 @@ async function tasksList(args: string[], context: CommandContext | undefined, de
   });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
-  const tasks = expectArray<TaskRow>((res.body as { tasks?: unknown } | null)?.tasks, `GET ${path}`);
+  const tasks = expectArray<ScheduledTask>(
+    (res.body as Partial<ScheduledTasksResponse> | null)?.tasks,
+    `GET ${path}`,
+  );
   deps.io.stdout(
     `${renderTable({
       headers: ["ID", "NAME", "SCHEDULE", "ENABLED", "NEXT RUN", "CHANNEL"],
@@ -757,7 +752,7 @@ async function retentionRun(args: string[], context: CommandContext | undefined,
   const options = args.slice(1);
   assertKnown(options, { value: ["--confirm"], boolean: ["--count-only"] }, "agent retention run option");
   // The engine's own dry run, not the CLI's: `--dry-run` prints a recap and
-  // sends nothing, while this asks the engine to count what it WOULD delete.
+  // sends no writes, while this asks the engine to count what it WOULD delete.
   // Two different questions, so two different flags.
   const count = options.includes("--count-only");
 
@@ -1270,7 +1265,7 @@ history it keeps. Purging is permanent — the engine has no archive.`,
        polyant-cli agent retention run <slug> --count-only
 
 --count-only is the ENGINE's dry run: it reports what would go. \`--dry-run\` is
-the CLI's, and sends nothing at all.`,
+the CLI's, and sends no writes.`,
       action: retentionRun,
       mutates: true,
     },

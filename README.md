@@ -11,6 +11,11 @@ drift. What the CLI does own is everything around the call — resolving the tar
 and the credential, recapping a write before it happens, and turning the answer
 into an exit code.
 
+The selected target serves interactive API documentation at `/api/docs` and the
+raw OpenAPI contract at `/api/openapi.json`. Some request body schemas are not
+yet published there; use the route documentation or engine source for those
+payloads instead of guessing them.
+
 ## Install
 
 Requires **Node 20 or newer** (`engines` enforces it). The package ships
@@ -146,12 +151,10 @@ parses this CLI's output:
   --count-only` passes the engine's answer through, so the counts it reports are
   wider than they were.
 
-When a command starts answering `404` or `403`, the engine now publishes the
-contract rather than leaving it to be read off the controllers: `GET
-/api/openapi.json` serves the generated document, and `packages/engine/api-index.md`
-in the engine repository is the condensed one-row-per-route version of the same
-thing — verb, path, required permission, auth mechanism. Diff either against the
-command you are running before reading a `403` as a bug. The permission decorator
+When a command starts answering `404` or `403`, inspect `/api/docs` on the
+selected target: it is the engine-owned route catalogue. Some request body
+schemas are not yet published, so use the route documentation or engine source
+for those payloads. The permission decorator
 on the route (`@RequirePermission`, or `@PlatformAdminOnly` for the platform lane)
 remains the authority the document is generated from.
 
@@ -404,6 +407,7 @@ stderr rather than resolving it silently.
 polyant-cli --org acme --workspace platform agent list
 polyant-cli --context engineering agent list
 polyant-cli --context engineering agent show acme
+polyant-cli --context engineering agent checkup acme
 polyant-cli --context engineering agent create acme --name Acme --model claude-sonnet-4
 polyant-cli --context engineering agent update acme --model claude-opus-5
 polyant-cli --context engineering agent update acme --memory-scope conversation
@@ -438,6 +442,9 @@ polyant-cli --context engineering agent conversations show acme <conversationId>
 polyant-cli --context engineering agent messages acme --from 2026-08-31 --limit 200
 ```
 
+`agent show` labels provider/model values as stored and effective, so an unset
+field does not hide the engine fallback.
+
 `agent messages` reads every conversation of one agent in a single call, where
 `agent conversations show` reads one. The table truncates content to 80
 characters; `--json` carries it whole.
@@ -466,7 +473,8 @@ value, including when a flag changes nothing.
 
 `delete`, `channels remove`, and `hooks remove` are destructive: they require
 `--yes` plus `--confirm <slug|type|hookId>`. `--dry-run` prints the recap and
-sends nothing.
+sends no writes. It may still read current state when the recap depends on it;
+`prompt set` does this to report the actual character delta.
 
 `agent chat` sends one turn through the **playground** route and
 streams the reply. Reply text goes to stdout as it arrives; steps, reasoning and
@@ -581,7 +589,7 @@ of a one-line confirmation.
 
 `agent retention run` deletes permanently — the engine has no archive.
 `--count-only` is the **engine's** dry run, which really calls it and reports what
-it would remove; `--dry-run` is the CLI's, and sends nothing at all.
+it would remove; `--dry-run` is the CLI's, and sends no writes.
 
 `agent import` with a slug **overwrites** that agent — prompts, tools, channels and
 hooks are replaced, not merged — and needs `--confirm <slug>`. Without a slug it
@@ -743,7 +751,9 @@ the CLI reads the slug from `GET /api/service-context`.
 
 ```bash
 polyant-cli org list
+polyant-cli org create acme --name "Acme Inc"
 polyant-cli org rename --name "Acme Inc" --yes
+polyant-cli org tasks list
 
 polyant-cli workspace list
 polyant-cli workspace create labs --name Labs --yes
@@ -799,6 +809,10 @@ polyant-cli workspace plugins list labs
 polyant-cli workspace plugins assign labs sales --yes
 polyant-cli workspace plugins revoke labs sales --yes --confirm sales
 ```
+
+`org tasks list` collects every workspace and agent before printing, so its CLI
+output is all-or-nothing. The sequential reads are eventually consistent, not a
+server-side snapshot.
 
 Workspaces and roles are addressed by **slug** and **key** on the command line,
 but the engine's paths for an update or a delete take the row's uuid, so the CLI
@@ -1067,7 +1081,7 @@ the product commands: a recap on stderr naming the target, the method, the path,
 where the body came from, and which query keys are set — then a confirmation, or
 `--yes` in automation. A production target always needs `--yes`. `DELETE`
 additionally needs `--confirm <path>`: an unrecoverable raw call is the one case
-worth naming the target twice. `--dry-run` prints the recap and sends nothing.
+worth naming the target twice. `--dry-run` prints the recap and sends no writes.
 
 The recap never prints the body and never parses it. Both directions are
 byte-for-byte: the response is printed exactly as received, and the request body

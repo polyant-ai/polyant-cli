@@ -56,9 +56,10 @@ export const processServiceDependencies: ServiceDependencies = {
  * write still refuses to proceed without an explicit selection: landing a change
  * in a workspace the operator did not choose is the failure worth preventing.
  */
-export type ScopeMode = "read" | "write";
+export type ScopeMode = "target" | "read" | "write";
 
 const REQUIRED: Record<ScopeMode, readonly ScopeRequirement[]> = {
+  target: ["target"],
   read: ["target"],
   write: ["workspace"],
 };
