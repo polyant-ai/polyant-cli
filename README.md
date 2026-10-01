@@ -974,7 +974,7 @@ names on stderr anything the engine skipped, which the counts alone hide.
 
 ```bash
 polyant-cli governance overview
-polyant-cli governance analytics [--org]
+polyant-cli governance analytics [--org-wide]
 polyant-cli governance metadata
 polyant-cli governance policy list
 polyant-cli governance policy create --file policy.json --yes
@@ -986,7 +986,7 @@ organisation. `overview`, `tools` and `metadata` answer for the addressed
 workspace or the deployment. **Assigning** a policy to an agent is a third thing
 again — `agent governance set`. Creating a policy assigns it to nothing.
 
-`governance analytics` covers the addressed workspace; `--org` aggregates every
+`governance analytics` covers the addressed workspace; `--org-wide` aggregates every
 workspace in the organisation. `governance metadata` is the vocabulary for a
 policy payload, including which gate type belongs to which category.
 

@@ -45,6 +45,13 @@ const BOOLEAN_FLAGS = {
   "--dry-run": "dryRun",
 } as const;
 
+/**
+ * Every spelling the global parser lifts out of argv, wherever it appears. A
+ * command never sees one of these in its own arguments, so declaring one as a
+ * local option declares a flag that cannot arrive; `assertKnown` refuses that.
+ */
+export const GLOBAL_FLAG_SPELLINGS: ReadonlySet<string> = new Set([...Object.keys(VALUE_FLAGS), ...Object.keys(BOOLEAN_FLAGS)]);
+
 type ValueFlag = (typeof VALUE_FLAGS)[keyof typeof VALUE_FLAGS];
 type BooleanFlag = (typeof BOOLEAN_FLAGS)[keyof typeof BOOLEAN_FLAGS];
 type GlobalFlag = ValueFlag | BooleanFlag;

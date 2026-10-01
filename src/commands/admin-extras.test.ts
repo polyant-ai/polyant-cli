@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
 import type { WorkspaceConfig } from "../config.js";
-import type { GlobalOptions } from "../runtime/global-options.js";
+import { parseInvocation, type GlobalOptions } from "../runtime/global-options.js";
 import type { ServiceDependencies } from "../runtime/service.js";
 import { createAdminCommands } from "./admin.js";
 
@@ -57,6 +57,16 @@ function harness(responses: ApiResponse[], overrides: Partial<ServiceDependencie
 
 function context(global: Partial<GlobalOptions> = {}): CommandContext {
   return { path: ["org"], global: { json: false, yes: false, dryRun: false, org: "acme", ...global } };
+}
+
+/**
+ * Runs argv the way the binary does, global parser first, for the flags the
+ * parser owns: handed to a command directly, `--workspace` reaches it in a test
+ * and never in use.
+ */
+async function invoke(commands: Record<string, Command>, argv: string[]): Promise<void> {
+  const { path, args, global } = parseInvocation(argv, commands);
+  await leaf(commands, path)(args, { path, global: { ...global, org: global.org ?? "acme" } });
 }
 
 function leaf(commands: Record<string, Command>, path: string[]) {
@@ -132,7 +142,7 @@ describe("org audit", () => {
   it("reads the authorization trail from its own route, with its own filters", async () => {
     const h = harness([response({ logs: [], total: 0 })]);
 
-    await leaf(h.commands, ["org", "audit", "authz"])(["--workspace", "general"], context());
+    await invoke(h.commands, ["org", "audit", "authz", "--workspace", "general"]);
 
     expect(h.calls[0]).toMatchObject({ path: "/api/organizations/acme/authz-audit-logs", query: { workspace: "general" } });
   });
@@ -336,10 +346,7 @@ describe("member invitations", () => {
   it("resolves the workspace slug to the id the route takes", async () => {
     const h = harness([response(WORKSPACES), response({ id: "i-1", email: "ada@example.com", token: "inv_abc", emailSent: true, expiresAt: null })]);
 
-    await leaf(h.commands, ["member", "invitations", "create"])(
-      ["ada@example.com", "--role", "member", "--workspace", "sales", "--workspace-role", "viewer"],
-      context({ yes: true }),
-    );
+    await invoke(h.commands, ["member", "invitations", "create", "ada@example.com", "--role", "member", "--workspace", "sales", "--workspace-role", "viewer", "--yes"]);
 
     expect(h.calls[1]).toMatchObject({
       method: "POST",

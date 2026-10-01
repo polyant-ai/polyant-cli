@@ -122,7 +122,7 @@ interface AuthzAuditRow {
 }
 
 async function authzAudit(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
-  assertKnown(args, { value: ["--action", "--workspace", "--limit", "--offset"] }, "org audit authz option");
+  assertKnown(args, { value: ["--action", "--limit", "--offset"] }, "org audit authz option");
   const { scope, org } = await readScope(deps, context);
   const path = orgPath(org, "/authz-audit-logs");
   const res = await call(deps, scope, {
@@ -130,8 +130,10 @@ async function authzAudit(args: string[], context: CommandContext | undefined, d
     query: {
       ...maybe("action", takeValue(args, "--action")),
       // A slug here, translated to the id by the engine: the rows carry
-      // `metadata.workspaceId`, which nobody reading a trail has to hand.
-      ...maybe("workspace", takeValue(args, "--workspace")),
+      // `metadata.workspaceId`, which nobody reading a trail has to hand. The
+      // flag is the global one, so it is read from the context; a selected
+      // context's workspace does not narrow the trail.
+      ...maybe("workspace", context?.global.workspace),
       ...paging(args),
     },
   });
