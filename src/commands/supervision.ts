@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type { CommandContext } from "../command.js";
 import type { AgentCheck, AgentChecksResponse } from "../api/types.js";
-import { CliError, ExitCode } from "../exit.js";
+import { CliError, ConfigError, ExitCode } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
@@ -71,10 +71,33 @@ async function checksShow(args: string[], context: CommandContext | undefined, d
   deps.io.stderr(`broken: ${text(body.tally?.broken)}  warning: ${text(body.tally?.warning)}  (counts exclude the silenced)\n`);
 }
 
+/**
+ * The engine's three severities, most severe first. Since 1.2.0 it also computes
+ * the configuration checks the panel used to, so nearly every agent carries a
+ * `note` or two ("no budget", "model card empty"): failing on any check would
+ * make `checkup` a gate nothing passes.
+ */
+const SEVERITIES = ["broken", "warning", "note"] as const;
+
+/** A severity the engine adds later ranks as `broken`: an unknown verdict fails rather than passes. */
+function severityRank(severity: string): number {
+  const rank = (SEVERITIES as readonly string[]).indexOf(severity);
+  return rank === -1 ? 0 : rank;
+}
+
+function failOn(options: readonly string[]): number {
+  const value = takeValue(options, "--fail-on") ?? "warning";
+  if (!(SEVERITIES as readonly string[]).includes(value)) {
+    throw new ConfigError(`--fail-on must be one of ${SEVERITIES.join(", ")}.`);
+  }
+  return severityRank(value);
+}
+
 async function checkup(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   const slug = requireSlug(args, "checkup");
   const options = args.slice(1);
-  assertKnown(options, { value: ["--days"] }, "agent checkup option");
+  assertKnown(options, { value: ["--days", "--fail-on"] }, "agent checkup option");
+  const threshold = failOn(options);
   const scope = await scopeFor(deps, context, "read");
   const path = agentPath(slug, "/checks");
   const res = await call(deps, scope, { path, query: windowDays(options) });
@@ -97,7 +120,14 @@ async function checkup(args: string[], context: CommandContext | undefined, deps
     })}\n`);
   }
 
-  if (checks.length > 0) throw new CliError(`Agent ${slug} has ${checks.length} active check(s).`, ExitCode.Difference);
+  // Every live check is printed; only those at or above the threshold fail.
+  const failing = checks.filter((check) => severityRank(check.severity) <= threshold);
+  if (failing.length > 0) {
+    throw new CliError(
+      `Agent ${slug} has ${failing.length} active check(s) at ${SEVERITIES[threshold]} or above.`,
+      ExitCode.Difference,
+    );
+  }
 }
 
 interface DismissalRow {
@@ -255,10 +285,13 @@ const CHECK_NOTE =
 export const agentSupervisionFamily: Record<string, Node> = {
   checkup: {
     summary: "check whether an agent needs operational attention",
-    usage: `Usage: polyant-cli agent checkup <slug> [--days <n>]
+    usage: `Usage: polyant-cli agent checkup <slug> [--days <n>] [--fail-on broken|warning|note]
 
-Prints live checks only and exits 1 when any are present, so automation can
-distinguish an unhealthy agent from a command failure.`,
+Prints live checks only and exits 1 when any reaches the --fail-on severity
+(default warning), so automation can distinguish an unhealthy agent from a
+command failure. A note is listed and does not fail unless --fail-on note asks
+for it: the engine raises notes on most agents, for things like a missing
+budget or an empty model card.`,
     action: checkup,
   },
   checks: {
@@ -314,11 +347,13 @@ the numbers behind it.`,
 
 /** The `analytics checks` leaf: the same verdicts, one tier up. */
 export const analyticsChecks: Leaf = {
-  summary: "every agent in the workspace, and what each is raising",
+  summary: "every active agent in the workspace, and what each is raising",
   usage: `Usage: polyant-cli analytics checks
 
 The same checks \`agent checks show\` lists, counted per agent — one question
-earlier: which agent should I open. Silenced checks are excluded here too, so
-the count and the list cannot disagree. ${CHECK_NOTE}`,
+earlier: which agent should I open. Only agents whose status is active are
+counted: a paused agent is still reachable through \`agent checks show\`.
+Silenced checks are excluded here too, so the count and the list cannot
+disagree. ${CHECK_NOTE}`,
   action: workspaceChecks,
 };

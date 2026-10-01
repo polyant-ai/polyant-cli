@@ -165,7 +165,7 @@ async function tokenIssue(args: string[], context: CommandContext | undefined, d
   const plan = {
     title: `Issue a dev token for ${slug}`,
     changes: [
-      `Mint a token valid for ${ttl === undefined ? "the engine's default TTL" : `${ttl} hour(s)`}, stored as a hash.`,
+      `Mint a token valid for ${ttl === undefined ? "the installation's default TTL" : `${ttl} hour(s)`}, stored as a hash.`,
       "Invalidate every dev token previously issued for this agent.",
       "Close the live dev session, if one is connected with an older token.",
       "Print the token once, on stdout: it is not recoverable afterwards.",
@@ -261,11 +261,18 @@ async function tokenStatus(args: string[], context: CommandContext | undefined, 
   warnAboutNode(deps, body);
 }
 
-const CONNECT_USAGE = `Usage: polyant-cli dev connect <slug> [--dir <path>] [--tools <path>] [--watch]
-                                  [--token-env <VAR>] [--token-file <path|->]
+const CONNECT_USAGE = `Usage: polyant-cli dev connect <slug> [--dir <path>] [--tools <path>] [--hooks <path>]
+                                  [--watch] [--token-env <VAR>] [--token-file <path|->]
 
-Serves the project's local *.tool.ts files to a remote agent, one turn at a
-time, and does not return until interrupted.
+Serves the project's local *.tool.ts and *.hook.ts files to a remote agent and
+does not return until interrupted. Tools are called by the model, one turn at a
+time; hooks run on the turn's lifecycle events.
+
+--tools and --hooks both default to the project directory: each loader matches
+its own filename suffix, so one tree holding both needs neither option. A hook
+file says how it enters the pipeline with a \`dev\` export beside its definition:
+\`devHook({ overrides })\` to run in place of one the agent already has,
+\`devHook({ bindTo })\` to run on an event for the length of the session.
 
 The token comes from the environment ($POLYANT_DEV_TOKEN unless --token-env
 names another variable) or from a file; there is no --token flag, because argv
@@ -274,6 +281,7 @@ is visible in \`ps\`. Issue one with \`polyant-cli dev token issue <slug>\`.
 The project must carry \`tsx\` and \`@polyant-ai/plugin-sdk\` in its own
 node_modules: a *.tool.ts file is imported by a child process started in that
 directory, which is the only place it resolves from. \`dev init\` writes both.
+Hooks need SDK 1.8 or newer; an older one serves tools and no hooks.
 
 With --json, one JSON object per line on stdout, streamable. Without it, the
 tool calls are on stdout and everything else on stderr.
@@ -295,7 +303,10 @@ function leaves(deps: DevCommandDependencies): Record<string, Node> {
 
 The token is printed on stdout and exists in that one response only — the engine
 stores a hash. Issuing invalidates every previous token for the agent and closes
-a session connected with one.`,
+a session connected with one. Without --ttl-hours the engine applies the
+installation policy a platform admin sets (engine 1.2.0), not an environment
+variable. A token issued through a personal token ends when that token is
+revoked.`,
         action: (args, context) => tokenIssue(args, context, deps),
         mutates: true,
       },

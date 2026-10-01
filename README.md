@@ -115,6 +115,7 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | 0.2.x | 1.1.0 and 1.1.0-ee | adds `agent mcp`, `agent a2a`, `agent memory`, `agent optouts`, `agent events url` and `agent channels whatsapp`; `agent update` gains `--stt-provider` |
 | 0.3.x | the first engine release after 1.1.0-ee | adds `monitor ai-logs`, `monitor traces` and `agent messages`; the three routes merged to the engine's develop on 2026-09-01, so against 1.1.0-ee or older all three answer `404` |
 | 0.4.x | the same, plus the engine's develop as of 2026-09-02 | adds `workspace skills` and `workspace plugins`; `agent update` gains `--memory-scope`, `monitor events` gains `--conversation`, `agent models` gains a VISION column, and `agent channels show` reports an unreadable config and an engine-side disable |
+| 0.6.x | 1.2.0 and 1.2.0-ee, verified against the engine's develop (2026-10-01) | adds `agent budget`, `agent providers`, `agent channels slack url` and `agent conversations show --follow`; `agent checkup` gains `--fail-on`, `monitor status` probes the scheduler, `agent models` lists the embedders and the five-minute cache-write rate, `agent tools show` names a tool's plugin, and `agent secrets` accepts the keys a tool declares. Reads the 1.2.0 plugin and provider lists, where an ungranted row is absent — against 0.5.x those made `workspace providers admit` and `workspace plugins assign` refuse everything |
 | 0.5.x | the engine's develop as of 2026-09-14 | adds `org providers`, `org connections`, `workspace providers`, `workspace connections`, `org audit`, `org knowledge`, `workspace knowledge`, `agent shared-knowledge`, `agent checks`, `agent health`, `analytics checks` and `member invitations`; `agent update` gains `--set` and `--provider-connection`, and `whoami` reports which credential is on the header |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
@@ -408,10 +409,16 @@ polyant-cli --org acme --workspace platform agent list
 polyant-cli --context engineering agent list
 polyant-cli --context engineering agent show acme
 polyant-cli --context engineering agent checkup acme
+polyant-cli --context engineering agent checkup acme --fail-on broken
 polyant-cli --context engineering agent create acme --name Acme --model claude-sonnet-4
 polyant-cli --context engineering agent update acme --model claude-opus-5
 polyant-cli --context engineering agent update acme --memory-scope conversation
+polyant-cli --context engineering agent update acme --set memoryEnabled=true
+polyant-cli --context engineering agent providers acme
 polyant-cli --context engineering agent delete acme --yes --confirm acme
+
+polyant-cli --context engineering agent budget show acme
+polyant-cli --context engineering agent budget set acme --file budget.json --yes
 
 polyant-cli --context engineering agent prompt show acme --section identity
 polyant-cli --context engineering agent prompt set acme --section identity --file identity.md
@@ -421,6 +428,7 @@ polyant-cli --context engineering agent tools set acme --enable web_search,crm
 
 polyant-cli --context engineering agent channels show acme
 polyant-cli --context engineering agent channels set acme telegram --file telegram.json
+polyant-cli --context engineering agent channels slack url acme
 polyant-cli --context engineering agent channels remove acme telegram --yes --confirm telegram
 
 polyant-cli --context engineering agent secrets show acme --configured-only
@@ -437,6 +445,7 @@ echo "riassumi la policy di reso" | polyant-cli --context engineering agent chat
 polyant-cli --context engineering agent chat acme --message "2+2?" --expect 4
 
 polyant-cli --context engineering agent conversations list acme --limit 20
+polyant-cli --context engineering agent conversations show acme <conversationId> --follow --max 50
 polyant-cli --context engineering agent conversations list acme --from 2026-09-03 --to 2026-09-04
 polyant-cli --context engineering agent conversations show acme <conversationId>
 polyant-cli --context engineering agent messages acme --from 2026-08-31 --limit 200
@@ -829,11 +838,13 @@ than storing a value that would be silently ignored.
 `workspace skills` and `workspace plugins` are the workspace's allow-list: which
 of the organisation's skills, and which of its plugins, agents in that workspace
 may actually use. What an agent sees is the **intersection** of the
-organisation's grant and this assignment, which is why `workspace plugins list`
-reports GRANTED and ASSIGNED as separate columns — a plugin needs both. Assigning
-a plugin the organisation does not hold is refused locally rather than written as
-a row that changes nothing; the grant itself is a platform-admin action, made
-from the web console.
+organisation's grant and this assignment. Since engine 1.2.0 the plugin listing
+stops at what the organisation holds — an ungranted plugin is absent, not shown
+as ungranted — so `workspace plugins list` has only an ASSIGNED column, and a name
+missing from it may be ungranted or not installed at all. Assigning a plugin the
+organisation does not hold is refused locally rather than written as a row that
+changes nothing; the grant itself is a platform-admin action, made from the web
+console. `workspace providers list` follows the same rule for providers.
 
 The listings are the whole organisation catalogue with an ASSIGNED column, not
 the assigned subset, because "why does this agent not have that skill" is
@@ -1121,3 +1132,8 @@ npm run build
 
 `npm link` puts the working copy on your PATH — see [Install](#from-a-local-clone)
 for the difference between that and `npm i -g .`.
+
+Before each engine release, `/engine-release-sync` in Claude Code
+(`.claude/skills/engine-release-sync/`) diffs the engine's `develop` against the
+engine this CLI last matched, proposes what to update, add, remove and modify,
+and proves the changes against a throwaway engine it starts and removes itself.

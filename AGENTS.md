@@ -95,10 +95,12 @@ its job. Use `monitor status` when you need a gate that fails.
 | bootstrap an organisation | `org create <slug> --name <name>` — creates its `general` workspace |
 | what exists | `agent list`, `workspace list`, `org list`, `org tasks list` |
 | one agent in detail | `agent show <slug>` — reports stored and effective provider/model separately |
-| is it healthy | `agent checkup <slug>` for operational checks; `monitor status` for probes |
+| is it healthy | `agent checkup <slug> [--fail-on broken\|warning\|note]` for operational checks; `monitor status` for probes, the scheduler included |
 | what happened | `monitor events --limit 50`, `agent logs <slug>` |
-| watch it live | `monitor events --follow [--instance <slug>] [--max <n>]` |
+| watch it live | `monitor events --follow [--instance <slug>] [--max <n>]`, one conversation with `agent conversations show <slug> <id> --follow --max <n>` |
 | cost and latency | `analytics overview`, `analytics agent <slug>`, `analytics org` |
+| cap what an agent spends | `agent budget show <slug>`, `agent budget set <slug> --file -` (Enterprise) |
+| which models an agent may run | `agent providers <slug>`, `agent models` |
 | try an agent | `agent chat <slug> --message "…" [--expect "…"]` |
 | what an agent knows | `agent knowledge list <slug>`, `agent skills show <slug>`, `agent memory list <slug>` |
 | tools from elsewhere | `agent mcp show <slug>`, `agent mcp test <slug> --file -` |
@@ -140,8 +142,11 @@ exception on the `-` half alone: they are multipart, a part carries a filename,
 and stdin has none, so they take a real path and refuse `-` rather than inventing
 a name. Recaps report a payload's **length and source**,
 never its content. `secrets show` and `channels show` report key *names* and
-whether they are configured — the engine never serves a stored value and neither
-does the CLI.
+whether they are configured — those routes never serve a stored value and neither
+does the CLI. One exception, from engine 1.2.0: `agent export` carries the
+values of settings a tool or hook declares non-sensitive (a bucket name, an
+allowlist), and `agent import` writes them back. Credentials still travel as
+names only, and the export names on stderr which keys carry a value.
 
 The selected target serves interactive API documentation at `/api/docs` and the
 raw OpenAPI contract at `/api/openapi.json`. Some request body schemas are not

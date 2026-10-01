@@ -43,6 +43,13 @@ describe("dev init", () => {
       scripts: Record<string, string>;
     };
     expect(manifest.dependencies["@polyant-ai/plugin-sdk"]).toMatch(/^git\+https:.*#v\d+\.\d+\.\d+$/);
+    // `dev connect` serves hooks, and hook loading arrived in SDK 1.8: a tag
+    // below that scaffolds a project whose *.hook.ts files are skipped in
+    // silence. The floor moves with the capability, never below it.
+    const tag = /#v(\d+)\.(\d+)\.\d+$/.exec(manifest.dependencies["@polyant-ai/plugin-sdk"]);
+    expect(tag).not.toBeNull();
+    const [major, minor] = [Number(tag?.[1]), Number(tag?.[2])];
+    expect(major > 1 || (major === 1 && minor >= 8)).toBe(true);
     expect(manifest.dependencies.zod).toBeDefined();
     expect(manifest.devDependencies.tsx).toBeDefined();
     expect(manifest.scripts.dev).toBe("polyant-cli dev connect <agent-slug> --watch");

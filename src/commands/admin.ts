@@ -28,6 +28,7 @@ import { KNOWLEDGE_FAMILY_EXTRAS } from "./knowledge-library.js";
 import { ORG_FAMILY_EXTRAS, apiKeyFamily } from "./org-ops.js";
 import { PROVIDER_FAMILY_EXTRAS } from "./providers.js";
 import { skillFamily } from "./skills.js";
+import { credentialKind, refusePersonalToken } from "../runtime/credential.js";
 
 // --- organisations ---------------------------------------------------------
 
@@ -190,7 +191,17 @@ async function workspaceCreate(args: string[], context: CommandContext | undefin
   const name = takeValue(options, "--name") ?? slug;
   const { scope, org } = await readScope(deps, context);
 
-  const plan = { title: `Create workspace ${slug}`, changes: [`Add workspace ${slug} named ${JSON.stringify(name)} to ${org}.`] };
+  const plan = {
+    title: `Create workspace ${slug}`,
+    changes: [
+      `Add workspace ${slug} named ${JSON.stringify(name)} to ${org}.`,
+      // A person creating a workspace is bound as its owner (engine 1.2.0); a
+      // management key is no person, so nobody is.
+      ...(credentialKind(scope.target.key) === "personal-token"
+        ? ["You become the workspace's owner: the engine binds the person who creates it."]
+        : []),
+    ],
+  };
   if (!(await preflight(deps, scope, org, context, options, plan))) return;
 
   const res = await call(deps, scope, { method: "POST", path: orgPath(org, "/workspaces"), body: { slug, name } });
@@ -370,6 +381,7 @@ async function roleCreate(args: string[], context: CommandContext | undefined, d
   if (permissions.length === 0) throw new ConfigError("polyant-cli role create needs --permissions <key,key>.");
   const name = takeValue(options, "--name") ?? key;
   const { scope, org } = await readScope(deps, context);
+  refusePersonalToken(scope, "role create");
 
   // Validate against what the engine says is grantable, so a typo fails naming
   // the offending key rather than as an opaque 400.
@@ -488,7 +500,7 @@ const FAMILIES: Record<string, Record<string, Node>> = {
     },
     create: {
       summary: "create a custom role",
-      usage: `Usage: polyant-cli role create <key> --permissions <key,key> [--name <name>]\n\nEvery permission is checked against the engine's grantable set first, so a typo\nfails naming the offending key. ${ORG_NOTE}`,
+      usage: `Usage: polyant-cli role create <key> --permissions <key,key> [--name <name>]\n\nEvery permission is checked against the engine's grantable set first, so a typo\nfails naming the offending key. A personal token is refused (engine 1.2.0): it\nis reserved for an interactive session or a management key. ${ORG_NOTE}`,
       action: roleCreate,
       mutates: true,
     },

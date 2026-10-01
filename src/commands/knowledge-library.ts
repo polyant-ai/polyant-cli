@@ -65,8 +65,8 @@ function statusCell(doc: LibraryDocumentRow): string {
 
 function reportEmbedder(deps: ServiceDependencies, body: LibraryBody): void {
   const embedder = body.embedder;
-  // Reported rather than hidden: an agent whose own embedder differs sees the
-  // documents listed and unusable, and this line is what explains that.
+  // Without one nothing in the library is searchable, whatever the agents
+  // that draw on it are configured with.
   deps.io.stderr(
     embedder === null || embedder === undefined
       ? "embedder: none declared — nothing in this library is searchable yet.\n"
@@ -276,7 +276,11 @@ interface SharedDocumentRow {
   chunkCount: number;
   tier: string;
   enabled: boolean;
-  /** False when the library's embedder differs from this agent's. */
+  /**
+   * Since 1.2.0, whether the library declares an embedder at all. A turn embeds
+   * its query with the ORGANISATION's embedder for shared documents, so the
+   * agent's own embedder no longer has to match.
+   */
   usable: boolean;
 }
 
@@ -293,6 +297,8 @@ async function sharedKnowledgeShow(args: string[], context: CommandContext | und
     revoked?: unknown;
     embedder?: { provider?: unknown; dimensions?: unknown } | null;
     agentEmbedder?: { provider?: unknown; dimensions?: unknown };
+    /** Whether the organisation's embedder has a credential to embed the query with. Absent before 1.2.0. */
+    embedderCredentialReady?: boolean;
   };
   const documents = expectArray<SharedDocumentRow>(body.documents, `GET ${path}`);
   deps.io.stdout(
@@ -323,7 +329,18 @@ async function sharedKnowledgeShow(args: string[], context: CommandContext | und
   }
   writePrettyResource(deps.io, [
     { label: "library embedder", value: body.embedder == null ? "(none declared)" : `${text(body.embedder.provider)} (${text(body.embedder.dimensions)})` },
-    { label: "agent embedder", value: `${text(body.agentEmbedder?.provider)} (${text(body.agentEmbedder?.dimensions)})` },
+    {
+      label: "library credential",
+      value:
+        body.embedderCredentialReady === undefined
+          ? "-"
+          : body.embedderCredentialReady
+            ? "ready"
+            : "MISSING — the query cannot be embedded, so no shared document is retrieved",
+    },
+    // The agent's own embedder indexes its own knowledge only; shared documents
+    // are searched with the organisation's.
+    { label: "agent embedder", value: `${text(body.agentEmbedder?.provider)} (${text(body.agentEmbedder?.dimensions)}) — own knowledge only` },
   ]);
 }
 
@@ -447,9 +464,11 @@ export const agentSharedKnowledgeFamily: Record<string, Node> = {
     usage: `Usage: polyant-cli agent shared-knowledge show <slug>
 
 Every document the agent's workspace is granted, whether the agent has switched
-it on, and whether it is USABLE — a document indexed with a different embedder
-is listed and marked rather than hidden, because a hidden one produces "why does
-my agent not see what I see".
+it on, and whether it is USABLE. Since engine 1.2.0 a turn embeds its query with
+the organisation's embedder to search shared documents, so the agent's own
+embedder does not have to match: a document is unusable only while the library
+declares no embedder, and none is retrieved while the organisation's embedder
+has no credential ("library credential" below).
 
 A document switched on and later withdrawn is reported separately, under
 REVOKED: it is a loss to act on, not a row to drop. ${LIBRARY_NOTE}`,

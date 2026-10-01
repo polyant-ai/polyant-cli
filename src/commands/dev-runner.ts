@@ -37,6 +37,7 @@ export const DEV_RUNNER_ENV = {
   agent: "POLYANT_DEV_AGENT",
   baseUrl: "POLYANT_DEV_BASE_URL",
   paths: "POLYANT_DEV_PATHS",
+  hookPaths: "POLYANT_DEV_HOOK_PATHS",
   watch: "POLYANT_DEV_WATCH",
 } as const;
 
@@ -76,8 +77,10 @@ void (async () => {
   const baseUrl = env[${JSON.stringify(DEV_RUNNER_ENV.baseUrl)}];
   const watch = env[${JSON.stringify(DEV_RUNNER_ENV.watch)}] === "1";
   let paths;
+  let hookPaths;
   try {
     paths = JSON.parse(env[${JSON.stringify(DEV_RUNNER_ENV.paths)}] || "[]");
+    hookPaths = JSON.parse(env[${JSON.stringify(DEV_RUNNER_ENV.hookPaths)}] || "[]");
   } catch (err) {
     return fatal(2, "could not read the tool paths: " + reason(err));
   }
@@ -97,12 +100,28 @@ void (async () => {
   }
 
   let tools;
+  let hooks;
   try {
     tools = await dev.loadToolsFromPaths(paths, { cacheBust: watch });
+    // \`loadHooksFromPaths\` arrived in SDK 1.8: an older SDK in the project has
+    // tools and no hooks, which is the state to degrade into rather than crash.
+    // Silently, though, a project written against the hook feature looks like
+    // one whose hooks the engine declined — so say which it is, once, when the
+    // project actually has hook files to lose.
+    if (!dev.loadHooksFromPaths && hookPaths.length > 0) {
+      process.stderr.write(
+        "note: this project's @polyant-ai/plugin-sdk predates 1.8 and cannot load hooks — " +
+          "its *.hook.ts files will not be served. Update the SDK dependency to serve them.\\n",
+      );
+    }
+    hooks = dev.loadHooksFromPaths ? await dev.loadHooksFromPaths(hookPaths, { cacheBust: watch }) : [];
   } catch (err) {
     return fatal(2, reason(err));
   }
-  if (tools.length === 0) return fatal(2, "no *.tool.ts files under " + paths.join(", ") + ".");
+  // A project may be all hooks and no tools, so neither alone is the floor.
+  if (tools.length === 0 && hooks.length === 0) {
+    return fatal(2, "no *.tool.ts or *.hook.ts files under " + paths.concat(hookPaths).join(", ") + ".");
+  }
 
   // The scheme is ours to translate; the PATH is the SDK's to own.
   const socketUrl = (() => {
@@ -135,6 +154,7 @@ void (async () => {
       token,
       url: socketUrl,
       tools,
+      hooks,
       onEvent: (event) => {
         if (event.type === "handshake_rejected") rejected = true;
         emit(event);
@@ -185,6 +205,9 @@ void (async () => {
         if (closing) return;
         try {
           handle.updateTools(await dev.loadToolsFromPaths(paths, { cacheBust: true }));
+          if (dev.loadHooksFromPaths && handle.updateHooks) {
+            handle.updateHooks(await dev.loadHooksFromPaths(hookPaths, { cacheBust: true }));
+          }
         } catch (err) {
           // A syntax error must not end the session: the previous tool set stays
           // served and the next save is another chance.
@@ -192,14 +215,17 @@ void (async () => {
         }
       }, 150);
     };
-    for (const path of paths) {
+    // De-duplicated: tool and hook paths are the same directory by default, and
+    // watching it twice would fire every reload twice.
+    const watched = [...new Set(paths.concat(hookPaths))];
+    for (const path of watched) {
       try {
         watchers.push(watchPath(path, { recursive: true }, reload));
       } catch (err) {
         emit({ type: "error", message: "cannot watch " + path + ": " + reason(err) });
       }
     }
-    emit({ type: "watching", paths });
+    emit({ type: "watching", paths: watched });
   }
 })();
 `;

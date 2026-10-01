@@ -5,6 +5,7 @@ import type {
   AgentDetailResponse,
   ChannelsResponse,
   ConversationsResponse,
+  FeedEvent,
   HooksResponse,
   ListAgentsResponse,
   MessageListResponse,
@@ -14,12 +15,13 @@ import type {
   ToolsResponse,
 } from "../api/types.js";
 import type { Command, CommandContext } from "../command.js";
-import { ConfigError } from "../exit.js";
+import { ConfigError, RemoteError } from "../exit.js";
 import { writeCompositeJson, writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
 import {
   call,
+  callStream,
   cappedTotal,
   expectArray,
   maybe,
@@ -36,10 +38,12 @@ import type { ResolvedScope } from "../runtime/scope.js";
 import { AGENT_FAMILY_EXTRAS } from "./agent-ops.js";
 import { agentSharedKnowledgeFamily } from "./knowledge-library.js";
 import { agentSupervisionFamily } from "./supervision.js";
+import { agentBudgetFamily } from "./budget.js";
+import { agentProvidersLeaf } from "./providers.js";
 import { AGENT_DATA_EXTRAS } from "./agent-data.js";
 import { AGENT_INTEROP_EXTRAS } from "./agent-interop.js";
 import { chat, CHAT_USAGE } from "./agent-chat.js";
-import { createMonitorCommand } from "./monitor.js";
+import { createMonitorCommand, renderFeedEvent } from "./monitor.js";
 
 /** Kept as a name of its own so the agent tests read as agent tests. */
 export type AgentCommandDependencies = ServiceDependencies;
@@ -111,9 +115,14 @@ async function create(args: string[], context: CommandContext | undefined, deps:
   };
 
   const scope = await scopeFor(deps, context);
-  const changes = Object.entries(body)
-    .filter(([field]) => field !== "slug")
-    .map(([field, value]) => `Set ${field} to ${JSON.stringify(value)}.`);
+  const changes = [
+    ...Object.entries(body)
+      .filter(([field]) => field !== "slug")
+      .map(([field, value]) => `Set ${field} to ${JSON.stringify(value)}.`),
+    // The engine's 1.2.0 defaults, said because both used to be on: an agent
+    // copied by hand from an older one silently loses memory and voice messages.
+    "Memory starts off and speech transcription disabled; turn them on with agent update.",
+  ];
   if (!(await preflight(deps, scope, context, options, { title: `Create agent ${slug}`, changes }))) return;
 
   const res = await call(deps, scope, { method: "POST", path: "/api/instances", body });
@@ -372,10 +381,19 @@ async function toolsShow(args: string[], context: CommandContext | undefined, de
     `GET /api/instances/${slug}/tools`,
   );
   const tools = args.includes("--enabled-only") ? all.filter((tool) => tool.enabled) : all;
+  // Since 1.2.0 a plugin tool is named `<namespace>:<tool>` and the response
+  // lists the plugins behind the served tools, so the namespace names its plugin.
+  const plugins = new Map(
+    ((res.body as Partial<ToolsResponse> | null)?.plugins ?? []).map((plugin) => [plugin.namespace, `${plugin.name}@${plugin.version}`]),
+  );
+  const pluginOf = (name: string): string => {
+    const separator = name.indexOf(":");
+    return separator <= 0 ? "-" : (plugins.get(name.slice(0, separator)) ?? name.slice(0, separator));
+  };
   deps.io.stdout(
     `${renderTable({
-      headers: ["NAME", "ENABLED", "CATEGORY", "SOURCE"],
-      rows: tools.map((tool) => [tool.name, tool.enabled ? "yes" : "no", text(tool.category), text(tool.source)]),
+      headers: ["NAME", "ENABLED", "CATEGORY", "SOURCE", "PLUGIN"],
+      rows: tools.map((tool) => [tool.name, tool.enabled ? "yes" : "no", text(tool.category), text(tool.source), pluginOf(tool.name)]),
       emptyMessage: `Agent ${slug} has no tools to show.`,
     })}\n`,
   );
@@ -565,6 +583,15 @@ async function whatsappUrl(args: string[], context: CommandContext | undefined, 
   writeRawResponse(deps.io, res.raw);
 }
 
+async function slackUrl(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "channels slack url");
+  assertKnown(args.slice(1), {}, "agent channels slack url option");
+  const scope = await scopeFor(deps, context, "read");
+  const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}/channels/slack/webhook-url` });
+  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+  deps.io.stdout(`${text((res.body as { webhookUrl?: unknown } | null)?.webhookUrl)}\n`);
+}
+
 async function whatsappRotate(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "channels whatsapp rotate");
   const options = args.slice(1);
@@ -596,26 +623,46 @@ function secretsPath(slug: string, key?: string): string {
  * The declared key set, read rather than assumed: it varies per agent with the
  * tools and channels it has, so a hardcoded list would drift and would reject
  * keys the engine accepts.
+ *
+ * Two reads, because `/secrets` lists the engine's well-known keys plus the ones
+ * already STORED: a key an enabled tool declares — `s3_use_task_role` and
+ * `aws_region` for fileUpload, `http_allowed_domains`, a plugin's own — shows up
+ * there only once it is set, so checking against it alone refused exactly the
+ * per-agent storage settings 1.2.0 asks to configure.
  */
 async function secretsOf(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<SecretsResponse["secrets"]> {
   const res = await call(deps, scope, { path: secretsPath(slug) });
-  return expectArray<SecretsResponse["secrets"][number]>(
+  const listed = expectArray<SecretsResponse["secrets"][number]>(
     (res.body as Partial<SecretsResponse> | null)?.secrets,
     `GET ${secretsPath(slug)}`,
   );
+  const known = new Set(listed.map((secret) => secret.key));
+  const declared = await toolDeclaredSecrets(deps, scope, slug);
+  return [...listed, ...declared.filter((key) => !known.has(key)).map((key) => ({ key, configured: false }))];
+}
+
+/** The keys the agent's enabled tools declare; an engine without the route declares none. */
+async function toolDeclaredSecrets(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<string[]> {
+  try {
+    const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}/tools/required-secrets` });
+    const specs = (res.body as { requiredSecrets?: { key?: unknown }[] } | null)?.requiredSecrets;
+    return Array.isArray(specs) ? specs.map((spec) => spec.key).filter((key): key is string => typeof key === "string") : [];
+  } catch (error) {
+    if (error instanceof RemoteError && error.status === 404) return [];
+    throw error;
+  }
 }
 
 async function secretsShow(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "secrets show");
   assertKnown(args.slice(1), { boolean: ["--configured-only"] }, "agent secrets show option");
   const scope = await scopeFor(deps, context, "read");
-  const res = await call(deps, scope, { path: secretsPath(slug) });
-  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+  if (wantsJson(context)) {
+    const res = await call(deps, scope, { path: secretsPath(slug) });
+    return writeRawResponse(deps.io, res.raw);
+  }
 
-  const all = expectArray<SecretsResponse["secrets"][number]>(
-    (res.body as Partial<SecretsResponse> | null)?.secrets,
-    `GET ${secretsPath(slug)}`,
-  );
+  const all = await secretsOf(deps, scope, slug);
   const secrets = args.includes("--configured-only") ? all.filter((secret) => secret.configured) : all;
   // Presence only. The engine never serves the value, and this command must never
   // become the place where one is printed.
@@ -879,8 +926,14 @@ async function conversationsShow(args: string[], context: CommandContext | undef
   const id = args[1];
   if (id === undefined || id.startsWith("--")) throw new ConfigError("polyant-cli agent conversations show needs a conversation id.");
   const options = args.slice(2);
-  assertKnown(options, { value: ["--limit"] }, "agent conversations show option");
+  assertKnown(options, { value: ["--limit", "--max"], boolean: ["--follow"] }, "agent conversations show option");
+  const following = options.includes("--follow");
+  const max = positiveInteger(takeValue(options, "--max"), "--max");
+  if (max !== undefined && !following) throw new ConfigError("--max bounds --follow; it means nothing without it.");
   const scope = await scopeFor(deps, context, "read");
+  // JSON Lines, like `monitor events --follow`: a composite document cannot be
+  // streamed, so a JSON follow prints the live frames alone.
+  if (following && wantsJson(context)) return followConversation(deps, scope, context, slug, id, max);
   const encoded = encodeURIComponent(id);
   const conversation = await call(deps, scope, { path: `/api/conversations/${encoded}`, query: { instanceId: slug } });
   const messages = await call(deps, scope, {
@@ -920,6 +973,54 @@ async function conversationsShow(args: string[], context: CommandContext | undef
       emptyMessage: "No messages in this conversation.",
     })}\n`,
   );
+  if (following) await followConversation(deps, scope, context, slug, id, max);
+}
+
+/**
+ * One conversation as it happens, on any channel (engine 1.2.0): the turn's
+ * live events while it runs, and a `persisted` signal each time a message or a
+ * hook run for it is stored — the cue to re-read the transcript, which the
+ * signal itself does not carry. Never returns on its own: bound it with --max.
+ */
+async function followConversation(
+  deps: AgentCommandDependencies,
+  scope: ResolvedScope,
+  context: CommandContext | undefined,
+  slug: string,
+  id: string,
+  max: string | undefined,
+): Promise<void> {
+  const limit = max === undefined ? Infinity : Number(max);
+  const stream = await callStream(deps, scope, {
+    path: "/api/activity-stream/conversation",
+    // `instanceId` takes the agent's SLUG here, whatever the name says.
+    query: { conversationId: id, instanceId: slug },
+    timeoutMs: 0,
+  });
+  if (!wantsJson(context)) deps.io.stderr(`following conversation ${id} — interrupt to stop\n`);
+
+  let seen = 0;
+  for await (const event of stream.events) {
+    if (event.event === "persisted") {
+      deps.io.stdout(
+        wantsJson(context)
+          ? `${JSON.stringify({ event: "persisted" })}\n`
+          : `${new Date().toISOString()}  persisted  a message or hook run was stored\n`,
+      );
+    } else if (wantsJson(context)) {
+      deps.io.stdout(`${event.data}\n`);
+    } else {
+      let parsed: FeedEvent | undefined;
+      try {
+        parsed = JSON.parse(event.data) as FeedEvent;
+      } catch {
+        parsed = undefined;
+      }
+      deps.io.stdout(`${parsed === undefined ? event.data : renderFeedEvent(parsed)}\n`);
+    }
+    seen += 1;
+    if (seen >= limit) return;
+  }
 }
 
 /**
@@ -1013,7 +1114,11 @@ const LEAVES: Record<string, Node> = {
 locale, the debounce and typing delays, the cache TTL, the opt-out wording. The
 value is read as JSON when it parses as one, so cacheEnabled=true sends a boolean
 and datetimeTimezone=Europe/Rome a string. Run \`agent show <slug> --json\` for the
-field names.
+field names. Two worth knowing from engine 1.2.0: memoryEnabled=true, since new
+agents start with memory off, and webContextFieldMapping='{"customerId":"customer.id"}',
+which maps the \`context\` a web chat sends onto conversation state — the web twin
+of the HTTP channel's mapping. Use \`agent providers <slug>\` to see which
+--provider, --model and --provider-connection values the agent may take.
 
 The engine IGNORES a field it does not treat as writable — with a 200 and a fresh
 updatedAt — so the response is checked against what was asked and a field that
@@ -1059,7 +1164,12 @@ still performs that read, but sends no writes.`,
   tools: {
     show: {
       summary: "list the tools available to an agent",
-      usage: "Usage: polyant-cli agent tools show <slug> [--enabled-only]",
+      usage: `Usage: polyant-cli agent tools show <slug> [--enabled-only]
+
+PLUGIN names the plugin a namespaced tool comes from. Since engine 1.2.0 the
+GitHub, Render, HubSpot and Markdown-to-PDF families are plugins, named
+\`github:issue\`, \`hubspot:contact\`, \`extra:markdownToPdf\` and so on; an agent
+that had the old flat names must be re-enabled on the namespaced ones.`,
       action: toolsShow,
     },
     set: {
@@ -1083,7 +1193,14 @@ person did, or when nobody has.`,
     },
     set: {
       summary: "set one channel's configuration from a file or stdin",
-      usage: "Usage: polyant-cli agent channels set <slug> <type> --file <path|-> [--disable]",
+      usage: `Usage: polyant-cli agent channels set <slug> <type> --file <path|-> [--disable]
+
+Since engine 1.2.0 Telegram and Slack arrive through webhooks, not through a
+connection the engine opens. Slack takes botToken and signingSecret — there is
+no appToken any more, and Socket Mode must be off in the Slack app, whose
+Request URL is \`agent channels slack url\`. Telegram registers its own webhook
+when the channel starts, so the engine needs a public HTTPS address with
+/webhooks/* routed to it.`,
       action: channelsSet,
       mutates: true,
     },
@@ -1092,6 +1209,18 @@ person did, or when nobody has.`,
       usage: "Usage: polyant-cli agent channels remove <slug> <type> --yes --confirm <type>",
       action: channelsRemove,
       mutates: true,
+    },
+    slack: {
+      url: {
+        summary: "print the Request URL to paste into the Slack app",
+        usage: `Usage: polyant-cli agent channels slack url <slug>
+
+The address Slack must POST events to, for the app's Event Subscriptions and
+Interactivity Request URL. It carries no secret — Slack's signing secret
+authenticates the request — so channel:read is enough. The engine builds it from
+its public base URL: a localhost address means that base URL is not set.`,
+        action: slackUrl,
+      },
     },
     whatsapp: {
       url: {
@@ -1117,7 +1246,13 @@ only copy. Update the Twilio Console before the next inbound message.`,
   secrets: {
     show: {
       summary: "list which secrets an agent has configured",
-      usage: "Usage: polyant-cli agent secrets show <slug> [--configured-only]",
+      usage: `Usage: polyant-cli agent secrets show <slug> [--configured-only]
+
+The engine's well-known keys, the keys already stored, and the keys the agent's
+enabled tools declare (fileUpload's s3_bucket_name, aws_region and
+s3_use_task_role, httpRequest's http_allowed_domains, a plugin's own). Presence
+only. With --json the engine's own list is printed unchanged, without the
+tool-declared keys.`,
       action: secretsShow,
     },
     set: {
@@ -1188,7 +1323,15 @@ with either.`,
     },
     show: {
       summary: "show one conversation and its messages",
-      usage: "Usage: polyant-cli agent conversations show <slug> <conversationId> [--limit <n>]",
+      usage: `Usage: polyant-cli agent conversations show <slug> <conversationId> [--limit <n>]
+       polyant-cli agent conversations show <slug> <conversationId> --follow [--max <n>]
+
+--follow prints the transcript, then stays on the conversation: the engine
+first replays the conversation's recent events, then sends each turn's events
+live as it runs, on any channel, and a "persisted" line each time a
+message or hook run is stored — re-run without --follow to read it. It has no
+deadline: bound it with --max <n> events. With --json the follow prints the
+live frames alone, as JSON Lines. Needs engine 1.2.0.`,
       action: conversationsShow,
     },
   },
@@ -1207,7 +1350,9 @@ reach answers 404 or 403; it does not answer an empty list.`,
 const AGENT_SUMMARIES: Record<string, string> = {
   agent: "manage agents, their configuration and their conversations",
   "agent a2a": "expose an agent over the Agent2Agent protocol",
+  "agent budget": "an agent's spend caps (Enterprise)",
   "agent channels": "manage an agent's channels",
+  "agent channels slack": "the Slack inbound webhook address",
   "agent channels whatsapp": "reveal and rotate the WhatsApp inbound webhook secret",
   "agent compliance": "an agent's model card, snapshots and reports",
   "agent conversations": "manage an agent's conversations",
@@ -1245,6 +1390,8 @@ export function createAgentCommand(overrides: Partial<AgentCommandDependencies> 
       ...AGENT_DATA_EXTRAS,
       ...agentSupervisionFamily,
       "shared-knowledge": agentSharedKnowledgeFamily,
+      budget: agentBudgetFamily,
+      providers: agentProvidersLeaf,
     },
     deps,
     ["agent"],

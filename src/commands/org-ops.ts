@@ -15,6 +15,7 @@ import {
 } from "../runtime/org.js";
 import { call, expectArray, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
 import type { Node } from "../runtime/tree.js";
+import { refusePersonalToken } from "../runtime/credential.js";
 import type { ResolvedScope } from "../runtime/scope.js";
 
 // --- organisation-level provider credentials --------------------------------
@@ -129,11 +130,15 @@ async function orgSecretsUnset(args: string[], context: CommandContext | undefin
 
 // --- plugin grants ----------------------------------------------------------
 
+/**
+ * Every row is a plugin the organisation HOLDS. The engine used to list the
+ * whole installation with an `enabled` flag; since 1.2.0 an ungranted plugin is
+ * absent instead, so there is no grant column left to read.
+ */
 interface PluginRow {
   name: string;
   version: string;
   compatible: boolean;
-  enabled: boolean;
 }
 
 async function orgPlugins(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -146,9 +151,9 @@ async function orgPlugins(args: string[], context: CommandContext | undefined, d
   const plugins = expectArray<PluginRow>((res.body as { plugins?: unknown } | null)?.plugins, `GET ${path}`);
   deps.io.stdout(
     `${renderTable({
-      headers: ["NAME", "VERSION", "GRANTED", "COMPATIBLE"],
-      rows: plugins.map((p) => [text(p.name), text(p.version), p.enabled ? "yes" : "no", p.compatible ? "yes" : "no"]),
-      emptyMessage: "This deployment has no plugins installed.",
+      headers: ["NAME", "VERSION", "COMPATIBLE"],
+      rows: plugins.map((p) => [text(p.name), text(p.version), p.compatible ? "yes" : "no"]),
+      emptyMessage: `Organisation ${org} holds no plugins.`,
     })}\n`,
   );
 }
@@ -176,12 +181,11 @@ interface WorkspaceSkillRow {
   assigned: boolean;
 }
 
+/** Only the plugins the organisation holds: one it does not hold is absent. */
 interface WorkspacePluginRow {
   name: string;
   version: string;
   compatible: boolean;
-  /** The ORGANISATION's grant. A plugin it does not hold cannot be assigned. */
-  grantedToOrg: boolean;
   assigned: boolean;
 }
 
@@ -308,15 +312,14 @@ async function workspacePluginsList(args: string[], context: CommandContext | un
   const plugins = args.includes("--assigned-only") ? all.filter((plugin) => plugin.assigned) : all;
   deps.io.stdout(
     `${renderTable({
-      headers: ["NAME", "VERSION", "GRANTED", "ASSIGNED", "COMPATIBLE"],
+      headers: ["NAME", "VERSION", "ASSIGNED", "COMPATIBLE"],
       rows: plugins.map((plugin) => [
         text(plugin.name),
         text(plugin.version),
-        plugin.grantedToOrg ? "yes" : "no",
         plugin.assigned ? "yes" : "no",
         plugin.compatible ? "yes" : "no",
       ]),
-      emptyMessage: "This deployment has no plugins installed.",
+      emptyMessage: `Organisation ${org} holds no plugins.`,
     })}\n`,
   );
 }
@@ -327,21 +330,17 @@ async function workspacePluginsAssign(args: string[], context: CommandContext | 
   assertKnown(options, { value: ["--confirm"] }, "workspace plugins assign option");
   const { scope, org } = await readScope(deps, context);
 
-  const installed = await assignablePlugins(deps, scope, org, workspace);
-  const plugin = installed.find((entry) => entry.name === name);
+  const held = await assignablePlugins(deps, scope, org, workspace);
+  const plugin = held.find((entry) => entry.name === name);
   if (plugin === undefined) {
+    // The listing stops at what the organisation holds, so "not installed" and
+    // "not granted" are the same absence here — deliberately: the engine does
+    // not tell a tenant what other tenants run. Either way the assignment would
+    // be a row that changes nothing, and the grant is a platform-admin action.
     throw new ConfigError(
-      `This deployment has no plugin ${JSON.stringify(name)}. ` +
-        `Installed: ${installed.map((entry) => entry.name).join(", ") || "(none)"}.`,
-    );
-  }
-  if (!plugin.grantedToOrg) {
-    // Visibility is the intersection of the organisation's grant and this
-    // assignment, so an assignment without the grant is a row that changes
-    // nothing. The grant is a platform-admin action a management key cannot make.
-    throw new ConfigError(
-      `Organisation ${org} does not hold plugin ${name}, so assigning it to ${workspace} would change nothing. ` +
-        "That grant is a platform-admin action, made from the web console.",
+      `Organisation ${org} holds no plugin ${JSON.stringify(name)}, so assigning it to ${workspace} would change nothing. ` +
+        `Held: ${held.map((entry) => entry.name).join(", ") || "(none)"}. ` +
+        "A grant is a platform-admin action, made from the web console.",
     );
   }
 
@@ -364,10 +363,10 @@ async function workspacePluginsRevoke(args: string[], context: CommandContext | 
   assertKnown(options, { value: ["--confirm"] }, "workspace plugins revoke option");
   const { scope, org } = await readScope(deps, context);
 
-  const installed = await assignablePlugins(deps, scope, org, workspace);
-  const plugin = installed.find((entry) => entry.name === name);
+  const held = await assignablePlugins(deps, scope, org, workspace);
+  const plugin = held.find((entry) => entry.name === name);
   if (plugin === undefined) {
-    throw new ConfigError(`This deployment has no plugin ${JSON.stringify(name)}.`);
+    throw new ConfigError(`Organisation ${org} holds no plugin ${JSON.stringify(name)}.`);
   }
   if (!plugin.assigned) {
     throw new ConfigError(`Workspace ${workspace} is not assigned plugin ${name}; there is nothing to revoke.`);
@@ -471,6 +470,7 @@ async function apiKeyCreate(args: string[], context: CommandContext | undefined,
   const expiresAt = takeValue(options, "--expires-at");
 
   const { scope, org } = await readScope(deps, context);
+  refusePersonalToken(scope, "apikey create");
   await assertGrantable(deps, scope, org, permissions);
 
   const plan = {
@@ -513,6 +513,7 @@ async function apiKeyUpdate(args: string[], context: CommandContext | undefined,
   }
 
   const { scope, org } = await readScope(deps, context);
+  refusePersonalToken(scope, "apikey update");
   if (permissions.length > 0) await assertGrantable(deps, scope, org, permissions);
 
   const changes = [
@@ -699,14 +700,15 @@ from a file or stdin, never a flag, and is never printed. ${ORG_NOTE}`,
       },
     },
     plugins: {
-      summary: "list the plugins installed here and which this organisation is granted",
+      summary: "list the plugins this organisation holds",
       usage: `Usage: polyant-cli org plugins
 
-An ungranted plugin is undiscoverable rather than merely inert: its tools and
-hooks do not exist for this organisation's agents. Granting is a platform-admin
-action, which a management key cannot perform.
+Only the plugins the organisation holds. One it was not granted is absent rather
+than listed as ungranted: its tools and hooks do not exist for this
+organisation's agents, and the engine does not name what other tenants run.
+Granting is a platform-admin action, which a management key cannot perform.
 
-GRANTED is the organisation's half of the decision. The workspace's half is
+This is the organisation's half of the decision. The workspace's half is
 \`workspace plugins list\`, and an agent sees a plugin only when both say yes.
 
 The permission is \`org.plugin:read\`, which used to be the \`org:read\` floor: a key
@@ -747,12 +749,12 @@ itself, and its assignment elsewhere, are untouched. ${ORG_NOTE}`,
     },
     plugins: {
       list: {
-        summary: "list the installed plugins, the organisation's grant and this workspace's assignment",
+        summary: "list the organisation's plugins and which this workspace may use",
         usage: `Usage: polyant-cli workspace plugins list <workspaceSlug> [--assigned-only]
 
-GRANTED is the organisation's, ASSIGNED is this workspace's, and a plugin needs
-both to be visible to an agent. COMPATIBLE is whether this engine can run it at
-all. ${ASSIGN_NOTE} ${ORG_NOTE}`,
+The plugins the organisation holds, with ASSIGNED for this workspace's half: a
+plugin needs both to be visible to an agent. COMPATIBLE is whether this engine
+can run it at all. ${ASSIGN_NOTE} ${ORG_NOTE}`,
         action: workspacePluginsList,
       },
       assign: {
@@ -761,7 +763,9 @@ all. ${ASSIGN_NOTE} ${ORG_NOTE}`,
 
 Refused locally when the organisation does not hold the plugin: the assignment
 would be a row that changes nothing, because visibility is the intersection of
-the two. Granting is a platform-admin action, made from the web console.
+the two. The engine lists only held plugins, so a name it does not show may be
+ungranted or not installed at all. Granting is a platform-admin action, made
+from the web console.
 ${ORG_NOTE}`,
         action: workspacePluginsAssign,
         mutates: true,
@@ -832,6 +836,8 @@ export const apiKeyFamily: Record<string, Node> = {
 The token goes to stdout alone and is shown exactly once: the engine keeps only
 its bcrypt hash and cannot reissue it. Every permission is checked against the
 engine's issuable set first, so a typo fails naming the offending key.
+A personal token is refused (engine 1.2.0): a credential that can mint another
+outlives its own revocation. Use a management key or the web console.
 ${EE_NOTE} ${ORG_NOTE}`,
     action: apiKeyCreate,
     mutates: true,
@@ -840,7 +846,8 @@ ${EE_NOTE} ${ORG_NOTE}`,
     summary: "rename a key, replace its permissions, or change its expiry",
     usage: `Usage: polyant-cli apikey update <keyId> [--name <name>] [--permissions <key,key>] [--expires-at <iso>]
 
-\`--permissions\` REPLACES the set rather than adding to it. ${EE_NOTE} ${ORG_NOTE}`,
+\`--permissions\` REPLACES the set rather than adding to it. A personal token is
+refused, as for \`apikey create\`. ${EE_NOTE} ${ORG_NOTE}`,
     action: apiKeyUpdate,
     mutates: true,
   },

@@ -187,6 +187,43 @@ describe("agent checkup", () => {
     expect(h.out.join("")).toBe(JSON.stringify(CHECKS));
   });
 
+  it("lists a note but does not fail on it unless --fail-on note asks", async () => {
+    const note = { ...CHECKS.checks[0], id: "budget-unset", severity: "note", section: "cost" };
+    const h = harness([response({ ...CHECKS, checks: [note] })]);
+
+    await leaf(h.agent, ["checkup"])(["acme"], context());
+    expect(h.out.join("")).toContain("budget-unset");
+
+    const strict = harness([response({ ...CHECKS, checks: [note] })]);
+    await expect(leaf(strict.agent, ["checkup"])(["acme", "--fail-on", "note"], context()))
+      .rejects.toMatchObject({ code: ExitCode.Difference });
+  });
+
+  it("--fail-on broken lets a warning through and still fails on broken", async () => {
+    const warning = { ...CHECKS.checks[0], id: "no-retention", severity: "warning" };
+    const h = harness([response({ ...CHECKS, checks: [warning] })]);
+    await leaf(h.agent, ["checkup"])(["acme", "--fail-on", "broken"], context());
+
+    const broken = harness([response(CHECKS)]);
+    await expect(leaf(broken.agent, ["checkup"])(["acme", "--fail-on", "broken"], context()))
+      .rejects.toThrow(/1 active check\(s\) at broken or above/);
+  });
+
+  it("fails on a severity it does not know, rather than passing it", async () => {
+    const h = harness([response({ ...CHECKS, checks: [{ ...CHECKS.checks[0], severity: "critical" }] })]);
+
+    await expect(leaf(h.agent, ["checkup"])(["acme"], context())).rejects.toMatchObject({ code: ExitCode.Difference });
+  });
+
+  it("rejects an unknown --fail-on before asking the engine", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.agent, ["checkup"])(["acme", "--fail-on", "fatal"], context())).rejects.toThrow(
+      /--fail-on must be one of broken, warning, note/,
+    );
+    expect(h.calls).toEqual([]);
+  });
+
   it("returns cleanly when there are no live checks", async () => {
     const h = harness([response({ ...CHECKS, checks: [], dismissed: CHECKS.dismissed })]);
 
@@ -239,19 +276,21 @@ describe("agent shared-knowledge", () => {
     revoked: [{ documentId: "d-9", filename: "old.pdf" }],
     embedder: { provider: "openai", dimensions: 1536 },
     agentEmbedder: { provider: "nebius", dimensions: 1024 },
+    embedderCredentialReady: false,
   };
 
-  // A document indexed with another embedder is listed and marked, not hidden:
-  // hiding it produces "why does my agent not see what I see".
-  it("marks a document the agent cannot use, and shows both embedders", async () => {
+  // Since 1.2.0 the query is embedded with the organisation's embedder, so the
+  // agent's own no longer has to match; the credential is what can still fail.
+  it("marks an unusable document, and says the agent's embedder covers its own knowledge only", async () => {
     const h = harness([response(SHARED)]);
 
     await leaf(h.agent, ["shared-knowledge", "show"])(["acme"], context());
 
     const text = h.out.join("");
-    expect(text).toContain("handbook.pdf");
-    expect(text).toContain("library embedder:  openai (1536)");
-    expect(text).toContain("agent embedder:    nebius (1024)");
+    expect(text).toMatch(/handbook\.pdf\s+organization\s+ready\s+yes\s+no/);
+    expect(text).toContain("library embedder:    openai (1536)");
+    expect(text).toContain("library credential:  MISSING");
+    expect(text).toContain("agent embedder:      nebius (1024) — own knowledge only");
   });
 
   it("reports a document that was switched on and later withdrawn", async () => {

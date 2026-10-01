@@ -24,8 +24,14 @@ import type { DevCommandDependencies } from "./dev.js";
  * The SDK is taken by git tag, not from a registry: the dev runtime ships in
  * `@polyant-ai/plugin-sdk/dev` and this repository does not publish it. A tag
  * pins a resolvable tree, where a branch would silently move under the project.
+ *
+ * The tag has to carry every capability this CLI serves, not merely the one it
+ * connects with. `dev connect` has served hooks since #9, and hook loading
+ * arrived in SDK 1.8: scaffolding an older tag produced a project whose
+ * `*.hook.ts` files were skipped without a word. When this CLI grows another
+ * capability that needs the SDK, this constant moves with it.
  */
-const SDK_SPECIFIER = "git+https://github.com/polyant-ai/polyant-sdk.git#v1.6.0";
+const SDK_SPECIFIER = "git+https://github.com/polyant-ai/polyant-sdk.git#v1.8.0";
 const ZOD_SPECIFIER = "^3.23.0";
 const TSX_SPECIFIER = "^4.19.0";
 

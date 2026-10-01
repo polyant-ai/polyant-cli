@@ -78,7 +78,14 @@ async function requireProject(deps: DevCommandDependencies, directory: string): 
 }
 
 function toolPaths(options: readonly string[], directory: string): string[] {
-  const given = takeValue(options, "--tools");
+  return pathsFor(options, "--tools", directory);
+}
+
+/** The search root for one kind of file: the given path, or the project itself.
+ *  Tools and hooks default to the SAME directory — each loader matches its own
+ *  filename suffix, so one tree holding both needs no option at all. */
+function pathsFor(options: readonly string[], flag: string, directory: string): string[] {
+  const given = takeValue(options, flag);
   if (given === undefined) return [directory];
   return [isAbsolute(given) ? given : resolve(directory, given)];
 }
@@ -113,6 +120,19 @@ function renderEvent(deps: DevCommandDependencies, event: SessionEvent): void {
       return say(`ctx.${String(event.op)} for call ${String(event.callId)}`);
     case "tools_updated":
       return say(`tools reloaded: ${((event.tools as string[] | undefined) ?? []).join(", ") || "-"}`);
+    case "hooks_updated":
+      return say(`hooks reloaded: ${((event.hooks as string[] | undefined) ?? []).join(", ") || "-"}`);
+    case "hooks_update_rejected":
+      return say(`hook reload refused by the engine, keeping the previous hooks: ${String(event.reason)}`);
+    // A hook call goes to stdout beside the tool calls — it is the log the
+    // operator came for — with the event named, since a hook is invoked by the
+    // turn's lifecycle and not by the model.
+    case "hook_invoke":
+      return deps.io.stdout(`→ ${String(event.hook)} on ${String(event.event)} (${String(event.callId)})\n`);
+    case "hook_result":
+      return deps.io.stdout(
+        `← ${String(event.hook)} ${event.ok === true ? "ok" : `error: ${String(event.error ?? "unknown")}`} ${String(event.durationMs)}ms\n`,
+      );
     case "reload_failed":
       return say(`reload failed, keeping the previous tools: ${String(event.message)}`);
     case "watching":
@@ -148,13 +168,18 @@ export async function devConnect(
 ): Promise<void> {
   const slug = requireDevSlug(args, "connect");
   const options = args.slice(1);
-  assertKnown(options, { value: ["--dir", "--tools", "--token-env", "--token-file"], boolean: ["--watch"] }, "dev connect option");
+  assertKnown(
+    options,
+    { value: ["--dir", "--tools", "--hooks", "--token-env", "--token-file"], boolean: ["--watch"] },
+    "dev connect option",
+  );
 
   const given = takeValue(options, "--dir");
   const directory = given === undefined ? deps.cwd() : isAbsolute(given) ? given : resolve(deps.cwd(), given);
   const token = await resolveToken(options, deps, slug);
   const tsx = await requireProject(deps, directory);
   const paths = toolPaths(options, directory);
+  const hookPaths = pathsFor(options, "--hooks", directory);
 
   // One read before the socket: it proves the agent exists and that this key may
   // drive its dev mode, and it says whether a session is already connected —
@@ -182,6 +207,7 @@ export async function devConnect(
       [DEV_RUNNER_ENV.agent]: slug,
       [DEV_RUNNER_ENV.baseUrl]: scope.target.baseUrl,
       [DEV_RUNNER_ENV.paths]: JSON.stringify(paths),
+      [DEV_RUNNER_ENV.hookPaths]: JSON.stringify(hookPaths),
       ...(options.includes("--watch") ? { [DEV_RUNNER_ENV.watch]: "1" } : {}),
     },
   });

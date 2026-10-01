@@ -5,7 +5,8 @@ import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
 import { ORG_NOTE, orgPath, preflight, readScope, report, requirePositional } from "../runtime/org.js";
-import { call, expectArray, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
+import { call, expectArray, scopeFor, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
+import { agentPath, requireSlug } from "../runtime/workspace.js";
 import type { ResolvedScope } from "../runtime/scope.js";
 import type { Node } from "../runtime/tree.js";
 import { parseObject } from "./governance.js";
@@ -285,10 +286,13 @@ async function connectionsDelete(args: string[], context: CommandContext | undef
 
 // --- the workspace tier ------------------------------------------------------
 
+/**
+ * One row per provider the ORGANISATION holds. A provider it does not hold is
+ * absent rather than flagged: since 1.2.0 the engine stops the list at the
+ * organisation's tier, so absence is the "cannot be admitted here".
+ */
 interface WorkspaceProviderRow {
   provider: string;
-  /** Whether the ORGANISATION holds it. A provider it does not hold cannot be admitted here. */
-  grantedToOrg: boolean;
   admitted: boolean;
 }
 
@@ -317,16 +321,33 @@ async function workspaceProvidersList(args: string[], context: CommandContext | 
   const { body, raw } = await workspaceProvidersOf(deps, scope, org, workspace);
   if (wantsJson(context)) return writeRawResponse(deps.io, raw);
 
-  const providers = expectArray<WorkspaceProviderRow>(body.providers, `GET ${workspacePath(org, workspace, "/providers")}`);
+  writeWorkspaceProviders(deps, body, {
+    source: `GET ${workspacePath(org, workspace, "/providers")}`,
+    noProviders: `Organisation ${org} is admitted to no providers, so ${workspace} can run none.`,
+    noConnections: `Organisation ${org} has no named provider connections.`,
+    withAssigned: true,
+  });
+}
+
+/**
+ * The workspace read and the agent's own read share a shape: the agent's is the
+ * workspace view narrowed to the connections that workspace was lent.
+ */
+function writeWorkspaceProviders(
+  deps: ServiceDependencies,
+  body: WorkspaceProvidersBody,
+  wording: { source: string; noProviders: string; noConnections: string; withAssigned: boolean },
+): void {
+  const providers = expectArray<WorkspaceProviderRow>(body.providers, wording.source);
   const orgDisabled = Array.isArray(body.disabledModels?.organization) ? (body.disabledModels?.organization as string[]) : [];
   const wsDisabled = Array.isArray(body.disabledModels?.workspace) ? (body.disabledModels?.workspace as string[]) : [];
   const connections = Array.isArray(body.connections) ? (body.connections as ConnectionRow[]) : [];
 
   deps.io.stdout(
     `${renderTable({
-      headers: ["PROVIDER", "GRANTED TO ORG", "ADMITTED HERE"],
-      rows: providers.map((row) => [text(row.provider), row.grantedToOrg ? "yes" : "no", row.admitted ? "yes" : "no"]),
-      emptyMessage: `Workspace ${workspace} reaches no providers.`,
+      headers: ["PROVIDER", "ADMITTED HERE"],
+      rows: providers.map((row) => [text(row.provider), row.admitted ? "yes" : "no"]),
+      emptyMessage: wording.noProviders,
     })}\n`,
   );
   writePrettyResource(deps.io, [
@@ -336,21 +357,33 @@ async function workspaceProvidersList(args: string[], context: CommandContext | 
     { label: "models off (workspace)", value: wsDisabled.length === 0 ? "(none)" : wsDisabled.join(", ") },
     { label: "managed connections only", value: body.managedConnectionsOnly === true ? "yes" : "no" },
   ]);
-  deps.io.stdout(`\n${connectionTable(connections, `Organisation ${org} has no named provider connections.`, true)}\n`);
+  deps.io.stdout(`\n${connectionTable(connections, wording.noConnections, wording.withAssigned)}\n`);
 }
 
+async function agentProviders(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  const slug = requireSlug(args, "providers");
+  assertKnown(args.slice(1), {}, "agent providers option");
+  const scope = await scopeFor(deps, context, "read");
+  const path = agentPath(slug, "/providers");
+  const res = await call(deps, scope, { path });
+  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+
+  writeWorkspaceProviders(deps, (res.body ?? {}) as WorkspaceProvidersBody, {
+    source: `GET ${path}`,
+    noProviders: `Agent ${slug}'s organisation is admitted to no providers, so the agent can run none.`,
+    // Narrowed by the engine to what the workspace was lent, so every row is usable.
+    noConnections: `Agent ${slug}'s workspace has been lent no named provider connections.`,
+    withAssigned: false,
+  });
+}
+
+
 function assertProviderAssignable(providers: readonly WorkspaceProviderRow[], provider: string, org: string): void {
-  const found = providers.find((row) => row.provider === provider);
-  if (found === undefined) {
-    throw new ConfigError(
-      `Provider ${JSON.stringify(provider)} is not one this organisation reaches. ` +
-        `Reachable: ${providers.map((row) => row.provider).join(", ") || "(none)"}.`,
-    );
-  }
-  if (!found.grantedToOrg) {
+  if (!providers.some((row) => row.provider === provider)) {
     // Admissibility is an intersection, so this row would change nothing.
     throw new ConfigError(
-      `Organisation ${org} is not admitted to ${provider}, so a workspace cannot be either. ` +
+      `Organisation ${org} is not admitted to ${JSON.stringify(provider)}, so a workspace cannot be either. ` +
+        `Admitted: ${providers.map((row) => row.provider).join(", ") || "(none)"}. ` +
         "Admitting an organisation to a provider is a platform-admin action, made from the Admin Console.",
     );
   }
@@ -523,8 +556,9 @@ ${ORG_NOTE}`,
         summary: "which providers and models one workspace may run",
         usage: `Usage: polyant-cli workspace providers list <workspaceSlug>
 
-Three answers in one read: whether the organisation holds the provider, whether
-this workspace is admitted to it, and which models either tier has switched off.
+Three answers in one read: the providers the organisation holds (one it does
+not hold is absent), whether this workspace is admitted to each, and which
+models either tier has switched off.
 The connections the workspace may use are listed underneath. ${TIER_NOTE}
 ${ORG_NOTE}`,
         action: workspaceProvidersList,
@@ -582,4 +616,17 @@ ${ORG_NOTE}`,
       },
     },
   },
+};
+
+/** `agent providers`: one leaf on the agent tree, kept beside the tiers it reads. */
+export const agentProvidersLeaf: Node = {
+  summary: "the providers, models and named connections this agent may be pointed at",
+  usage: `Usage: polyant-cli agent providers <slug>
+
+The workspace's view, read with agent:read alone: which providers the agent's
+workspace is admitted to, which models either tier has switched off, and the
+named connections lent to the workspace — the values \`agent update --provider\`,
+\`--model\` and \`--provider-connection\` can take without being refused. Names
+and providers only, never a credential. ${TIER_NOTE}`,
+  action: agentProviders,
 };

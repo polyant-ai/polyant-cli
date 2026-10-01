@@ -957,6 +957,29 @@ async function exportAgent(args: string[], context: CommandContext | undefined, 
   const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, { path: agentPath(slug, "/export") });
   writeRawResponse(deps.io, res.raw);
+  const { carried, keyOnly } = bundleSecrets(res.body);
+  if (carried.length > 0) {
+    deps.io.stderr(
+      `note: the bundle carries the values of ${carried.length} non-sensitive setting(s): ${carried.join(", ")}. ` +
+        `${keyOnly.length === 0 ? "" : `Credentials travel as names only (${keyOnly.join(", ")}). `}Treat the file accordingly.\n`,
+    );
+  }
+}
+
+/**
+ * Since 1.2.0 a bundle carries the VALUE of a key a tool or hook declares
+ * non-sensitive — a bucket name, an allowlist, a select choice — and `agent
+ * import` writes it. A credential still travels as its key alone and has to be
+ * set again on the target.
+ */
+function bundleSecrets(bundle: unknown): { carried: string[]; keyOnly: string[] } {
+  const secrets = (bundle as { instance?: { secrets?: unknown } } | null)?.instance?.secrets;
+  if (!Array.isArray(secrets)) return { carried: [], keyOnly: [] };
+  const rows = secrets as { key?: unknown; value?: unknown }[];
+  return {
+    carried: rows.filter((row) => typeof row.value === "string").map((row) => String(row.key)),
+    keyOnly: rows.filter((row) => typeof row.value !== "string").map((row) => String(row.key)),
+  };
 }
 
 async function importAgent(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -968,19 +991,25 @@ async function importAgent(args: string[], context: CommandContext | undefined, 
   assertKnown(options, { value: ["--file", "--confirm"] }, "agent import option");
   const file = requireFile(options, "import");
   const body = await readPayloadObject(deps, file);
+  const { carried, keyOnly } = bundleSecrets(body);
+  const secretLines = [
+    ...(carried.length === 0 ? [] : [`Write the settings the bundle carries values for: ${carried.join(", ")}.`]),
+    ...(keyOnly.length === 0 ? [] : [`Credentials to set afterwards, which travel as names only: ${keyOnly.join(", ")}.`]),
+  ];
 
   const scope = await scopeFor(deps, context);
   const plan =
     slug === undefined
       ? {
           title: "Import a new agent",
-          changes: [`Create an agent from ${file === "-" ? "stdin" : file} in the addressed workspace.`],
+          changes: [`Create an agent from ${file === "-" ? "stdin" : file} in the addressed workspace.`, ...secretLines],
         }
       : {
           title: `Overwrite ${slug} from a bundle`,
           changes: [
             `Replace ${slug}'s configuration with ${file === "-" ? "stdin" : file}.`,
             "Prompts, tools, channels and hooks are overwritten, not merged.",
+            ...secretLines,
           ],
           destructive: { confirm: slug },
         };
@@ -1012,6 +1041,7 @@ async function models(args: string[], context: CommandContext | undefined, deps:
         text(model.tier),
         text(model.costInput),
         text(model.costOutput),
+        cacheWriteCell(model),
         model.supportsThinking ? "yes" : "no",
         // Read from the engine's catalog, never inferred from the model id: the
         // catalog is what the runtime consults before it accepts an image.
@@ -1021,11 +1051,38 @@ async function models(args: string[], context: CommandContext | undefined, deps:
   }
   deps.io.stdout(
     `${renderTable({
-      headers: ["PROVIDER", "MODEL", "TIER", "IN /1M", "OUT /1M", "THINKING", "VISION"],
+      headers: ["PROVIDER", "MODEL", "TIER", "IN /1M", "OUT /1M", "CACHE WRITE /1M", "THINKING", "VISION"],
       rows,
       emptyMessage: provider === undefined ? "This deployment configures no providers." : `No provider named ${provider}.`,
     })}\n`,
   );
+
+  // Served beside the providers since 1.2.0, so a registered embedder is
+  // discoverable: an older engine sends none and the section is left out.
+  const embedders = (res.body as { embedders?: EmbedderRow[] } | null)?.embedders;
+  if (Array.isArray(embedders) && provider === undefined) {
+    deps.io.stdout(
+      `\n${renderTable({
+        headers: ["EMBEDDER", "DIMENSIONS"],
+        rows: embedders.map((embedder) => [text(embedder.id), (embedder.supportedDims ?? []).join(", ") || "-"]),
+        emptyMessage: "This deployment configures no embedders.",
+      })}\n`,
+    );
+  }
+}
+
+/**
+ * Anthropic's first-party models price a write by its cache TTL, so they carry
+ * a second rate for the five-minute writes; every other model has one.
+ */
+function cacheWriteCell(model: ModelRow): string {
+  const write = text(model.costCacheWrite);
+  return model.costCacheWrite5m === undefined ? write : `${write} (5m ${model.costCacheWrite5m})`;
+}
+
+interface EmbedderRow {
+  id: string;
+  supportedDims?: number[];
 }
 
 interface ModelRow {
@@ -1033,6 +1090,9 @@ interface ModelRow {
   tier: string | null;
   costInput: number;
   costOutput: number;
+  costCacheWrite?: number;
+  /** Only on models with two write tiers: the rate of the five-minute writes. */
+  costCacheWrite5m?: number;
   supportsThinking: boolean;
   /** Absent on an engine that predates the field; absent reads as no vision. */
   supportsVision?: boolean;
@@ -1323,7 +1383,12 @@ A snapshot freezes the agent's configuration as an immutable numbered version.`,
   },
   export: {
     summary: "print an agent's full configuration as a bundle",
-    usage: "Usage: polyant-cli agent export <slug>\n\nRound-trips into `agent import`.",
+    usage: `Usage: polyant-cli agent export <slug>
+
+Round-trips into \`agent import\`. Since engine 1.2.0 the bundle carries the
+values of the settings a tool or hook declares non-sensitive — a bucket name, an
+allowlist — and import writes them back. Credentials still travel as key names
+only; stderr names which keys carry a value.`,
     action: exportAgent,
   },
   import: {
@@ -1340,9 +1405,15 @@ replaced, not merged. Without one, a new agent lands in the addressed workspace.
     summary: "list the providers and models this deployment offers",
     usage: `Usage: polyant-cli agent models [--provider <name>]
 
-Costs are per million tokens, straight from the engine's catalog. VISION is what
-decides whether a channel may hand this model an image; a model without it drops
-attachments rather than failing the turn.`,
+Costs are per million tokens, straight from the engine's catalog. CACHE WRITE
+shows a second "5m" rate where the provider prices five-minute writes apart
+from the hour-long ones. VISION is what decides whether a channel may hand this
+model an image; a model without it drops attachments rather than failing the
+turn.
+
+Underneath, the embedders this deployment can use and the dimensions each can
+emit: \`agent update --set embeddingProvider=<id>\` is accepted only for one
+that can emit the agent's stored dimension.`,
     action: models,
   },
 };

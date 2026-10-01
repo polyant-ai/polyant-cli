@@ -8,6 +8,7 @@ import type { Command, CommandContext } from "../command.js";
 import { resolveScope } from "../runtime/scope.js";
 import type { GlobalOptions } from "../runtime/global-options.js";
 import { processOutput } from "../render/output.js";
+import { credentialKind, type CredentialKind } from "../runtime/credential.js";
 
 export const WHOAMI_USAGE = `Usage: polyant-cli whoami [options]
 
@@ -34,14 +35,7 @@ never answers — reporting an unreachable instance is its job, not a failure of
 its own. Read the "reachable" field. If you need a non-zero exit for a health
 gate, use "polyant-cli api GET /health" instead.`;
 
-/**
- * Which credential is on the header. One header carries both, and they are not
- * interchangeable: a personal token cannot read /api/service-context and a
- * management key cannot read /api/me, so a caller reading a 403 needs to know
- * which of the two it presented. `unknown` is honest about a key whose prefix
- * the CLI does not recognise rather than guessing at "management".
- */
-export type CredentialKind = "management-key" | "personal-token" | "unknown";
+export { credentialKind, type CredentialKind };
 
 export interface WhoamiReport {
   target: string;
@@ -120,15 +114,6 @@ async function loadAgents(target: ResolvedTarget): Promise<Partial<WhoamiReport>
 /** The route the CLI expects; named once so the report can point at it. */
 const SERVICE_CONTEXT_PATH = "/api/service-context";
 
-/**
- * The engine tells the two credentials apart by prefix on one header, so the CLI
- * can too — without a request, and before any route is chosen.
- */
-export function credentialKind(key: string): CredentialKind {
-  if (key.startsWith("pat_")) return "personal-token";
-  if (key.startsWith("pk_")) return "management-key";
-  return "unknown";
-}
 
 /**
  * Who a personal access token acts as. Only asked when the key is one: with a

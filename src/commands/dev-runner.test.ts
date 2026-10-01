@@ -41,6 +41,16 @@ describe("the dev runner source", () => {
     expect(DEV_RUNNER_SOURCE).not.toContain("/dev-mode/socket");
   });
 
+  // An SDK below 1.8 has no hook loader. Degrading to tools-only is right; doing
+  // it in silence is not, because the operator then sees hooks that never run
+  // and no reason anywhere.
+  it("says so when an older SDK drops the project's hooks", () => {
+    expect(DEV_RUNNER_SOURCE).toContain("if (!dev.loadHooksFromPaths && hookPaths.length > 0)");
+    expect(DEV_RUNNER_SOURCE).toMatch(/predates 1\.8 and cannot load hooks/);
+    // On stderr: stdout is the marked event channel the parent parses.
+    expect(DEV_RUNNER_SOURCE).toMatch(/process\.stderr\.write\(\s*\n?\s*"note: this project's @polyant-ai\/plugin-sdk/);
+  });
+
   it("marks every event line, so a tool's own output cannot pass for one", () => {
     expect(DEV_RUNNER_SOURCE).toContain(`const MARKER = ${JSON.stringify(DEV_EVENT_MARKER)}`);
     expect(DEV_RUNNER_SOURCE).toContain("MARKER + JSON.stringify(event)");
@@ -53,6 +63,25 @@ describe("the dev runner source", () => {
     expect(DEV_RUNNER_SOURCE).toContain("process.exitCode = exitCode");
     // process.exit would discard the event lines still buffered in the pipe.
     expect(DEV_RUNNER_SOURCE).not.toContain("process.exit(");
+  });
+
+  // An SDK older than 1.8 has no hook loader. The runner degrades to tools
+  // only instead of dying on an undefined function, because a project pinned to
+  // an older SDK is a normal state, not a broken one.
+  it("degrades to tools only against an SDK with no hook support", () => {
+    expect(DEV_RUNNER_SOURCE).toContain("dev.loadHooksFromPaths ?");
+    expect(DEV_RUNNER_SOURCE).toContain("handle.updateHooks");
+  });
+
+  // A project may be all hooks and no tools: neither alone is the floor.
+  it("refuses to start only when there is neither a tool nor a hook", () => {
+    expect(DEV_RUNNER_SOURCE).toContain("tools.length === 0 && hooks.length === 0");
+  });
+
+  // Tools and hooks default to the same directory, so watching the list as
+  // given would fire every reload twice.
+  it("de-duplicates the watched paths", () => {
+    expect(DEV_RUNNER_SOURCE).toContain("new Set(paths.concat(hookPaths))");
   });
 
   it("is valid JavaScript", () => {

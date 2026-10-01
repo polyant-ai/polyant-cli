@@ -201,14 +201,27 @@ describe("org providers and connections", () => {
     expect(h.err.join("")).toContain("does not fall back");
   });
 
-  it("refuses to admit a workspace to a provider the organisation does not hold", async () => {
+  it("refuses to admit a workspace to a provider absent from the organisation's tier", async () => {
     const h = harness([
-      response({ providers: [{ provider: "bedrock", grantedToOrg: false, admitted: false }], disabledModels: { organization: [], workspace: [] }, connections: [] }),
+      response({ providers: [{ provider: "openai", admitted: false }], disabledModels: { organization: [], workspace: [] }, connections: [] }),
     ]);
 
     await expect(
       leaf(h.commands, ["workspace", "providers", "admit"])(["general", "bedrock"], context({ yes: true })),
-    ).rejects.toThrow(/is not admitted to bedrock/);
+    ).rejects.toThrow(/is not admitted to "bedrock".*Admitted: openai/s);
+    expect(h.calls.filter((c) => c.method !== undefined && c.method !== "GET")).toEqual([]);
+  });
+
+  it("admits a workspace to a provider the organisation holds, without a grant flag to read", async () => {
+    // The 1.2.0 shape: every row is a provider the organisation holds.
+    const h = harness([
+      response({ providers: [{ provider: "openai", admitted: false }], disabledModels: { organization: [], workspace: [] }, connections: [] }),
+      response({ ok: true }),
+    ]);
+
+    await leaf(h.commands, ["workspace", "providers", "admit"])(["general", "openai"], context({ yes: true }));
+
+    expect(h.calls[1]).toMatchObject({ method: "PUT", body: { provider: "openai", admitted: true } });
   });
 
   it("switches one model off for a workspace", async () => {

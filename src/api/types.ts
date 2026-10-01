@@ -133,6 +133,8 @@ export interface ToolEntry {
 
 export interface ToolsResponse {
   tools: ToolEntry[];
+  /** Engine 1.2.0: the plugins behind the served tools, keyed by tool namespace. */
+  plugins?: { namespace: string; name: string; version: string }[];
 }
 
 /**
