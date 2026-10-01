@@ -173,7 +173,9 @@ command:
   `messageTypingDelayMs`, `messageMaxRestarts` — are actually persisted. The
   engine still IGNORES a field it does not treat as writable, answering `200`
   with a fresh `updatedAt`, so `agent update` checks the instance it gets back
-  against what it asked for and fails on a field that did not land.
+  and exits `1` on a field that still carries its old value. A value the engine
+  normalised counts as written, and `confirmWipe` is not checked because the
+  engine acts on it without storing it.
 - An organisation's provider credentials became named **connections**, and the
   migration carried each existing secret over as one called "Predefinita", lent
   to every workspace. `org secrets` still works and still describes the old

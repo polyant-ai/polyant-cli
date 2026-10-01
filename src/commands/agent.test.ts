@@ -298,9 +298,27 @@ describe("agent update", () => {
   it("fails when the engine answers 200 and did not write the field", async () => {
     const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
 
-    await expect(
-      leaf(h.command, ["update"])(["acme", "--set", "datetimeTimezone=Europe/Rome"], context({ yes: true })),
-    ).rejects.toThrow(/did not write datetimeTimezone/);
+    const failure = leaf(h.command, ["update"])(["acme", "--set", "datetimeTimezone=Europe/Rome"], context({ yes: true }));
+
+    // Exit 1: the request went through, the check on its answer did not.
+    await expect(failure).rejects.toThrow(/left datetimeTimezone as it was/);
+    await expect(failure).rejects.toMatchObject({ code: ExitCode.Difference });
+  });
+
+  // The engine trims and deduplicates keywords and never stores confirmWipe, so
+  // the answer differs from the request on writes that did happen.
+  it("accepts a value the engine normalised and a parameter it does not store", async () => {
+    const h = harness([
+      response({ instance: { ...AGENT, optoutStopKeywords: ["STOP"], embeddingProvider: "openai" } }),
+      response({ instance: { ...AGENT, optoutStopKeywords: ["basta"], embeddingProvider: "bedrock" } }),
+    ]);
+
+    await leaf(h.command, ["update"])(
+      ["acme", "--set", 'optoutStopKeywords=[" basta ","BASTA"]', "--set", "embeddingProvider=bedrock", "--set", "confirmWipe=true"],
+      context({ yes: true }),
+    );
+
+    expect(h.out.join("")).toContain("Updated agent acme.");
   });
 
   it("refuses --set on a field the engine only reports", async () => {

@@ -15,7 +15,7 @@ import type {
   ToolsResponse,
 } from "../api/types.js";
 import type { Command, CommandContext } from "../command.js";
-import { ConfigError, RemoteError } from "../exit.js";
+import { CliError, ConfigError, ExitCode, RemoteError } from "../exit.js";
 import { writeCompositeJson, writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
@@ -189,20 +189,38 @@ function parseSetFlags(options: readonly string[]): Record<string, unknown> {
 }
 
 /**
+ * Request parameters the route acts on and never stores, so the instance it
+ * answers with cannot echo them: `confirmWipe` authorises an embedder switch.
+ */
+const OPERATION_PARAMETERS = new Set(["confirmWipe"]);
+
+/** Loose on purpose: the engine turns a numeric string into a number. */
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b) || String(a) === String(b);
+}
+
+/**
  * The engine copies a PATCH body through its own list of writable keys and
  * ignores anything else — silently, with a 200 and a fresh `updatedAt`. So the
  * write is verified against the instance the route ANSWERS with rather than
  * trusted: an ignored field would otherwise be reported here as a change that
  * happened.
+ *
+ * A field counts as ignored only when the answer still carries the value it had
+ * BEFORE and the request asked for a different one. Comparing with the request
+ * alone misread every value the engine normalises — keywords trimmed and
+ * deduplicated, a temperature clamped, a field mapping rewritten — as a write
+ * that did not happen.
  */
-function unwrittenFields(requested: Record<string, unknown>, after: Record<string, unknown> | undefined): string[] {
+function unwrittenFields(
+  requested: Record<string, unknown>,
+  before: Record<string, unknown>,
+  after: Record<string, unknown> | undefined,
+): string[] {
   if (after === undefined) return [];
   return Object.keys(requested).filter((field) => {
-    // Compared loosely: the engine normalises some values (a numeric string to a
-    // number), and a strict comparison would report those as failures.
-    const wanted = requested[field];
-    const got = after[field];
-    return JSON.stringify(wanted) !== JSON.stringify(got) && String(wanted) !== String(got);
+    if (OPERATION_PARAMETERS.has(field)) return false;
+    return !sameValue(requested[field], before[field]) && sameValue(before[field], after[field]);
   });
 }
 
@@ -273,12 +291,16 @@ async function update(args: string[], context: CommandContext | undefined, deps:
 
   const res = await call(deps, scope, { method: "PATCH", path: `/api/instances/${encodeURIComponent(slug)}`, body });
   const after = (res.body as Partial<AgentDetailResponse> | null)?.instance as unknown as Record<string, unknown> | undefined;
-  const ignored = unwrittenFields(body, after);
+  const ignored = unwrittenFields(body, current as unknown as Record<string, unknown>, after);
   if (ignored.length > 0) {
-    throw new ConfigError(
-      `The engine accepted the request and did not write ${ignored.join(", ")}. ` +
-        "A field it does not treat as writable is ignored with a 200 and a fresh updatedAt, so this is a mistyped " +
-        "name or an engine older than the field — not a value that was rejected.",
+    // Exit 1, not 2: the request went through and the rest of it was written,
+    // so this is a check that failed rather than a call to correct and repeat.
+    throw new CliError(
+      `The engine accepted the request and left ${ignored.join(", ")} as ${ignored.length === 1 ? "it was" : "they were"}; ` +
+        "any other field in it was written. A field it does not treat as writable is ignored with a 200 and a fresh " +
+        "updatedAt, so this is a mistyped name, an engine older than the field, or a value the engine normalised " +
+        "back to the stored one — not a value that was rejected.",
+      ExitCode.Difference,
     );
   }
   reportWrite(deps, context, res, `Updated agent ${slug}.`);
@@ -1150,8 +1172,11 @@ of the HTTP channel's mapping. Use \`agent providers <slug>\` to see which
 --provider, --model and --provider-connection values the agent may take.
 
 The engine IGNORES a field it does not treat as writable — with a 200 and a fresh
-updatedAt — so the response is checked against what was asked and a field that
-did not land fails here instead of reporting a change that never happened.
+updatedAt — so the response is checked: a field it asked to change and that comes
+back with its old value exits 1, since the rest of the request was written. A
+value the engine normalised (keywords trimmed, a temperature clamped) counts as
+written. confirmWipe=true authorises an embedder switch that would delete the
+agent's memories and knowledge, and is not checked, because nothing stores it.
 
 --provider-connection points the agent at one of the organisation's named
 credentials (\`org connections list\`), and is required once the organisation has
