@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type { WorkspaceSummary, WorkspacesResponse } from "../api/types.js";
 import type { CommandContext } from "../command.js";
-import { ConfigError } from "../exit.js";
+import { ConfigError, RemoteError } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
@@ -74,11 +74,23 @@ function reportEmbedder(deps: ServiceDependencies, body: LibraryBody): void {
   );
 }
 
+/**
+ * Slugs for display only. The workspace listing needs `workspace:write` while
+ * the library needs `org.knowledge:read`, so a reader allowed the second is
+ * refused the first; the table then keeps the ids rather than failing a read
+ * the caller is entitled to.
+ */
 async function workspaceSlugsById(deps: ServiceDependencies, scope: ResolvedScope, org: string): Promise<Map<string, string>> {
   const path = orgPath(org, "/workspaces");
-  const res = await call(deps, scope, { path });
-  const workspaces = expectArray<WorkspaceSummary>((res.body as Partial<WorkspacesResponse> | null)?.workspaces, `GET ${path}`);
-  return new Map(workspaces.map((workspace) => [workspace.id, workspace.slug]));
+  try {
+    const res = await call(deps, scope, { path });
+    const workspaces = expectArray<WorkspaceSummary>((res.body as Partial<WorkspacesResponse> | null)?.workspaces, `GET ${path}`);
+    return new Map(workspaces.map((workspace) => [workspace.id, workspace.slug]));
+  } catch (error) {
+    if (!(error instanceof RemoteError && error.status === 403)) throw error;
+    deps.io.stderr("note: listing workspaces needs workspace:write, which this key lacks; WORKSPACES shows their ids.\n");
+    return new Map();
+  }
 }
 
 async function orgKnowledgeList(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -336,7 +348,7 @@ async function sharedKnowledgeShow(args: string[], context: CommandContext | und
           ? "-"
           : body.embedderCredentialReady
             ? "ready"
-            : "MISSING — the query cannot be embedded, so no shared document is retrieved",
+            : "MISSING — the vector search over shared documents fails, so they are found by full-text alone",
     },
     // The agent's own embedder indexes its own knowledge only; shared documents
     // are searched with the organisation's.

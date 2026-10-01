@@ -630,28 +630,54 @@ function secretsPath(slug: string, key?: string): string {
  * there only once it is set, so checking against it alone refused exactly the
  * per-agent storage settings 1.2.0 asks to configure.
  */
-async function secretsOf(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<SecretsResponse["secrets"]> {
+interface DeclaredSecrets {
+  secrets: SecretsResponse["secrets"];
+  /**
+   * The tools route answered 403: it needs `tool:read`, which a key scoped to
+   * secrets alone does not hold. The listing then lacks tool keys not yet
+   * stored, and whoever reads a refusal built on it has to be told why.
+   */
+  toolKeysUnreadable: boolean;
+}
+
+async function storedSecrets(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<SecretsResponse["secrets"]> {
   const res = await call(deps, scope, { path: secretsPath(slug) });
-  const listed = expectArray<SecretsResponse["secrets"][number]>(
+  return expectArray<SecretsResponse["secrets"][number]>(
     (res.body as Partial<SecretsResponse> | null)?.secrets,
     `GET ${secretsPath(slug)}`,
   );
-  const known = new Set(listed.map((secret) => secret.key));
-  const declared = await toolDeclaredSecrets(deps, scope, slug);
-  return [...listed, ...declared.filter((key) => !known.has(key)).map((key) => ({ key, configured: false }))];
 }
 
-/** The keys the agent's enabled tools declare; an engine without the route declares none. */
-async function toolDeclaredSecrets(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<string[]> {
+async function secretsOf(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<DeclaredSecrets> {
+  const listed = await storedSecrets(deps, scope, slug);
+  const known = new Set(listed.map((secret) => secret.key));
+  const declared = await toolDeclaredSecrets(deps, scope, slug);
+  if (declared === undefined) return { secrets: listed, toolKeysUnreadable: true };
+  return {
+    secrets: [...listed, ...declared.filter((key) => !known.has(key)).map((key) => ({ key, configured: false }))],
+    toolKeysUnreadable: false,
+  };
+}
+
+/**
+ * The keys the agent's enabled tools declare. An engine without the route
+ * declares none; a key without `tool:read` gets `undefined`, because the
+ * enrichment must not cost a secrets-only key the secrets it may manage.
+ */
+async function toolDeclaredSecrets(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<string[] | undefined> {
   try {
     const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}/tools/required-secrets` });
     const specs = (res.body as { requiredSecrets?: { key?: unknown }[] } | null)?.requiredSecrets;
     return Array.isArray(specs) ? specs.map((spec) => spec.key).filter((key): key is string => typeof key === "string") : [];
   } catch (error) {
     if (error instanceof RemoteError && error.status === 404) return [];
+    if (error instanceof RemoteError && error.status === 403) return undefined;
     throw error;
   }
 }
+
+const TOOL_KEYS_UNREADABLE =
+  "The keys this agent's tools declare need tool:read, which this key lacks, so a tool key that was never stored is not listed.";
 
 async function secretsShow(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "secrets show");
@@ -662,7 +688,8 @@ async function secretsShow(args: string[], context: CommandContext | undefined, 
     return writeRawResponse(deps.io, res.raw);
   }
 
-  const all = await secretsOf(deps, scope, slug);
+  const { secrets: all, toolKeysUnreadable } = await secretsOf(deps, scope, slug);
+  if (toolKeysUnreadable) deps.io.stderr(`note: ${TOOL_KEYS_UNREADABLE}\n`);
   const secrets = args.includes("--configured-only") ? all.filter((secret) => secret.configured) : all;
   // Presence only. The engine never serves the value, and this command must never
   // become the place where one is printed.
@@ -681,13 +708,14 @@ function requireKey(options: readonly string[], action: string): string {
   return key;
 }
 
-function assertDeclared(secrets: readonly SecretsResponse["secrets"][number][], key: string, slug: string): SecretsResponse["secrets"][number] {
+function assertDeclared({ secrets, toolKeysUnreadable }: DeclaredSecrets, key: string, slug: string): SecretsResponse["secrets"][number] {
   const found = secrets.find((secret) => secret.key === key);
   if (found !== undefined) return found;
   // A typo would otherwise be accepted as a new key by the engine, so the real
   // credential would stay untouched while the command reported success.
   throw new ConfigError(
-    `Agent ${slug} declares no secret named ${JSON.stringify(key)}. Declared: ${secrets.map((secret) => secret.key).join(", ")}.`,
+    `Agent ${slug} declares no secret named ${JSON.stringify(key)}. Declared: ${secrets.map((secret) => secret.key).join(", ")}.` +
+      (toolKeysUnreadable ? ` ${TOOL_KEYS_UNREADABLE}` : ""),
   );
 }
 
@@ -728,9 +756,10 @@ async function secretsUnset(args: string[], context: CommandContext | undefined,
   const key = requireKey(options, "secrets unset");
 
   const scope = await scopeFor(deps, context);
-  const secrets = await secretsOf(deps, scope, slug);
-  const existing = assertDeclared(secrets, key, slug);
-  if (!existing.configured) {
+  // Stored keys only: removing one needs nothing the tools route would add, and
+  // `/secrets` lists every key that is stored.
+  const existing = (await storedSecrets(deps, scope, slug)).find((secret) => secret.key === key);
+  if (existing === undefined || !existing.configured) {
     // The engine answers 200 for a key it never held, so without this a mistyped
     // or already-removed key would report success while the real one stayed put.
     throw new ConfigError(`Secret ${key} is not configured on ${slug}; there is nothing to remove.`);

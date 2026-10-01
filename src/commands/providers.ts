@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type { CommandContext } from "../command.js";
-import { ConfigError } from "../exit.js";
+import { ConfigError, RemoteError } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
@@ -182,6 +182,22 @@ function assertCredentialShape(shapes: Record<string, CredentialShape> | undefin
   }
 }
 
+/**
+ * A check before a write that the write itself does not need. Create and update
+ * take `org.secret:write`; the reads behind these checks take `org.secret:read`,
+ * which a write-only key does not hold. Such a key gets `undefined` and a note,
+ * and the engine's own validation is what stands.
+ */
+async function readIfAllowed<T>(deps: ServiceDependencies, read: () => Promise<T>, skipped: string): Promise<T | undefined> {
+  try {
+    return await read();
+  } catch (error) {
+    if (!(error instanceof RemoteError && error.status === 403)) throw error;
+    deps.io.stderr(`note: this key lacks org.secret:read, so ${skipped}; the engine validates the write itself.\n`);
+    return undefined;
+  }
+}
+
 async function credentialShapes(deps: ServiceDependencies, scope: ResolvedScope, org: string): Promise<Record<string, CredentialShape> | undefined> {
   const res = await call(deps, scope, { path: orgPath(org, "/providers") });
   return (res.body as OrgProvidersBody | null)?.credentialShapes;
@@ -198,7 +214,8 @@ async function connectionsCreate(args: string[], context: CommandContext | undef
 
   const credentials = await readCredentials(deps, file);
   const { scope, org } = await readScope(deps, context);
-  assertCredentialShape(await credentialShapes(deps, scope, org), provider, credentials);
+  const shapes = await readIfAllowed(deps, () => credentialShapes(deps, scope, org), "the credential is not checked against its provider here");
+  assertCredentialShape(shapes, provider, credentials);
 
   const plan = {
     title: `Create provider connection ${name}`,
@@ -231,22 +248,31 @@ async function connectionsUpdate(args: string[], context: CommandContext | undef
   // connection's OWN provider, which the caller does not pass and the id does
   // not carry, and a wrong id then fails naming the organisation rather than as
   // a 404 on a uuid.
-  const listed = await call(deps, scope, { path: connectionsPath(org) });
-  const existing = expectArray<ConnectionRow>(
-    (listed.body as { connections?: unknown } | null)?.connections,
-    `GET ${connectionsPath(org)}`,
-  ).find((connection) => connection.id === id);
-  if (existing === undefined) throw new ConfigError(`Organisation ${org} has no provider connection ${JSON.stringify(id)}.`);
-  if (credentials !== undefined) assertCredentialShape(await credentialShapes(deps, scope, org), existing.provider, credentials);
+  const connections = await readIfAllowed(
+    deps,
+    async () => {
+      const listed = await call(deps, scope, { path: connectionsPath(org) });
+      return expectArray<ConnectionRow>((listed.body as { connections?: unknown } | null)?.connections, `GET ${connectionsPath(org)}`);
+    },
+    "the connection and its credential are not checked here",
+  );
+  const existing = connections?.find((connection) => connection.id === id);
+  if (connections !== undefined && existing === undefined) {
+    throw new ConfigError(`Organisation ${org} has no provider connection ${JSON.stringify(id)}.`);
+  }
+  if (existing !== undefined && credentials !== undefined) {
+    assertCredentialShape(await credentialShapes(deps, scope, org), existing.provider, credentials);
+  }
+  const label = existing?.name ?? id;
 
   const plan = {
-    title: `Update provider connection ${existing.name}`,
+    title: `Update provider connection ${label}`,
     changes: [
       ...(name === undefined ? [] : [`Rename it to ${JSON.stringify(name)}.`]),
       ...(credentials === undefined
         ? []
         : [
-            `Replace the ${existing.provider} credential with fields ${Object.keys(credentials).sort().join(", ")}.`,
+            `Replace the ${existing?.provider ?? "stored"} credential with fields ${Object.keys(credentials).sort().join(", ")}.`,
             "Every agent using this connection authenticates with the new value from its next turn.",
           ]),
     ],
@@ -258,7 +284,7 @@ async function connectionsUpdate(args: string[], context: CommandContext | undef
     path: connectionsPath(org, id),
     body: { ...(name === undefined ? {} : { name }), ...(credentials === undefined ? {} : { credentials }) },
   });
-  report(deps, context, res.raw, `Updated provider connection ${existing.name}.`);
+  report(deps, context, res.raw, `Updated provider connection ${label}.`);
 }
 
 async function connectionsDelete(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -271,10 +297,9 @@ async function connectionsDelete(args: string[], context: CommandContext | undef
     title: `Delete provider connection ${id}`,
     changes: [
       `Remove the credential from ${org} and from every workspace it was lent to.`,
-      // The engine STOPS such an agent rather than falling back to another key:
-      // a fallback would mean revoking a credential revoked nothing while the
-      // spend simply moved.
-      "An agent pointing at it stops on its next turn — it does not fall back to another credential.",
+      // The agents' reference to it is a RESTRICT foreign key: the engine
+      // answers 400 rather than leave an agent pointing at nothing.
+      "The engine refuses while an agent still selects it: point those agents at another connection first.",
     ],
     destructive: { confirm: id },
   };
@@ -542,9 +567,10 @@ with the new value from its next turn. ${ORG_NOTE}`,
         summary: "delete a named provider credential",
         usage: `Usage: polyant-cli org connections delete <connectionId> --yes --confirm <connectionId>
 
-An agent pointing at it STOPS rather than falling back to another credential —
-otherwise revoking a key would revoke nothing and the spend would move.
-${ORG_NOTE}`,
+The engine refuses the delete while any agent still selects the connection:
+point those agents at another one first. Create and update need only
+org.secret:write; without org.secret:read the CLI skips its own payload checks
+and says so. ${ORG_NOTE}`,
         action: connectionsDelete,
         mutates: true,
       },
