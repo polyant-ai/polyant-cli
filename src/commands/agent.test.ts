@@ -298,9 +298,27 @@ describe("agent update", () => {
   it("fails when the engine answers 200 and did not write the field", async () => {
     const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
 
-    await expect(
-      leaf(h.command, ["update"])(["acme", "--set", "datetimeTimezone=Europe/Rome"], context({ yes: true })),
-    ).rejects.toThrow(/did not write datetimeTimezone/);
+    const failure = leaf(h.command, ["update"])(["acme", "--set", "datetimeTimezone=Europe/Rome"], context({ yes: true }));
+
+    // Exit 1: the request went through, the check on its answer did not.
+    await expect(failure).rejects.toThrow(/left datetimeTimezone as it was/);
+    await expect(failure).rejects.toMatchObject({ code: ExitCode.Difference });
+  });
+
+  // The engine trims and deduplicates keywords and never stores confirmWipe, so
+  // the answer differs from the request on writes that did happen.
+  it("accepts a value the engine normalised and a parameter it does not store", async () => {
+    const h = harness([
+      response({ instance: { ...AGENT, optoutStopKeywords: ["STOP"], embeddingProvider: "openai" } }),
+      response({ instance: { ...AGENT, optoutStopKeywords: ["basta"], embeddingProvider: "bedrock" } }),
+    ]);
+
+    await leaf(h.command, ["update"])(
+      ["acme", "--set", 'optoutStopKeywords=[" basta ","BASTA"]', "--set", "embeddingProvider=bedrock", "--set", "confirmWipe=true"],
+      context({ yes: true }),
+    );
+
+    expect(h.out.join("")).toContain("Updated agent acme.");
   });
 
   it("refuses --set on a field the engine only reports", async () => {
@@ -699,6 +717,25 @@ describe("agent secrets", () => {
     expect(h.calls[2]).toMatchObject({ method: "PUT" });
   });
 
+  // The tools route needs tool:read; a key scoped to secrets must still manage
+  // the secrets it is allowed to, and be told why a tool key is missing.
+  it("still lists and sets secrets when the key may not read the agent's tools", async () => {
+    const forbidden = () => new RemoteError("Forbidden", ExitCode.Config, 403);
+    const show = harness([response(secrets), forbidden()]);
+    await leaf(show.command, ["secrets", "show"])(["acme"], context());
+    expect(show.out.join("")).toMatch(/openai_api_key\s+yes/);
+    expect(show.err.join("")).toContain("need tool:read");
+
+    const set = harness([response(secrets), forbidden(), response(secrets)], { readPayload: async () => "sk-x" });
+    await leaf(set.command, ["secrets", "set"])(["acme", "--key", "openai_api_key", "--file", "-"], context({ yes: true }));
+    expect(set.calls[2]).toMatchObject({ method: "PUT" });
+
+    const unknown = harness([response(secrets), forbidden()], { readPayload: async () => "true" });
+    await expect(
+      leaf(unknown.command, ["secrets", "set"])(["acme", "--key", "s3_use_task_role", "--file", "-"], context({ yes: true })),
+    ).rejects.toThrow(/declares no secret named "s3_use_task_role".*need tool:read/);
+  });
+
   // A typo would otherwise be accepted by the engine as a brand-new key, leaving
   // the real credential untouched while the command reported success.
   it("refuses a key the agent does not declare, naming the declared ones", async () => {
@@ -729,27 +766,27 @@ describe("agent secrets", () => {
 
   describe("unset", () => {
     it("requires --confirm with the key name", async () => {
-      const h = harness([response(secrets), response(required)]);
+      const h = harness([response(secrets)]);
 
       await expect(leaf(h.command, ["secrets", "unset"])(["acme", "--key", "openai_api_key"], context({ yes: true })))
         .rejects.toThrow(/--confirm openai_api_key is required/);
     });
 
     it("removes a configured secret once confirmed", async () => {
-      const h = harness([response(secrets), response(required), response({ deleted: true })]);
+      const h = harness([response(secrets), response({ deleted: true })]);
 
       await leaf(h.command, ["secrets", "unset"])(
         ["acme", "--key", "openai_api_key", "--confirm", "openai_api_key"],
         context({ yes: true }),
       );
 
-      expect(h.calls[2]).toMatchObject({ method: "DELETE", path: "/api/instances/acme/secrets/openai_api_key" });
+      expect(h.calls[1]).toMatchObject({ method: "DELETE", path: "/api/instances/acme/secrets/openai_api_key" });
       expect(h.out.join("")).toContain("Removed secret openai_api_key");
     });
 
     // The engine answers 200 for a key it never held, so the check has to be here.
     it("refuses a key that is not configured rather than reporting a success", async () => {
-      const h = harness([response(secrets), response(required)]);
+      const h = harness([response(secrets)]);
 
       await expect(
         leaf(h.command, ["secrets", "unset"])(
@@ -757,7 +794,7 @@ describe("agent secrets", () => {
           context({ yes: true }),
         ),
       ).rejects.toThrow(/not configured on acme; there is nothing to remove/);
-      expect(h.request).toHaveBeenCalledTimes(2);
+      expect(h.request).toHaveBeenCalledTimes(1);
     });
   });
 });

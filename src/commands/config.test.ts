@@ -1,6 +1,21 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { describe, expect, it, vi } from "vitest";
+import type { Command } from "../command.js";
+import { parseInvocation } from "../runtime/global-options.js";
 import { createConfigCommand, type ConfigCommandDependencies } from "./config.js";
+
+/**
+ * Runs argv the way the binary does, global parser first. `--url`, `--target`,
+ * `--org` and `--workspace` are lifted out of argv before a command sees it, so
+ * a test that hands them to the command directly passes where a user fails.
+ */
+async function invoke(command: Command, argv: string[]): Promise<void> {
+  const { path, args, global } = parseInvocation(["config", ...argv], { config: command });
+  let node: Command | undefined = command;
+  for (const segment of path.slice(1)) node = node?.children?.[segment];
+  if (node?.run === undefined) throw new Error(`No such action: ${path.join(" ")}`);
+  await node.run(args, { path, global });
+}
 
 function capture(overrides: Partial<ConfigCommandDependencies> = {}) {
   const stdout: string[] = [];
@@ -37,10 +52,7 @@ describe("config init", () => {
   it("shows the safe YAML diff and atomically writes complete non-secret flags without prompting", async () => {
     const { command, stderr, writeFile, rename, prompt } = capture();
 
-    await command.run?.(["init", "--url", "http://localhost:4000", "--key-env", "POLYANT_KEY_DEV"], {
-      path: ["config", "init"],
-      global: { target: "dev", json: false, yes: true, dryRun: false },
-    });
+    await invoke(command, ["init", "--url", "http://localhost:4000", "--key-env", "POLYANT_KEY_DEV", "--target", "dev", "--yes"]);
 
     expect(prompt).not.toHaveBeenCalled();
     expect(stderr.join("")).toContain("+++ /workspace/polyant.yaml");
@@ -64,10 +76,7 @@ describe("config init", () => {
     });
 
     await expect(
-      command.run?.(["init", "--url", "http://localhost:4000", "--key-env", "POLYANT_KEY_DEV"], {
-        path: ["config", "init"],
-        global: { target: "dev", json: false, yes: true, dryRun: false },
-      }),
+      invoke(command, ["init", "--url", "http://localhost:4000", "--key-env", "POLYANT_KEY_DEV", "--target", "dev", "--yes"]),
     ).rejects.toThrow(/already exists; pass --force/);
     expect(writeFile).not.toHaveBeenCalled();
   });
@@ -97,24 +106,21 @@ describe("config init", () => {
       temporaryName: () => "/workspace/.polyant.yaml.test.tmp",
     });
 
-    await command.run?.(["init", "--url", "http://localhost:4000", "--key-env", "POLYANT_KEY_DEV"], {
-      path: ["config", "init"],
-      global: { target: "dev", json: false, yes: true, dryRun: false },
-    });
+    await invoke(command, ["init", "--url", "http://localhost:4000", "--key-env", "POLYANT_KEY_DEV", "--target", "dev", "--yes"]);
 
     expect(events).toEqual(["diff-first"]);
   });
 });
 
 describe("config write reporting", () => {
-  const INIT = ["init", "--url", "http://localhost:4000", "--key-env", "POLYANT_KEY_DEV"];
+  const INIT = ["init", "--url", "http://localhost:4000", "--key-env", "POLYANT_KEY_DEV", "--target", "dev"];
 
   // Every other write in the CLI reports what it did. Silence after a confirmed
   // change cannot be told apart from a change that never happened.
   it("confirms the written path after a change is accepted", async () => {
     const { command, stdout, rename } = capture();
 
-    await command.run?.(INIT, { path: ["config", "init"], global: { target: "dev", json: false, yes: true, dryRun: false } });
+    await invoke(command, [...INIT, "--yes"]);
 
     expect(rename).toHaveBeenCalledTimes(1);
     expect(stdout.join("")).toContain("Wrote /workspace/polyant.yaml.");
@@ -123,7 +129,7 @@ describe("config write reporting", () => {
   it("stays silent about writing on a dry run", async () => {
     const { command, stdout, rename } = capture();
 
-    await command.run?.(INIT, { path: ["config", "init"], global: { target: "dev", json: false, yes: false, dryRun: true } });
+    await invoke(command, [...INIT, "--dry-run"]);
 
     expect(rename).not.toHaveBeenCalled();
     expect(stdout.join("")).not.toContain("Wrote");
@@ -225,10 +231,7 @@ describe("config target add", () => {
       },
     });
 
-    await command.run?.(["target", "add", "preview", "--url", "https://preview.example.polyant.ai", "--key-env", "POLYANT_KEY_PREVIEW"], {
-      path: ["config", "target", "add"],
-      global: { json: false, yes: true, dryRun: false },
-    });
+    await invoke(command, ["target", "add", "preview", "--url", "https://preview.example.polyant.ai", "--key-env", "POLYANT_KEY_PREVIEW", "--yes"]);
 
     expect(stderr.join("")).toContain("Add target preview");
     expect(writeFile).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("POLYANT_KEY_PREVIEW"), "utf8");
@@ -247,10 +250,7 @@ describe("config target edit", () => {
       },
     });
 
-    await command.run?.(["target", "edit", "dev", "--url", "https://dev.example.polyant.ai", "--prod"], {
-      path: ["config", "target", "edit"],
-      global: { json: false, yes: true, dryRun: false },
-    });
+    await invoke(command, ["target", "edit", "dev", "--url", "https://dev.example.polyant.ai", "--prod", "--yes"]);
 
     expect(stderr.join("")).toContain("Edit target dev");
     expect(writeFile).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("prod: true"), "utf8");

@@ -22,7 +22,9 @@ ENTERPRISE_DIR=${ENTERPRISE_DIR:-$AI_ROOT/polyant-engine}
 WORKDIR=${WORKDIR:-${TMPDIR:-/tmp}/polyant-cli-sync}
 PG_PORT=${PG_PORT:-55499}
 API_PORT=${API_PORT:-4499}
-PG_NAME=polyant-cli-sync-pg
+# Named after its port: two instances on different ports keep separate
+# containers, and two on the same port could not run side by side anyway.
+PG_NAME=polyant-cli-sync-pg-$PG_PORT
 if [ -z "${PLUGIN_DIRS+x}" ]; then
   PLUGIN_DIRS=$([ -d "$AI_ROOT/extra-plugins" ] && echo "$AI_ROOT/extra-plugins" || echo "")
 fi
@@ -33,6 +35,13 @@ ENGINE=$WORKDIR/engine
 echo "• engine worktree at $REV" >&2
 git -C "$ENTERPRISE_DIR" fetch -q origin
 SHA=$(git -C "$ENTERPRISE_DIR" rev-parse "$REV")
+# A worktree left by an earlier run is reused only at the revision asked for:
+# state.env records $SHA as what was tested, so running anything else would
+# make that record false. A stale one is rebuilt, dependencies included.
+if [ -d "$ENGINE" ] && [ "$(git -C "$ENGINE" rev-parse HEAD 2>/dev/null)" != "$SHA" ]; then
+  echo "• the existing worktree is not at $SHA; rebuilding it" >&2
+  git -C "$ENTERPRISE_DIR" worktree remove --force "$ENGINE"
+fi
 [ -d "$ENGINE" ] || git -C "$ENTERPRISE_DIR" worktree add -q --detach "$ENGINE" "$SHA"
 
 # Reuse the checkout's dependencies only when its lockfile is the target's;
@@ -45,6 +54,13 @@ if [ ! -e "$ENGINE/node_modules" ]; then
     echo "• npm ci (the checkout's lockfile differs from $REV)" >&2
     (cd "$ENGINE" && npm ci --silent)
   fi
+fi
+
+# Something already answering on the API port would pass the health check below
+# in place of the engine just built — an earlier run's engine, most often.
+if lsof -ti "tcp:$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "port $API_PORT is already in use; stop that process (ephemeral-down.sh, if it is ours) or set API_PORT" >&2
+  exit 2
 fi
 
 echo "• postgres on :$PG_PORT" >&2

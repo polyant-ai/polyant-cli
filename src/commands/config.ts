@@ -93,14 +93,16 @@ function onlyKnown(args: string[], permitted: readonly string[]): void {
 }
 
 async function init(args: string[], context: CommandContext | undefined, deps: ConfigCommandDependencies): Promise<void> {
-  onlyKnown(args, ["--url", "--key-env", "--prod", "--force"]);
+  onlyKnown(args, ["--key-env", "--prod", "--force"]);
   const existing = await readExisting(deps);
   if (existing !== undefined && !args.includes("--force")) {
     throw new ConfigError(`${deps.configPath} already exists; pass --force to replace it.`);
   }
 
   const target = (context?.global.target ?? (await deps.prompt("Target name [dev]: ")).trim()) || "dev";
-  const baseUrl = takeValue(args, "--url") ?? (await deps.prompt("Base URL: ")).trim();
+  // `--url` is a global flag: the parser lifts it out of argv before this
+  // command runs, so it is read from the context like `--target` above.
+  const baseUrl = context?.global.url ?? (await deps.prompt("Base URL: ")).trim();
   const keyEnv = takeValue(args, "--key-env") ?? (await deps.prompt("Management key environment variable name: ")).trim();
   if (baseUrl.length === 0) throw new ConfigError("--url needs a value.");
   if (keyEnv.length === 0) throw new ConfigError("--key-env needs a value.");
@@ -155,8 +157,8 @@ async function addTarget(args: string[], context: CommandContext | undefined, de
   const [name] = args;
   if (name === undefined || name.startsWith("--")) throw new ConfigError("config target add needs a target name.");
   const options = args.slice(1);
-  onlyKnown(options, ["--url", "--key-env", "--prod"]);
-  const url = takeValue(options, "--url");
+  onlyKnown(options, ["--key-env", "--prod"]);
+  const url = context?.global.url;
   const keyEnv = takeValue(options, "--key-env");
   if (url === undefined) throw new ConfigError("config target add needs --url <baseUrl>.");
   if (keyEnv === undefined) throw new ConfigError("config target add needs --key-env <ENV_VAR_NAME>.");
@@ -175,19 +177,19 @@ async function editTarget(args: string[], context: CommandContext | undefined, d
   const [name] = args;
   if (name === undefined || name.startsWith("--")) throw new ConfigError("config target edit needs a target name.");
   const options = args.slice(1);
-  onlyKnown(options, ["--url", "--key-env", "--prod", "--no-prod"]);
+  onlyKnown(options, ["--key-env", "--prod", "--no-prod"]);
   if (options.includes("--prod") && options.includes("--no-prod")) throw new ConfigError("Use only one of --prod or --no-prod.");
   const { text, config } = await requireConfig(deps);
   const target = config.targets[name];
   if (target === undefined) throw new ConfigError(`Unknown target ${JSON.stringify(name)}.`);
-  if (options.length === 0) throw new ConfigError("config target edit needs at least one change.");
+  if (options.length === 0 && context?.global.url === undefined) throw new ConfigError("config target edit needs at least one change.");
   const prod = options.includes("--prod") ? true : options.includes("--no-prod") ? false : target.prod === true;
   const next: WorkspaceConfig = {
     ...config,
     targets: {
       ...config.targets,
       [name]: {
-        baseUrl: takeValue(options, "--url") ?? target.baseUrl,
+        baseUrl: context?.global.url ?? target.baseUrl,
         keyEnv: takeValue(options, "--key-env") ?? target.keyEnv,
         ...(prod ? { prod: true } : {}),
       },
@@ -227,11 +229,12 @@ function requiredContextValue(value: string | undefined, flag: "--target" | "--o
 }
 
 function contextValues(options: string[], context: CommandContext | undefined): { target: string; org: string; workspace: string } {
-  onlyKnown(options, ["--target", "--org", "--workspace"]);
+  // All three are global flags, so they arrive through the context only.
+  onlyKnown(options, []);
   return {
-    target: requiredContextValue(takeValue(options, "--target") ?? context?.global.target, "--target"),
-    org: requiredContextValue(takeValue(options, "--org") ?? context?.global.org, "--org"),
-    workspace: requiredContextValue(takeValue(options, "--workspace") ?? context?.global.workspace, "--workspace"),
+    target: requiredContextValue(context?.global.target, "--target"),
+    org: requiredContextValue(context?.global.org, "--org"),
+    workspace: requiredContextValue(context?.global.workspace, "--workspace"),
   };
 }
 
@@ -251,16 +254,13 @@ async function addContext(args: string[], context: CommandContext | undefined, d
 }
 
 function optionalContextValues(options: string[], context: CommandContext | undefined): Partial<{ target: string; org: string; workspace: string }> {
-  onlyKnown(options, ["--target", "--org", "--workspace"]);
-  const localTarget = takeValue(options, "--target");
-  const localOrg = takeValue(options, "--org");
-  const localWorkspace = takeValue(options, "--workspace");
-  const values = {
-    ...(localTarget === undefined && context?.global.target === undefined ? {} : { target: requiredContextValue(localTarget ?? context?.global.target, "--target") }),
-    ...(localOrg === undefined && context?.global.org === undefined ? {} : { org: requiredContextValue(localOrg ?? context?.global.org, "--org") }),
-    ...(localWorkspace === undefined && context?.global.workspace === undefined ? {} : { workspace: requiredContextValue(localWorkspace ?? context?.global.workspace, "--workspace") }),
+  onlyKnown(options, []);
+  const { target, org, workspace } = context?.global ?? {};
+  return {
+    ...(target === undefined ? {} : { target: requiredContextValue(target, "--target") }),
+    ...(org === undefined ? {} : { org: requiredContextValue(org, "--org") }),
+    ...(workspace === undefined ? {} : { workspace: requiredContextValue(workspace, "--workspace") }),
   };
-  return values;
 }
 
 async function editContext(args: string[], context: CommandContext | undefined, deps: ConfigCommandDependencies): Promise<void> {

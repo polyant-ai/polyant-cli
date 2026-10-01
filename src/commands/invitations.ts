@@ -59,10 +59,13 @@ async function invitationsList(args: string[], context: CommandContext | undefin
 async function invitationsCreate(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   const email = requirePositional(args, "member invitations create", "email address");
   const options = args.slice(1);
-  assertKnown(options, { value: ["--role", "--workspace", "--workspace-role", "--confirm"] }, "member invitations create option");
+  assertKnown(options, { value: ["--role", "--workspace-role", "--confirm"] }, "member invitations create option");
   const roleKey = takeValue(options, "--role");
   if (roleKey === undefined) throw new ConfigError("polyant-cli member invitations create needs --role <key>.");
-  const workspace = takeValue(options, "--workspace");
+  // The global flag, read where the global parser leaves it. Only the flag: a
+  // selected context's workspace is where commands act, not where a new member
+  // should be bound, so it must not turn into a binding by default.
+  const workspace = context?.global.workspace;
   const workspaceRoleKey = takeValue(options, "--workspace-role");
   if (workspaceRoleKey !== undefined && workspace === undefined) {
     throw new ConfigError("--workspace-role needs --workspace <slug>: a workspace role has no meaning without the workspace it applies in.");

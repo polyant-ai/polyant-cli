@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
 import type { WorkspaceConfig } from "../config.js";
-import type { GlobalOptions } from "../runtime/global-options.js";
+import { parseInvocation, type GlobalOptions } from "../runtime/global-options.js";
 import type { ServiceDependencies } from "../runtime/service.js";
+import { ExitCode, RemoteError } from "../exit.js";
 import { createAdminCommands } from "./admin.js";
 
 /**
@@ -30,7 +31,7 @@ function response(body: unknown, status = 200): ApiResponse {
   return { status, raw: JSON.stringify(body), body };
 }
 
-function harness(responses: ApiResponse[], overrides: Partial<ServiceDependencies> = {}) {
+function harness(responses: (ApiResponse | Error)[], overrides: Partial<ServiceDependencies> = {}) {
   const out: string[] = [];
   const err: string[] = [];
   const calls: RequestOptions[] = [];
@@ -39,6 +40,7 @@ function harness(responses: ApiResponse[], overrides: Partial<ServiceDependencie
     calls.push(opts);
     const next = queue.shift();
     if (next === undefined) throw new Error(`Unexpected request: ${opts.method ?? "GET"} ${opts.path}`);
+    if (next instanceof Error) throw next;
     return next;
   });
   const commands = createAdminCommands({
@@ -57,6 +59,16 @@ function harness(responses: ApiResponse[], overrides: Partial<ServiceDependencie
 
 function context(global: Partial<GlobalOptions> = {}): CommandContext {
   return { path: ["org"], global: { json: false, yes: false, dryRun: false, org: "acme", ...global } };
+}
+
+/**
+ * Runs argv the way the binary does, global parser first, for the flags the
+ * parser owns: handed to a command directly, `--workspace` reaches it in a test
+ * and never in use.
+ */
+async function invoke(commands: Record<string, Command>, argv: string[]): Promise<void> {
+  const { path, args, global } = parseInvocation(argv, commands);
+  await leaf(commands, path)(args, { path, global: { ...global, org: global.org ?? "acme" } });
 }
 
 function leaf(commands: Record<string, Command>, path: string[]) {
@@ -132,7 +144,7 @@ describe("org audit", () => {
   it("reads the authorization trail from its own route, with its own filters", async () => {
     const h = harness([response({ logs: [], total: 0 })]);
 
-    await leaf(h.commands, ["org", "audit", "authz"])(["--workspace", "general"], context());
+    await invoke(h.commands, ["org", "audit", "authz", "--workspace", "general"]);
 
     expect(h.calls[0]).toMatchObject({ path: "/api/organizations/acme/authz-audit-logs", query: { workspace: "general" } });
   });
@@ -193,12 +205,26 @@ describe("org providers and connections", () => {
     expect(`${h.out.join("")}${h.err.join("")}`).not.toContain("sk-secret-value");
   });
 
-  it("says a deleted connection stops the agents on it rather than moving them", async () => {
+  it("says the engine refuses to delete a connection an agent still selects", async () => {
     const h = harness([response({ deleted: true })]);
 
     await leaf(h.commands, ["org", "connections", "delete"])(["c-1", "--confirm", "c-1"], context({ yes: true }));
 
-    expect(h.err.join("")).toContain("does not fall back");
+    expect(h.err.join("")).toContain("refuses while an agent still selects it");
+  });
+
+  // Create and update take org.secret:write; the checks before them read with
+  // org.secret:read. A write-only key must still be able to write.
+  it("creates and updates with a key that may write connections but not read them", async () => {
+    const forbidden = () => new RemoteError("Forbidden", ExitCode.Config, 403);
+    const created = harness([forbidden(), response({ id: "c-2" })], { readPayload: async () => JSON.stringify({ api_key: "sk-1" }) });
+    await leaf(created.commands, ["org", "connections", "create"])(["Nuova", "--provider", "openai", "--file", "-"], context({ yes: true }));
+    expect(created.calls[1]).toMatchObject({ method: "POST", path: "/api/organizations/acme/provider-connections" });
+    expect(created.err.join("")).toContain("lacks org.secret:read");
+
+    const updated = harness([forbidden(), response({ id: "c-1", name: "Predefinita" })], { readPayload: async () => JSON.stringify({ api_key: "sk-2" }) });
+    await leaf(updated.commands, ["org", "connections", "update"])(["c-1", "--file", "-"], context({ yes: true }));
+    expect(updated.calls[1]).toMatchObject({ method: "PATCH", path: "/api/organizations/acme/provider-connections/c-1", body: { credentials: { api_key: "sk-2" } } });
   });
 
   it("refuses to admit a workspace to a provider absent from the organisation's tier", async () => {
@@ -286,6 +312,16 @@ describe("shared knowledge libraries", () => {
     expect(h.err.join("")).toContain("embedder: openai (1536 dimensions)");
   });
 
+  // Listing workspaces needs workspace:write; reading the library does not.
+  it("keeps the workspace ids when the key may read the library but not list workspaces", async () => {
+    const h = harness([response(LIBRARY), new RemoteError("Forbidden", ExitCode.Config, 403)]);
+
+    await leaf(h.commands, ["org", "knowledge", "list"])([], context());
+
+    expect(h.out.join("")).toMatch(/handbook\.pdf.*ws-2/);
+    expect(h.err.join("")).toContain("needs workspace:write");
+  });
+
   it("uploads as multipart, which is the only shape the route parses", async () => {
     const h = harness([response({ document: { id: "d-2" } })], { readBytes: async () => new Uint8Array([1, 2, 3]) });
 
@@ -336,10 +372,7 @@ describe("member invitations", () => {
   it("resolves the workspace slug to the id the route takes", async () => {
     const h = harness([response(WORKSPACES), response({ id: "i-1", email: "ada@example.com", token: "inv_abc", emailSent: true, expiresAt: null })]);
 
-    await leaf(h.commands, ["member", "invitations", "create"])(
-      ["ada@example.com", "--role", "member", "--workspace", "sales", "--workspace-role", "viewer"],
-      context({ yes: true }),
-    );
+    await invoke(h.commands, ["member", "invitations", "create", "ada@example.com", "--role", "member", "--workspace", "sales", "--workspace-role", "viewer", "--yes"]);
 
     expect(h.calls[1]).toMatchObject({
       method: "POST",
