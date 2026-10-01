@@ -99,6 +99,8 @@ describe("agent budget set", () => {
     expect(recap).toContain("Stop a conversation once it has cost $2.00.");
     expect(recap).toContain("a cap it does not name is removed");
     expect(recap).toContain("Soft caps");
+    expect(recap).toContain("custom stop message: 14 characters from budget.json");
+    expect(recap).not.toContain("Limit reached.");
   });
 
   it("says an empty policy removes every cap", async () => {

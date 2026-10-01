@@ -153,9 +153,11 @@ async function budgetSet(args: string[], context: CommandContext | undefined, de
           // Committed counters, reconciled before each admission: a call in
           // flight finishes, so the cap holds for what comes after, not exactly.
           "Soft caps: calls already in flight finish, and a cap blocks later calls once accounting catches up.",
+          // Length and source, never the text: AGENTS.md holds every payload
+          // recap to that, and `budget show` is where the stored wording is read.
           body.stopMessage === undefined || body.stopMessage === ""
             ? "Once a cap is reached the agent answers with the default stop message."
-            : `Once a cap is reached the agent answers: ${JSON.stringify(body.stopMessage)}.`,
+            : `Once a cap is reached the agent answers with a custom stop message: ${body.stopMessage.length} characters from ${file === "-" ? "stdin" : file}.`,
         ],
   };
   if (!(await preflight(deps, scope, context, options, plan))) return;
