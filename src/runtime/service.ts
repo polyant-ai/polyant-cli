@@ -99,12 +99,22 @@ export async function call(deps: ServiceDependencies, scope: ResolvedScope, opts
 }
 
 /**
+ * The 403s a wrong workspace can produce: the engine's own workspace refusals,
+ * a missing permission, and the bare guard answer. Any other 403 states its own
+ * cause (dev mode not enabled, a role ceiling), and naming the workspace there
+ * sends the operator after the wrong thing.
+ */
+const WORKSPACE_SHAPED_REFUSAL =
+  /^(Forbidden resource|HTTP 403|Unknown workspace slug|Workspace not accessible|No accessible workspace|Organization not accessible|Missing permission\b)/;
+
+/**
  * The engine answers an unknown or foreign workspace with a bare 403 — the same
  * answer it gives for a missing permission. Without the distinction an operator
  * cannot tell a wrong id from a wrong key, so the hint names where to look.
  */
 function explainWorkspaceRefusal(error: unknown, scope: ResolvedScope): unknown {
   if (!(error instanceof RemoteError) || error.status !== 403 || scope.workspace === undefined) return error;
+  if (!WORKSPACE_SHAPED_REFUSAL.test(error.message)) return error;
   return new RemoteError(
     `${error.message} — workspace ${JSON.stringify(scope.workspace)} was sent as x-workspace-slug. ` +
       `Run "polyant-cli whoami" to list the workspaces this key may address.`,
