@@ -518,10 +518,12 @@ The value comes only from a file or stdin, and **is never printed** — not in t
 recap, which reports its length and where it came from, and not on stdout. There
 is no `--value` flag: an inline secret lands in shell history and in `ps`.
 
-Both writes refuse a key the agent does not declare, naming the ones it does, and
-`unset` additionally refuses a key that is not configured. The engine answers
+`set` refuses a key the agent does not declare, naming the ones it does, and
+`unset` refuses a key that is not configured, a typo included. The engine answers
 `200` either way, so without those checks a typo would report success while the
-real credential stayed in place.
+real credential stayed in place. The keys an agent's tools declare come from a
+route that needs `tool:read`; a key without it still manages the stored secrets,
+and the CLI says on stderr that a tool key never stored is not listed.
 
 Channel and hook configuration is accepted only from a named file or stdin
 (`--file -`), never from an inline flag where a secret would land in shell
@@ -898,10 +900,11 @@ the tenant that paid for it instead of waiting for someone to enable each model.
 workspaces, so whoever builds an agent picks one by name with `agent update
 --provider-connection` and never sees the key. Credentials are read from a file or
 stdin, never a flag, and are checked against the shape the engine reports for that
-provider before anything is sent. Deleting a connection, or revoking it from a
-workspace, **stops** the agents on it rather than falling back to another
+provider before anything is sent. Revoking a connection from a workspace
+**stops** the agents there that use it rather than falling back to another
 credential — a fallback would mean revoking a key revoked nothing while the spend
-moved. `org providers managed-only --on` is the switch that makes a named
+moved. Deleting one is refused while any agent still selects it, so point those
+agents elsewhere first. `org providers managed-only --on` is the switch that makes a named
 connection compulsory; turn it on after the connections exist and the workspaces
 have them, because an agent carrying its own key stops on its next turn.
 
