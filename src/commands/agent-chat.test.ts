@@ -53,6 +53,7 @@ function harness(pairs: [string, unknown][] = TURN, overrides: Partial<ServiceDe
       input: { isTTY: false, readLine: async () => "" },
     },
     readPayload: async () => "from a file",
+    readBytes: async () => new Uint8Array(),
     ...overrides,
   };
   return { deps, out, err, calls };

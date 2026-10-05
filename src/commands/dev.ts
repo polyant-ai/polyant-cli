@@ -165,7 +165,7 @@ async function tokenIssue(args: string[], context: CommandContext | undefined, d
   const plan = {
     title: `Issue a dev token for ${slug}`,
     changes: [
-      `Mint a token valid for ${ttl === undefined ? "the engine's default TTL" : `${ttl} hour(s)`}, stored as a hash.`,
+      `Mint a token valid for ${ttl === undefined ? "the installation's default TTL" : `${ttl} hour(s)`}, stored as a hash.`,
       "Invalidate every dev token previously issued for this agent.",
       "Close the live dev session, if one is connected with an older token.",
       "Print the token once, on stdout: it is not recoverable afterwards.",
@@ -303,7 +303,10 @@ function leaves(deps: DevCommandDependencies): Record<string, Node> {
 
 The token is printed on stdout and exists in that one response only — the engine
 stores a hash. Issuing invalidates every previous token for the agent and closes
-a session connected with one.`,
+a session connected with one. Without --ttl-hours the engine applies the
+installation policy a platform admin sets (engine 1.2.0), not an environment
+variable. A token issued through a personal token ends when that token is
+revoked.`,
         action: (args, context) => tokenIssue(args, context, deps),
         mutates: true,
       },

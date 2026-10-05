@@ -25,6 +25,14 @@ export interface ServiceDependencies {
    * a command-line flag where it would land in shell history and `ps` output.
    */
   readPayload(source: string): Promise<string>;
+  /**
+   * The same file as bytes, for the two upload routes that take multipart
+   * rather than JSON. Separate from `readPayload` because a library document is
+   * a PDF or a DOCX as often as it is text, and decoding those as UTF-8 to
+   * re-encode them would corrupt the upload silently. There is no "-" here: a
+   * multipart part needs a filename, and stdin has none.
+   */
+  readBytes(source: string): Promise<Uint8Array>;
 }
 
 export const processServiceDependencies: ServiceDependencies = {
@@ -34,6 +42,7 @@ export const processServiceDependencies: ServiceDependencies = {
   env: process.env,
   io: processConfirmationIO,
   readPayload: (source) => (source === "-" ? readStdin() : readFile(source, "utf8")),
+  readBytes: async (source) => new Uint8Array(await readFile(source)),
 };
 
 /**
@@ -47,9 +56,10 @@ export const processServiceDependencies: ServiceDependencies = {
  * write still refuses to proceed without an explicit selection: landing a change
  * in a workspace the operator did not choose is the failure worth preventing.
  */
-export type ScopeMode = "read" | "write";
+export type ScopeMode = "target" | "read" | "write";
 
 const REQUIRED: Record<ScopeMode, readonly ScopeRequirement[]> = {
+  target: ["target"],
   read: ["target"],
   write: ["workspace"],
 };
@@ -89,12 +99,22 @@ export async function call(deps: ServiceDependencies, scope: ResolvedScope, opts
 }
 
 /**
+ * The 403s a wrong workspace can produce: the engine's own workspace refusals,
+ * a missing permission, and the bare guard answer. Any other 403 states its own
+ * cause (dev mode not enabled, a role ceiling), and naming the workspace there
+ * sends the operator after the wrong thing.
+ */
+const WORKSPACE_SHAPED_REFUSAL =
+  /^(Forbidden resource|HTTP 403|Unknown workspace slug|Workspace not accessible|No accessible workspace|Organization not accessible|Missing permission\b)/;
+
+/**
  * The engine answers an unknown or foreign workspace with a bare 403 — the same
  * answer it gives for a missing permission. Without the distinction an operator
  * cannot tell a wrong id from a wrong key, so the hint names where to look.
  */
 function explainWorkspaceRefusal(error: unknown, scope: ResolvedScope): unknown {
   if (!(error instanceof RemoteError) || error.status !== 403 || scope.workspace === undefined) return error;
+  if (!WORKSPACE_SHAPED_REFUSAL.test(error.message)) return error;
   return new RemoteError(
     `${error.message} — workspace ${JSON.stringify(scope.workspace)} was sent as x-workspace-slug. ` +
       `Run "polyant-cli whoami" to list the workspaces this key may address.`,

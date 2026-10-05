@@ -64,6 +64,9 @@ export function renderHelp(): string {
     "",
     ...renderChildren({ summary: "root", usage: "", children: COMMANDS }, "Commands:"),
     "",
+    "The selected target serves interactive API docs at /api/docs and raw OpenAPI at /api/openapi.json;",
+    "some request body schemas are not yet published, so use the route documentation or engine source for those payloads.",
+    "",
     "Run `polyant-cli <command> --help` for a command's usage.",
   ];
   return lines.join("\n");
@@ -153,7 +156,7 @@ export function renderCatalogue(): string {
         { flag: "--workspace", value: "slug", summary: "workspace to act in; sent as x-workspace-slug" },
         { flag: "--json", value: null, summary: "machine-readable output; response bodies pass through unchanged" },
         { flag: "--yes", value: null, summary: "accept a mutation recap without prompting" },
-        { flag: "--dry-run", value: null, summary: "print the recap and send nothing" },
+        { flag: "--dry-run", value: null, summary: "print the recap and send no writes; accurate recaps may read current state" },
       ],
       exitCodes: [
         { code: ExitCode.Ok, meaning: "success" },

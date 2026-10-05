@@ -85,22 +85,56 @@ const AGENTS = {
   ],
 };
 
+const SCHEDULER = { status: "ok", scheduler: { running: true, maxConcurrent: 3, inFlight: 1, freeSlots: 2, stuckRunning: 0 } };
+
 describe("monitor status", () => {
   it("reports reachability and every agent's state", async () => {
-    const h = harness([response({ status: "ok", service: "polyant" }), response(AGENTS)]);
+    const h = harness([response({ status: "ok", service: "polyant" }), response(SCHEDULER), response(AGENTS)]);
 
     await action(h.monitor, "status")([], context());
 
-    expect(h.calls.map((c) => c.path)).toEqual(["/health", "/api/instances"]);
-    expect(h.calls[1].workspaceSlug).toBe("ws-1");
+    expect(h.calls.map((c) => c.path)).toEqual(["/health", "/health/scheduler", "/api/instances"]);
+    expect(h.calls[2].workspaceSlug).toBe("ws-1");
     const text = h.out.join("");
     expect(text).toContain("health:");
     expect(text).toContain("ok (polyant)");
     expect(text).toContain("acme");
+    expect(text).toContain("running (1/3 slots in use, 0 stuck)");
+  });
+
+  // /health keeps answering ok while no scheduled task runs; that is what the probe is for.
+  it("fails with the difference code when the scheduler loop has stopped", async () => {
+    const stopped = { status: "ok", scheduler: { running: false, maxConcurrent: 3, inFlight: 0, freeSlots: 3, stuckRunning: 0 } };
+    const h = harness([response({ status: "ok", service: "polyant" }), response(stopped), response(AGENTS)]);
+
+    await expect(action(h.monitor, "status")([], context())).rejects.toMatchObject({ code: ExitCode.Difference });
+    expect(h.out.join("")).toContain("STOPPED");
+  });
+
+  it("warns about stuck runs and a full pool without failing on one reading", async () => {
+    const busy = { status: "ok", scheduler: { running: true, maxConcurrent: 3, inFlight: 3, freeSlots: 0, stuckRunning: 2 } };
+    const h = harness([response({ status: "ok", service: "polyant" }), response(busy), response(AGENTS)]);
+
+    await action(h.monitor, "status")([], context());
+
+    expect(h.err.join("")).toContain("2 scheduled run(s) have been running past the default deadline");
+    expect(h.err.join("")).toContain("no free slot");
+  });
+
+  it("reports an engine that does not serve the scheduler probe, and does not fail on it", async () => {
+    const h = harness([
+      response({ status: "ok", service: "polyant" }),
+      new RemoteError("Cannot GET /health/scheduler", ExitCode.Config, 404),
+      response(AGENTS),
+    ]);
+
+    await action(h.monitor, "status")([], context());
+
+    expect(h.out.join("")).toContain("not served by this engine (older than 1.2.0)");
   });
 
   it("warns on stderr about an agent whose runtime routes need no token", async () => {
-    const h = harness([response({ status: "ok", service: "polyant" }), response(AGENTS)]);
+    const h = harness([response({ status: "ok", service: "polyant" }), response(SCHEDULER), response(AGENTS)]);
 
     await action(h.monitor, "status")([], context());
 
@@ -111,6 +145,7 @@ describe("monitor status", () => {
   it("labels an unavailable probe with its source error instead of a zero", async () => {
     const h = harness([
       new RemoteError("GET /health failed: connect ECONNREFUSED", ExitCode.Remote),
+      new RemoteError("GET /health/scheduler failed: connect ECONNREFUSED", ExitCode.Remote),
       new RemoteError("Forbidden resource", ExitCode.Config, 403),
     ]);
 
@@ -125,25 +160,31 @@ describe("monitor status", () => {
   // Exiting 0 with a 403 in the output would make a CI health gate read a broken
   // permission as a healthy empty workspace.
   it("prints the whole report and then fails with the probe's own exit code", async () => {
-    const h = harness([response({ status: "ok", service: "polyant" }), new RemoteError("Invalid management API key", ExitCode.Config, 401)]);
+    const h = harness([
+      response({ status: "ok", service: "polyant" }),
+      response(SCHEDULER),
+      new RemoteError("Invalid management API key", ExitCode.Config, 401),
+    ]);
 
     const failure = action(h.monitor, "status")([], context());
     await expect(failure).rejects.toMatchObject({ code: ExitCode.Config, status: 401 });
     expect(h.out.join("")).toContain("ok (polyant)");
   });
 
-  it("emits both probe bodies unchanged as a composite object", async () => {
+  it("emits every probe body unchanged as a composite object", async () => {
     const health = { status: "ok", service: "polyant" };
-    const h = harness([response(health), response(AGENTS)]);
+    const h = harness([response(health), response(SCHEDULER), response(AGENTS)]);
 
     await action(h.monitor, "status")([], context({ json: true }));
 
-    expect(h.out.join("")).toBe(`{"health":${JSON.stringify(health)},"instances":${JSON.stringify(AGENTS)}}\n`);
+    expect(h.out.join("")).toBe(
+      `{"health":${JSON.stringify(health)},"scheduler":${JSON.stringify(SCHEDULER)},"instances":${JSON.stringify(AGENTS)}}\n`,
+    );
   });
 
   it("still emits the composite JSON before failing on a degraded probe", async () => {
     const health = { status: "ok", service: "polyant" };
-    const h = harness([response(health), new RemoteError("Forbidden resource", ExitCode.Config, 403)]);
+    const h = harness([response(health), response(SCHEDULER), new RemoteError("Forbidden resource", ExitCode.Config, 403)]);
 
     await expect(action(h.monitor, "status")([], context({ json: true }))).rejects.toThrow(/Forbidden resource/);
     // A bare 403 cannot be told from a missing permission, so the workspace that
@@ -536,7 +577,7 @@ describe("monitor scope", () => {
     const out: string[] = [];
     const err: string[] = [];
     const calls: RequestOptions[] = [];
-    const queue = [response({ status: "ok", service: "polyant" }), response(AGENTS)];
+    const queue = [response({ status: "ok", service: "polyant" }), response(SCHEDULER), response(AGENTS)];
     const monitor = createMonitorCommand({
       request: async (_target, opts) => {
         calls.push(opts);

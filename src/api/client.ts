@@ -37,6 +37,14 @@ export interface RequestOptions {
    * in exactly as it would on the way out.
    */
   rawBody?: string;
+  /**
+   * A multipart body, for the two routes that take a file rather than JSON —
+   * the knowledge libraries, whose uploads are parsed by Nest's
+   * `FileInterceptor`. `fetch` writes the boundary itself, so `Content-Type`
+   * must NOT be set for these: setting it produces a header whose boundary does
+   * not match the body, and the engine answers "no file received".
+   */
+  formData?: FormData;
   /** Request deadline. `0` disables it, which only a long-lived stream needs. */
   timeoutMs?: number;
   /** Runtime routes take a per-instance key as a Bearer token instead of the management key. */
@@ -108,7 +116,8 @@ function buildUrl(target: ResolvedTarget, opts: RequestOptions): URL {
   return url;
 }
 
-function bodyInit(opts: RequestOptions): { body?: string } {
+function bodyInit(opts: RequestOptions): { body?: string | FormData } {
+  if (opts.formData !== undefined) return { body: opts.formData };
   if (opts.rawBody !== undefined) return { body: opts.rawBody };
   return opts.body === undefined ? {} : { body: JSON.stringify(opts.body) };
 }

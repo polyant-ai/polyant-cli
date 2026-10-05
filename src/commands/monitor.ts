@@ -10,7 +10,7 @@ import type {
   TraceListResponse,
 } from "../api/types.js";
 import type { Command, CommandContext } from "../command.js";
-import { ConfigError } from "../exit.js";
+import { CliError, ConfigError, ExitCode, RemoteError } from "../exit.js";
 import { writeCompositeJson, writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
@@ -52,15 +52,60 @@ async function probe(deps: ServiceDependencies, scope: ResolvedScope, path: stri
   }
 }
 
+interface SchedulerHealth {
+  running?: boolean;
+  maxConcurrent?: number;
+  inFlight?: number;
+  freeSlots?: number;
+  stuckRunning?: number;
+}
+
+/**
+ * The scheduled-task loop fails by going silent: `/health` keeps answering ok
+ * while no task runs. `/health/scheduler` (engine 1.2.0) reports it in counts.
+ * An engine that predates it answers 404, which is "not served", not a failure.
+ */
+function schedulerOf(probe: Probe): { line: string; scheduler: SchedulerHealth | undefined; notServed: boolean } {
+  const notServed = probe.cause instanceof RemoteError && probe.cause.status === 404;
+  if (probe.error !== undefined) {
+    return { line: notServed ? "not served by this engine (older than 1.2.0)" : `unavailable — ${probe.error}`, scheduler: undefined, notServed };
+  }
+  const scheduler = (probe.body as { scheduler?: SchedulerHealth } | null)?.scheduler;
+  if (scheduler === undefined) return { line: "unreadable", scheduler, notServed };
+  const counts = `${text(scheduler.inFlight)}/${text(scheduler.maxConcurrent)} slots in use, ${text(scheduler.stuckRunning)} stuck`;
+  return { line: `${scheduler.running === false ? "STOPPED" : "running"} (${counts})`, scheduler, notServed };
+}
+
+/**
+ * A stopped loop fails the gate. A stuck run or a full pool is reported but does
+ * not: one scrape cannot tell a wedge from a busy minute, which is exactly the
+ * difference the engine says needs consecutive readings.
+ */
+function failIfSchedulerDown(deps: ServiceDependencies, scheduler: SchedulerHealth | undefined): void {
+  if (scheduler === undefined) return;
+  if ((scheduler.stuckRunning ?? 0) > 0) {
+    deps.io.stderr(`warning: ${scheduler.stuckRunning} scheduled run(s) have been running past the default deadline.\n`);
+  }
+  if (scheduler.freeSlots === 0) {
+    deps.io.stderr("warning: the scheduler has no free slot — a lasting zero means no agent's tasks can start.\n");
+  }
+  if (scheduler.running === false) throw new CliError("The scheduler loop is not running: no scheduled task will start.", ExitCode.Difference);
+}
+
 async function status(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   assertKnown(args, {}, "monitor status option");
   const scope = await scopeFor(deps, context, "read");
   const health = await probe(deps, scope, "/health");
+  const schedulerProbe = await probe(deps, scope, "/health/scheduler");
   const agents = await probe(deps, scope, "/api/instances");
+  const scheduler = schedulerOf(schedulerProbe);
+  // A 404 is an older engine, not a failed probe.
+  const probes = scheduler.notServed ? [health, agents] : [health, schedulerProbe, agents];
 
   if (wantsJson(context)) {
-    writeCompositeJson(deps.io, { health: health.raw, instances: agents.raw });
-    return failIfDegraded(health, agents);
+    writeCompositeJson(deps.io, { health: health.raw, scheduler: schedulerProbe.raw, instances: agents.raw });
+    failIfDegraded(...probes);
+    return failIfSchedulerDown(deps, scheduler.scheduler);
   }
 
   const service = (health.body as HealthResponse | null)?.service;
@@ -72,11 +117,12 @@ async function status(args: string[], context: CommandContext | undefined, deps:
       label: "health",
       value: health.error === undefined ? `ok (${text(service)})` : `unavailable — ${health.error}`,
     },
+    { label: "scheduler", value: scheduler.line },
   ]);
 
   if (agents.error !== undefined) {
     deps.io.stdout(`\nagents: unavailable — ${agents.error}\n`);
-    return failIfDegraded(health, agents);
+    return failIfDegraded(...probes);
   }
   const instances = expectArray<AgentDetail>((agents.body as Partial<ListAgentsResponse> | null)?.instances, "GET /api/instances");
   deps.io.stdout(
@@ -99,7 +145,8 @@ async function status(args: string[], context: CommandContext | undefined, deps:
   for (const open of instances.filter((agent) => !agent.authEnabled)) {
     deps.io.stderr(`warning: agent "${open.slug}" has authEnabled=false — its runtime routes are open to anyone.\n`);
   }
-  failIfDegraded(health, agents);
+  failIfDegraded(...probes);
+  failIfSchedulerDown(deps, scheduler.scheduler);
 }
 
 /**
@@ -140,7 +187,7 @@ function eventQuery(options: readonly string[], forcedInstance: string | undefin
   };
 }
 
-function renderFeedEvent(event: FeedEvent): string {
+export function renderFeedEvent(event: FeedEvent): string {
   const parts = [
     text(event.ts),
     text(event.instance?.slug),
@@ -398,7 +445,14 @@ export function createMonitorCommand(overrides: Partial<ServiceDependencies> = {
       children: {
         status: {
           summary: "report reachability and every agent's current state",
-          usage: "Usage: polyant-cli monitor status",
+          usage: `Usage: polyant-cli monitor status
+
+Reachability, the scheduler loop and every agent's state, then an exit code a
+gate can use: non-zero when a probe fails, and 1 when the scheduler loop has
+stopped — /health keeps answering ok while no scheduled task runs. Stuck runs
+and a full pool are warnings: one reading cannot tell a wedge from a busy
+minute. An engine older than 1.2.0 does not serve the scheduler probe, which is
+reported and does not fail.`,
           run: (args, context) => status(args, context, deps),
         },
         events: {

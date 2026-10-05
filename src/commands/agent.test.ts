@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import { describe, expect, it, vi } from "vitest";
-import type { ApiResponse, RequestOptions } from "../api/client.js";
+import type { ApiResponse, RequestOptions, StreamEvent, StreamResponse } from "../api/client.js";
 import type { CommandContext } from "../command.js";
 import type { WorkspaceConfig } from "../config.js";
-import { ConfigError } from "../exit.js";
+import { ConfigError, ExitCode, RemoteError } from "../exit.js";
 import type { GlobalOptions } from "../runtime/global-options.js";
 import { createAgentCommand, type AgentCommandDependencies } from "./agent.js";
 
@@ -29,6 +29,8 @@ const AGENT = {
   status: "active",
   provider: "anthropic",
   model: "claude-sonnet-4",
+  effectiveProvider: "anthropic",
+  effectiveModel: "claude-sonnet-4",
   authEnabled: true,
   memoryEnabled: true,
   memoryScope: "agent",
@@ -51,7 +53,8 @@ interface Harness {
 }
 
 function harness(
-  responses: ApiResponse[],
+  // An Error in the queue is thrown, the way the client throws a non-2xx answer.
+  responses: (ApiResponse | Error)[],
   overrides: Partial<AgentCommandDependencies> & { answers?: string[]; isTTY?: boolean } = {},
 ): Harness {
   const out: string[] = [];
@@ -63,6 +66,7 @@ function harness(
     calls.push(opts);
     const next = queue.shift();
     if (next === undefined) throw new Error(`Unexpected request: ${opts.method ?? "GET"} ${opts.path}`);
+    if (next instanceof Error) throw next;
     return next;
   });
 
@@ -76,6 +80,7 @@ function harness(
       input: { isTTY: overrides.isTTY ?? false, readLine: async () => answers.shift() ?? "" },
     },
     ...(overrides.readPayload === undefined ? {} : { readPayload: overrides.readPayload }),
+    ...(overrides.requestStream === undefined ? {} : { requestStream: overrides.requestStream }),
   });
 
   return { command, request, out, err, calls };
@@ -155,14 +160,35 @@ describe("agent write scope", () => {
 });
 
 describe("agent show", () => {
-  it("labels the fields an operator acts on", async () => {
+  it("shows stored and effective model configuration independently", async () => {
     const h = harness([response({ instance: AGENT })]);
 
     await leaf(h.command, ["show"])(["acme"], context());
 
     expect(h.calls[0].path).toBe("/api/instances/acme");
-    expect(h.out.join("")).toContain("model:");
-    expect(h.out.join("")).toContain("claude-sonnet-4");
+    expect(h.out.join("")).toMatch(/provider \(stored\): +anthropic/);
+    expect(h.out.join("")).toMatch(/model \(stored\): +claude-sonnet-4/);
+    expect(h.out.join("")).toMatch(/provider \(effective\): +anthropic/);
+    expect(h.out.join("")).toMatch(/model \(effective\): +claude-sonnet-4/);
+  });
+
+  it("reveals fallback values when provider and model are not stored", async () => {
+    const h = harness([response({
+      instance: {
+        ...AGENT,
+        provider: null,
+        model: null,
+        effectiveProvider: "openai",
+        effectiveModel: "gpt-4o",
+      },
+    })]);
+
+    await leaf(h.command, ["show"])(["acme"], context());
+
+    expect(h.out.join("")).toMatch(/provider \(stored\): +-/);
+    expect(h.out.join("")).toMatch(/model \(stored\): +-/);
+    expect(h.out.join("")).toMatch(/provider \(effective\): +openai/);
+    expect(h.out.join("")).toMatch(/model \(effective\): +gpt-4o/);
   });
 
   // `instances.slug` is unique per deployment, so --workspace cannot change which
@@ -201,6 +227,8 @@ describe("agent create", () => {
 
     expect(h.err.join("")).toContain("Create agent acme");
     expect(h.err.join("")).toContain('Set model to "claude-sonnet-4"');
+    // Engine 1.2.0 defaults, said because both used to be on.
+    expect(h.err.join("")).toContain("Memory starts off and speech transcription disabled");
     expect(h.calls[0]).toMatchObject({
       method: "POST",
       path: "/api/instances",
@@ -245,13 +273,80 @@ describe("agent update", () => {
     expect(h.calls[1]).toMatchObject({ method: "PATCH", path: "/api/instances/acme", body: { model: "claude-opus-5", status: "active" } });
   });
 
+  // A flag per writable field would be a wall of options; a hand-written list of
+  // them would be the drift that let six settings reach the API unpersisted.
+  it("reaches a field with no flag of its own through --set, typing the value as JSON", async () => {
+    const h = harness([
+      response({ instance: AGENT }),
+      response({ instance: { ...AGENT, datetimeTimezone: "Europe/Rome", cacheEnabled: true, messageTypingDelayMs: 250 } }),
+    ]);
+
+    await leaf(h.command, ["update"])(
+      ["acme", "--set", "datetimeTimezone=Europe/Rome", "--set", "cacheEnabled=true", "--set", "messageTypingDelayMs=250"],
+      context({ yes: true }),
+    );
+
+    expect(h.calls[1]).toMatchObject({
+      method: "PATCH",
+      body: { datetimeTimezone: "Europe/Rome", cacheEnabled: true, messageTypingDelayMs: 250 },
+    });
+  });
+
+  // The engine copies a PATCH through its own list of writable keys and ignores
+  // the rest with a 200 — which is the bug that let a panel report a save that
+  // never happened. The CLI checks the answer instead of trusting the status.
+  it("fails when the engine answers 200 and did not write the field", async () => {
+    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+
+    const failure = leaf(h.command, ["update"])(["acme", "--set", "datetimeTimezone=Europe/Rome"], context({ yes: true }));
+
+    // Exit 1: the request went through, the check on its answer did not.
+    await expect(failure).rejects.toThrow(/left datetimeTimezone as it was/);
+    await expect(failure).rejects.toMatchObject({ code: ExitCode.Difference });
+  });
+
+  // The engine trims and deduplicates keywords and never stores confirmWipe, so
+  // the answer differs from the request on writes that did happen.
+  it("accepts a value the engine normalised and a parameter it does not store", async () => {
+    const h = harness([
+      response({ instance: { ...AGENT, optoutStopKeywords: ["STOP"], embeddingProvider: "openai" } }),
+      response({ instance: { ...AGENT, optoutStopKeywords: ["basta"], embeddingProvider: "bedrock" } }),
+    ]);
+
+    await leaf(h.command, ["update"])(
+      ["acme", "--set", 'optoutStopKeywords=[" basta ","BASTA"]', "--set", "embeddingProvider=bedrock", "--set", "confirmWipe=true"],
+      context({ yes: true }),
+    );
+
+    expect(h.out.join("")).toContain("Updated agent acme.");
+  });
+
+  it("refuses --set on a field the engine only reports", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["update"])(["acme", "--set", "createdAt=now"], context({ yes: true }))).rejects.toThrow(
+      /createdAt is reported by the engine but cannot be written/,
+    );
+  });
+
+  it("points an agent at a named provider connection", async () => {
+    const h = harness([response({ instance: AGENT }), response({ instance: { ...AGENT, providerConnectionId: "c-1" } })]);
+
+    await leaf(h.command, ["update"])(["acme", "--provider-connection", "c-1"], context({ yes: true }));
+
+    expect(h.calls[1]).toMatchObject({ method: "PATCH", body: { providerConnectionId: "c-1" } });
+  });
+
   it("refuses an update with no field to change", async () => {
     const h = harness([]);
     await expect(leaf(h.command, ["update"])(["acme"], context({ yes: true }))).rejects.toThrow(/at least one field/);
   });
 
   it("sets the speech-to-text provider, disabled included", async () => {
-    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+    // The PATCH answers with the instance AS WRITTEN — which is what `update`
+    // verifies its request against, so a fixture that echoed the old row would
+    // be describing an engine that silently ignored the field.
+    const h = harness([response({ instance: AGENT }), response({ instance: { ...AGENT, sttProvider: "disabled" } })]);
 
     await leaf(h.command, ["update"])(["acme", "--stt-provider", "disabled"], context({ yes: true }));
 
@@ -267,7 +362,7 @@ describe("agent update", () => {
   });
 
   it("narrows memory to one conversation, and names the previous scope in the recap", async () => {
-    const h = harness([response({ instance: AGENT }), response({ instance: AGENT })]);
+    const h = harness([response({ instance: AGENT }), response({ instance: { ...AGENT, memoryScope: "conversation" } })]);
 
     await leaf(h.command, ["update"])(["acme", "--memory-scope", "conversation"], context({ yes: true }));
 
@@ -357,6 +452,19 @@ describe("agent prompt", () => {
       path: "/api/instances/acme/prompts",
       body: { sections: [{ key: "identity", content: "You are the Acme agent." }] },
     });
+  });
+
+  it("reads current state but sends no PATCH on a dry run", async () => {
+    const h = harness([response(prompts)], { readPayload: async () => "New identity" });
+
+    await leaf(h.command, ["prompt", "set"])(
+      ["acme", "--section", "identity", "--file", "-"],
+      context({ dryRun: true }),
+    );
+
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]).toMatchObject({ path: "/api/instances/acme/prompts" });
+    expect(h.calls.some((call) => call.method === "PATCH")).toBe(false);
   });
 });
 
@@ -531,9 +639,16 @@ describe("agent secrets", () => {
       { key: "aws_provider_region", configured: false },
     ],
   };
+  // What the agent's enabled tools declare: listed by /secrets only once stored.
+  const required = {
+    requiredSecrets: [
+      { key: "s3_use_task_role", type: "select", sensitive: false },
+      { key: "openai_api_key", type: "text", sensitive: true },
+    ],
+  };
 
   it("reports presence only, never a value", async () => {
-    const h = harness([response(secrets)]);
+    const h = harness([response(secrets), response(required)]);
 
     await leaf(h.command, ["secrets", "show"])(["acme"], context());
 
@@ -542,10 +657,13 @@ describe("agent secrets", () => {
     expect(table).toMatch(/openai_api_key\s+yes/);
     expect(table).toMatch(/anthropic_api_key\s+no/);
     expect(table).toContain("CONFIGURED");
+    // A tool-declared key appears once, unconfigured; one /secrets already lists is not repeated.
+    expect(table).toMatch(/s3_use_task_role\s+no/);
+    expect(table.match(/openai_api_key/g)).toHaveLength(1);
   });
 
   it("filters to what is configured on request", async () => {
-    const h = harness([response(secrets)]);
+    const h = harness([response(secrets), response(required)]);
 
     await leaf(h.command, ["secrets", "show"])(["acme", "--configured-only"], context());
 
@@ -554,7 +672,7 @@ describe("agent secrets", () => {
   });
 
   it("takes the value from stdin and keeps it out of the recap", async () => {
-    const h = harness([response(secrets), response(secrets)], { readPayload: async () => "sk-super-secret-value\n" });
+    const h = harness([response(secrets), response(required), response(secrets)], { readPayload: async () => "sk-super-secret-value\n" });
 
     await leaf(h.command, ["secrets", "set"])(["acme", "--key", "openai_api_key", "--file", "-"], context({ yes: true }));
 
@@ -564,7 +682,7 @@ describe("agent secrets", () => {
     // The one thing this command must never do.
     expect(recap).not.toContain("sk-super-secret-value");
     expect(h.out.join("")).not.toContain("sk-super-secret-value");
-    expect(h.calls[1]).toMatchObject({
+    expect(h.calls[2]).toMatchObject({
       method: "PUT",
       path: "/api/instances/acme/secrets",
       body: { secrets: [{ key: "openai_api_key", value: "sk-super-secret-value" }] },
@@ -572,22 +690,61 @@ describe("agent secrets", () => {
   });
 
   it("says when a key is being set for the first time", async () => {
-    const h = harness([response(secrets), response(secrets)], { readPayload: async () => "eu-west-1" });
+    const h = harness([response(secrets), response(required), response(secrets)], { readPayload: async () => "eu-west-1" });
 
     await leaf(h.command, ["secrets", "set"])(["acme", "--key", "aws_provider_region", "--file", "-"], context({ yes: true }));
 
     expect(h.err.join("")).toContain("which is not configured yet");
   });
 
+  it("accepts a key an enabled tool declares before it was ever stored", async () => {
+    const h = harness([response(secrets), response(required), response(secrets)], { readPayload: async () => "true" });
+
+    await leaf(h.command, ["secrets", "set"])(["acme", "--key", "s3_use_task_role", "--file", "-"], context({ yes: true }));
+
+    expect(h.calls[1].path).toBe("/api/instances/acme/tools/required-secrets");
+    expect(h.calls[2]).toMatchObject({ method: "PUT", body: { secrets: [{ key: "s3_use_task_role", value: "true" }] } });
+  });
+
+  it("falls back to /secrets alone against an engine without the tools route", async () => {
+    const h = harness(
+      [response(secrets), new RemoteError("Not Found", ExitCode.Config, 404), response(secrets)],
+      { readPayload: async () => "eu-west-1" },
+    );
+
+    await leaf(h.command, ["secrets", "set"])(["acme", "--key", "aws_provider_region", "--file", "-"], context({ yes: true }));
+
+    expect(h.calls[2]).toMatchObject({ method: "PUT" });
+  });
+
+  // The tools route needs tool:read; a key scoped to secrets must still manage
+  // the secrets it is allowed to, and be told why a tool key is missing.
+  it("still lists and sets secrets when the key may not read the agent's tools", async () => {
+    const forbidden = () => new RemoteError("Forbidden", ExitCode.Config, 403);
+    const show = harness([response(secrets), forbidden()]);
+    await leaf(show.command, ["secrets", "show"])(["acme"], context());
+    expect(show.out.join("")).toMatch(/openai_api_key\s+yes/);
+    expect(show.err.join("")).toContain("need tool:read");
+
+    const set = harness([response(secrets), forbidden(), response(secrets)], { readPayload: async () => "sk-x" });
+    await leaf(set.command, ["secrets", "set"])(["acme", "--key", "openai_api_key", "--file", "-"], context({ yes: true }));
+    expect(set.calls[2]).toMatchObject({ method: "PUT" });
+
+    const unknown = harness([response(secrets), forbidden()], { readPayload: async () => "true" });
+    await expect(
+      leaf(unknown.command, ["secrets", "set"])(["acme", "--key", "s3_use_task_role", "--file", "-"], context({ yes: true })),
+    ).rejects.toThrow(/declares no secret named "s3_use_task_role".*need tool:read/);
+  });
+
   // A typo would otherwise be accepted by the engine as a brand-new key, leaving
   // the real credential untouched while the command reported success.
   it("refuses a key the agent does not declare, naming the declared ones", async () => {
-    const h = harness([response(secrets)], { readPayload: async () => "x" });
+    const h = harness([response(secrets), response(required)], { readPayload: async () => "x" });
 
     await expect(
       leaf(h.command, ["secrets", "set"])(["acme", "--key", "openai_api_kye", "--file", "-"], context({ yes: true })),
-    ).rejects.toThrow(/declares no secret named "openai_api_kye". Declared: openai_api_key, anthropic/);
-    expect(h.request).toHaveBeenCalledTimes(1);
+    ).rejects.toThrow(/declares no secret named "openai_api_kye". Declared: openai_api_key, anthropic.*s3_use_task_role/);
+    expect(h.request).toHaveBeenCalledTimes(2);
   });
 
   it("refuses an empty value instead of storing one", async () => {
@@ -861,5 +1018,93 @@ describe("agent messages", () => {
     await leaf(h.command, ["messages"])(["acme"], context({ json: true }));
 
     expect(h.out.join("")).toContain(tail);
+  });
+});
+
+describe("agent channels slack url", () => {
+  it("prints the Request URL alone, so it pastes cleanly", async () => {
+    const h = harness([response({ webhookUrl: "https://polyant.example/webhooks/slack/acme" })]);
+
+    await leaf(h.command, ["channels", "slack", "url"])(["acme"], context());
+
+    expect(h.calls[0].path).toBe("/api/instances/acme/channels/slack/webhook-url");
+    expect(h.out.join("")).toBe("https://polyant.example/webhooks/slack/acme\n");
+  });
+});
+
+describe("agent tools show, plugin tools", () => {
+  it("names the plugin behind a namespaced tool", async () => {
+    const h = harness([
+      response({
+        tools: [
+          { name: "readFile", description: null, category: "dev", enabled: true, source: null },
+          { name: "github:issue", description: null, category: "dev", enabled: false, source: null },
+        ],
+        notAssignedCount: 0,
+        plugins: [{ namespace: "github", name: "polyant-github", version: "1.0.0" }],
+      }),
+    ]);
+
+    await leaf(h.command, ["tools", "show"])(["acme"], context());
+
+    const table = h.out.join("");
+    expect(table).toMatch(/github:issue\s+no\s+dev\s+-\s+polyant-github@1\.0\.0/);
+    expect(table).toMatch(/readFile\s+yes\s+dev\s+-\s+-/);
+  });
+});
+
+async function* framesOf(frames: StreamEvent[]): AsyncGenerator<StreamEvent> {
+  for (const frame of frames) yield frame;
+}
+
+describe("agent conversations show --follow", () => {
+  const FRAMES: StreamEvent[] = [
+    { data: JSON.stringify({ ts: "2026-10-01T10:00:00Z", instance: { slug: "acme" }, category: "inbound", status: "success", text: "web: ciao" }) },
+    { event: "persisted", data: "{}" },
+    { data: JSON.stringify({ ts: "2026-10-01T10:00:02Z", instance: { slug: "acme" }, category: "outbound", text: "reply" }) },
+  ];
+  const streamOf = (calls: RequestOptions[]) =>
+    (async (_target: unknown, opts: RequestOptions): Promise<StreamResponse> => {
+      calls.push(opts);
+      return { status: 200, events: framesOf(FRAMES) };
+    }) as unknown as AgentCommandDependencies["requestStream"];
+
+  it("prints the transcript, then the live events up to --max", async () => {
+    const streamCalls: RequestOptions[] = [];
+    const h = harness([response({ conversation: { conversationId: "c-1" } }), response({ messages: [] })], {
+      requestStream: streamOf(streamCalls),
+    });
+
+    await leaf(h.command, ["conversations", "show"])(["acme", "c-1", "--follow", "--max", "2"], context());
+
+    // The route takes the agent SLUG in a parameter named instanceId.
+    expect(streamCalls[0]).toMatchObject({
+      path: "/api/activity-stream/conversation",
+      query: { conversationId: "c-1", instanceId: "acme" },
+    });
+    const text = h.out.join("");
+    expect(text).toContain("web: ciao");
+    expect(text).toContain("persisted  a message or hook run was stored");
+    expect(text).not.toContain("reply");
+  });
+
+  it("streams JSON Lines alone with --json, without the composite transcript", async () => {
+    const streamCalls: RequestOptions[] = [];
+    const h = harness([], { requestStream: streamOf(streamCalls) });
+
+    await leaf(h.command, ["conversations", "show"])(["acme", "c-1", "--follow", "--max", "2"], context({ json: true }));
+
+    expect(h.calls).toEqual([]);
+    const lines = h.out.join("").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[1])).toEqual({ event: "persisted" });
+  });
+
+  it("refuses --max without --follow", async () => {
+    const h = harness([]);
+
+    await expect(leaf(h.command, ["conversations", "show"])(["acme", "c-1", "--max", "2"], context())).rejects.toThrow(
+      /--max bounds --follow/,
+    );
   });
 });

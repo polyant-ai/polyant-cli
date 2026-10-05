@@ -15,6 +15,7 @@ import {
 } from "../runtime/org.js";
 import { call, expectArray, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
 import type { Node } from "../runtime/tree.js";
+import { refusePersonalToken } from "../runtime/credential.js";
 import type { ResolvedScope } from "../runtime/scope.js";
 
 // --- organisation-level provider credentials --------------------------------
@@ -129,11 +130,51 @@ async function orgSecretsUnset(args: string[], context: CommandContext | undefin
 
 // --- plugin grants ----------------------------------------------------------
 
+/**
+ * Every row is a plugin the organisation HOLDS. The engine used to list the
+ * whole installation with an `enabled` flag; since 1.2.0 an ungranted plugin is
+ * absent instead, so there is no grant column left to read.
+ */
 interface PluginRow {
   name: string;
   version: string;
-  compatible: boolean;
-  enabled: boolean;
+  /** Present on a plugin baked into the image, absent on a marketplace one. */
+  compatible?: boolean;
+  /** Present on a marketplace plugin, absent on a baked one. */
+  health?: string;
+  /** Workspace listing only, on a marketplace plugin: `health === "ready"`. */
+  available?: boolean;
+}
+
+type Availability = { runnable: true } | { runnable: false; reason: string } | { runnable: undefined };
+
+/**
+ * Whether the engine can run this row, read from whichever field the row
+ * carries. The two kinds of plugin answer differently: one baked into the image
+ * carries `compatible` (does this engine satisfy its range), one installed from
+ * the marketplace carries `health` (did its release download, verify and stay
+ * unrevoked) and no `compatible` at all. Reading only `compatible` made every
+ * marketplace plugin look incompatible. A row carrying neither is reported as
+ * unknown rather than guessed, so a field the engine adds later degrades to
+ * "unknown" instead of to a false "no".
+ */
+function availabilityOf(row: PluginRow): Availability {
+  if (row.compatible === false) return { runnable: false, reason: "incompatible" };
+  if (typeof row.health === "string") {
+    return row.health === "ready" ? { runnable: true } : { runnable: false, reason: row.health };
+  }
+  if (typeof row.available === "boolean") {
+    return row.available ? { runnable: true } : { runnable: false, reason: "unavailable" };
+  }
+  if (row.compatible === true) return { runnable: true };
+  return { runnable: undefined };
+}
+
+function availabilityCell(row: PluginRow): string {
+  const availability = availabilityOf(row);
+  if (availability.runnable === true) return "yes";
+  if (availability.runnable === false) return `no (${availability.reason})`;
+  return "unknown";
 }
 
 async function orgPlugins(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -146,12 +187,20 @@ async function orgPlugins(args: string[], context: CommandContext | undefined, d
   const plugins = expectArray<PluginRow>((res.body as { plugins?: unknown } | null)?.plugins, `GET ${path}`);
   deps.io.stdout(
     `${renderTable({
-      headers: ["NAME", "VERSION", "GRANTED", "COMPATIBLE"],
-      rows: plugins.map((p) => [text(p.name), text(p.version), p.enabled ? "yes" : "no", p.compatible ? "yes" : "no"]),
-      emptyMessage: "This deployment has no plugins installed.",
+      headers: ["NAME", "VERSION", "AVAILABLE"],
+      rows: plugins.map((p) => [text(p.name), text(p.version), availabilityCell(p)]),
+      emptyMessage: `Organisation ${org} holds no plugins.`,
     })}\n`,
   );
 }
+
+/**
+ * How an organisation comes to hold a plugin, which no management-key route
+ * does: an Organization Admin installs a marketplace plugin from the web
+ * console, and a Platform Admin grants a plugin baked into the image.
+ */
+const PLUGIN_HOLDING_NOTE =
+  "An Organization Admin installs a marketplace plugin from the web console; a plugin baked into the image is granted by a Platform Admin.";
 
 // --- workspace allow-lists: which skills and plugins a workspace may use ----
 
@@ -176,12 +225,8 @@ interface WorkspaceSkillRow {
   assigned: boolean;
 }
 
-interface WorkspacePluginRow {
-  name: string;
-  version: string;
-  compatible: boolean;
-  /** The ORGANISATION's grant. A plugin it does not hold cannot be assigned. */
-  grantedToOrg: boolean;
+/** Only the plugins the organisation holds: one it does not hold is absent. */
+interface WorkspacePluginRow extends PluginRow {
   assigned: boolean;
 }
 
@@ -308,15 +353,14 @@ async function workspacePluginsList(args: string[], context: CommandContext | un
   const plugins = args.includes("--assigned-only") ? all.filter((plugin) => plugin.assigned) : all;
   deps.io.stdout(
     `${renderTable({
-      headers: ["NAME", "VERSION", "GRANTED", "ASSIGNED", "COMPATIBLE"],
+      headers: ["NAME", "VERSION", "ASSIGNED", "AVAILABLE"],
       rows: plugins.map((plugin) => [
         text(plugin.name),
         text(plugin.version),
-        plugin.grantedToOrg ? "yes" : "no",
         plugin.assigned ? "yes" : "no",
-        plugin.compatible ? "yes" : "no",
+        availabilityCell(plugin),
       ]),
-      emptyMessage: "This deployment has no plugins installed.",
+      emptyMessage: `Organisation ${org} holds no plugins.`,
     })}\n`,
   );
 }
@@ -327,29 +371,30 @@ async function workspacePluginsAssign(args: string[], context: CommandContext | 
   assertKnown(options, { value: ["--confirm"] }, "workspace plugins assign option");
   const { scope, org } = await readScope(deps, context);
 
-  const installed = await assignablePlugins(deps, scope, org, workspace);
-  const plugin = installed.find((entry) => entry.name === name);
+  const held = await assignablePlugins(deps, scope, org, workspace);
+  const plugin = held.find((entry) => entry.name === name);
   if (plugin === undefined) {
+    // The listing stops at what the organisation holds, so "not installed" and
+    // "not granted" are the same absence here — deliberately: the engine does
+    // not tell a tenant what other tenants run. Either way the assignment would
+    // be a row that changes nothing, and holding it is decided elsewhere.
     throw new ConfigError(
-      `This deployment has no plugin ${JSON.stringify(name)}. ` +
-        `Installed: ${installed.map((entry) => entry.name).join(", ") || "(none)"}.`,
-    );
-  }
-  if (!plugin.grantedToOrg) {
-    // Visibility is the intersection of the organisation's grant and this
-    // assignment, so an assignment without the grant is a row that changes
-    // nothing. The grant is a platform-admin action a management key cannot make.
-    throw new ConfigError(
-      `Organisation ${org} does not hold plugin ${name}, so assigning it to ${workspace} would change nothing. ` +
-        "That grant is a platform-admin action, made from the web console.",
+      `Organisation ${org} holds no plugin ${JSON.stringify(name)}, so assigning it to ${workspace} would change nothing. ` +
+        `Held: ${held.map((entry) => entry.name).join(", ") || "(none)"}. ` +
+        PLUGIN_HOLDING_NOTE,
     );
   }
 
+  // Only a row that says it cannot run earns the warning: one that says nothing
+  // either way is left to the engine, which refuses an unavailable plugin itself.
+  const availability = availabilityOf(plugin);
   const changes = plugin.assigned
     ? [`Leave ${name} assigned to ${workspace}; it already is.`]
     : [
         `Let ${workspace} use plugin ${name} (${plugin.version}).`,
-        ...(plugin.compatible ? [] : ["This engine cannot run that plugin version: its tools and hooks stay absent."]),
+        ...(availability.runnable === false
+          ? [`The engine reports this plugin ${availability.reason}, so it will refuse the assignment until that changes.`]
+          : []),
         "Its tools and hooks appear to agents in that workspace. Elsewhere they stay undiscoverable.",
       ];
   if (!(await preflight(deps, scope, org, context, options, { title: `Assign plugin ${name} to ${workspace}`, changes }))) return;
@@ -364,10 +409,10 @@ async function workspacePluginsRevoke(args: string[], context: CommandContext | 
   assertKnown(options, { value: ["--confirm"] }, "workspace plugins revoke option");
   const { scope, org } = await readScope(deps, context);
 
-  const installed = await assignablePlugins(deps, scope, org, workspace);
-  const plugin = installed.find((entry) => entry.name === name);
+  const held = await assignablePlugins(deps, scope, org, workspace);
+  const plugin = held.find((entry) => entry.name === name);
   if (plugin === undefined) {
-    throw new ConfigError(`This deployment has no plugin ${JSON.stringify(name)}.`);
+    throw new ConfigError(`Organisation ${org} holds no plugin ${JSON.stringify(name)}.`);
   }
   if (!plugin.assigned) {
     throw new ConfigError(`Workspace ${workspace} is not assigned plugin ${name}; there is nothing to revoke.`);
@@ -471,6 +516,7 @@ async function apiKeyCreate(args: string[], context: CommandContext | undefined,
   const expiresAt = takeValue(options, "--expires-at");
 
   const { scope, org } = await readScope(deps, context);
+  refusePersonalToken(scope, "apikey create");
   await assertGrantable(deps, scope, org, permissions);
 
   const plan = {
@@ -513,6 +559,7 @@ async function apiKeyUpdate(args: string[], context: CommandContext | undefined,
   }
 
   const { scope, org } = await readScope(deps, context);
+  refusePersonalToken(scope, "apikey update");
   if (permissions.length > 0) await assertGrantable(deps, scope, org, permissions);
 
   const changes = [
@@ -699,14 +746,20 @@ from a file or stdin, never a flag, and is never printed. ${ORG_NOTE}`,
       },
     },
     plugins: {
-      summary: "list the plugins installed here and which this organisation is granted",
+      summary: "list the plugins this organisation holds",
       usage: `Usage: polyant-cli org plugins
 
-An ungranted plugin is undiscoverable rather than merely inert: its tools and
-hooks do not exist for this organisation's agents. Granting is a platform-admin
-action, which a management key cannot perform.
+Only the plugins the organisation holds. One it was not granted is absent rather
+than listed as ungranted: its tools and hooks do not exist for this
+organisation's agents, and the engine does not name what other tenants run.
+${PLUGIN_HOLDING_NOTE} A management key can do neither.
 
-GRANTED is the organisation's half of the decision. The workspace's half is
+AVAILABLE is whether the engine can run the plugin for this organisation: for a
+plugin baked into the image, whether this engine satisfies its range; for a
+marketplace plugin, the health of the installed release (\`no (revoked)\`,
+\`no (unavailable)\`). \`unknown\` means the row carried neither.
+
+This is the organisation's half of the decision. The workspace's half is
 \`workspace plugins list\`, and an agent sees a plugin only when both say yes.
 
 The permission is \`org.plugin:read\`, which used to be the \`org:read\` floor: a key
@@ -747,12 +800,12 @@ itself, and its assignment elsewhere, are untouched. ${ORG_NOTE}`,
     },
     plugins: {
       list: {
-        summary: "list the installed plugins, the organisation's grant and this workspace's assignment",
+        summary: "list the organisation's plugins and which this workspace may use",
         usage: `Usage: polyant-cli workspace plugins list <workspaceSlug> [--assigned-only]
 
-GRANTED is the organisation's, ASSIGNED is this workspace's, and a plugin needs
-both to be visible to an agent. COMPATIBLE is whether this engine can run it at
-all. ${ASSIGN_NOTE} ${ORG_NOTE}`,
+The plugins the organisation holds, with ASSIGNED for this workspace's half: a
+plugin needs both to be visible to an agent. AVAILABLE is whether the engine can
+run it, as in \`org plugins\`. ${ASSIGN_NOTE} ${ORG_NOTE}`,
         action: workspacePluginsList,
       },
       assign: {
@@ -761,7 +814,8 @@ all. ${ASSIGN_NOTE} ${ORG_NOTE}`,
 
 Refused locally when the organisation does not hold the plugin: the assignment
 would be a row that changes nothing, because visibility is the intersection of
-the two. Granting is a platform-admin action, made from the web console.
+the two. The engine lists only held plugins, so a name it does not show may be
+ungranted or not installed at all. ${PLUGIN_HOLDING_NOTE}
 ${ORG_NOTE}`,
         action: workspacePluginsAssign,
         mutates: true,
@@ -832,6 +886,8 @@ export const apiKeyFamily: Record<string, Node> = {
 The token goes to stdout alone and is shown exactly once: the engine keeps only
 its bcrypt hash and cannot reissue it. Every permission is checked against the
 engine's issuable set first, so a typo fails naming the offending key.
+A personal token is refused (engine 1.2.0): a credential that can mint another
+outlives its own revocation. Use a management key or the web console.
 ${EE_NOTE} ${ORG_NOTE}`,
     action: apiKeyCreate,
     mutates: true,
@@ -840,7 +896,8 @@ ${EE_NOTE} ${ORG_NOTE}`,
     summary: "rename a key, replace its permissions, or change its expiry",
     usage: `Usage: polyant-cli apikey update <keyId> [--name <name>] [--permissions <key,key>] [--expires-at <iso>]
 
-\`--permissions\` REPLACES the set rather than adding to it. ${EE_NOTE} ${ORG_NOTE}`,
+\`--permissions\` REPLACES the set rather than adding to it. A personal token is
+refused, as for \`apikey create\`. ${EE_NOTE} ${ORG_NOTE}`,
     action: apiKeyUpdate,
     mutates: true,
   },

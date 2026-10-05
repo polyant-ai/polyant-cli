@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
 import type { CommandContext } from "../command.js";
+import type { ScheduledTask, ScheduledTasksResponse } from "../api/types.js";
 import { ConfigError } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
@@ -376,15 +377,6 @@ async function knowledgeImport(args: string[], context: CommandContext | undefin
 
 // --- scheduled tasks ---------------------------------------------------------
 
-interface TaskRow {
-  id: string;
-  name: string;
-  scheduleHuman?: string;
-  enabled: boolean;
-  nextRunAt: string | null;
-  outboundChannel: string | null;
-}
-
 async function tasksList(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   const slug = requireSlug(args, "tasks list");
   const options = args.slice(1);
@@ -397,7 +389,10 @@ async function tasksList(args: string[], context: CommandContext | undefined, de
   });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
-  const tasks = expectArray<TaskRow>((res.body as { tasks?: unknown } | null)?.tasks, `GET ${path}`);
+  const tasks = expectArray<ScheduledTask>(
+    (res.body as Partial<ScheduledTasksResponse> | null)?.tasks,
+    `GET ${path}`,
+  );
   deps.io.stdout(
     `${renderTable({
       headers: ["ID", "NAME", "SCHEDULE", "ENABLED", "NEXT RUN", "CHANNEL"],
@@ -654,15 +649,17 @@ async function retentionShow(args: string[], context: CommandContext | undefined
   const res = await call(deps, scope, { path: agentPath(slug, "/retention") });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
-  const body = (res.body ?? {}) as { policy?: Record<string, unknown> | null; defaultDays?: unknown };
+  const body = (res.body ?? {}) as { policy?: Record<string, unknown> | null };
   if (body.policy === null || body.policy === undefined) {
-    // "No policy" is not "keep nothing": the deployment default still applies,
-    // and reporting only the absence would read as the opposite.
-    return deps.io.stdout(`Agent ${slug} has no retention policy. The deployment default of ${text(body.defaultDays)} days applies.\n`);
+    // There is no deployment default any more: `RETENTION_DEFAULT_DAYS` is gone
+    // and a policy must state its own window, so no policy means nothing is ever
+    // purged. Saying "the default applies" here named a number that no longer
+    // exists and described the opposite behaviour.
+    return deps.io.stdout(`Agent ${slug} has no retention policy: nothing is purged on a schedule.\n`);
   }
   writePrettyResource(deps.io, [
     { label: "enabled", value: text(body.policy.enabled) },
-    { label: "retentionDays", value: text(body.policy.retentionDays ?? body.defaultDays) },
+    { label: "retentionDays", value: text(body.policy.retentionDays) },
     { label: "preserveGovernance", value: text(body.policy.preserveGovernance) },
     { label: "schedule", value: JSON.stringify(body.policy.schedule ?? null) },
   ]);
@@ -675,7 +672,18 @@ async function retentionSet(args: string[], context: CommandContext | undefined,
   const file = requireFile(options, "retention set");
   const body = await readPayloadObject(deps, file);
   for (const field of ["enabled", "schedule", "retentionDays", "preserveGovernance"]) {
-    if (body[field] === undefined) throw new ConfigError(`The retention payload needs a ${field} (retentionDays may be null).`);
+    if (body[field] === undefined) throw new ConfigError(`The retention payload needs a ${field}.`);
+  }
+  // The window is the most destructive value in the product and it is now
+  // declared, never defaulted: the column is NOT NULL and the route refuses a
+  // policy without it. Checked here so `null` — which the CLI used to advertise
+  // as allowed — fails naming the field instead of arriving as a 400 about a
+  // Zod union.
+  if (!Number.isInteger(body.retentionDays) || (body.retentionDays as number) <= 0) {
+    throw new ConfigError(
+      `The retention payload needs retentionDays as a positive integer; got ${JSON.stringify(body.retentionDays)}. ` +
+        "A policy has to say how much history to keep — there is no deployment-wide default to fall back on.",
+    );
   }
 
   const scope = await scopeFor(deps, context);
@@ -744,7 +752,7 @@ async function retentionRun(args: string[], context: CommandContext | undefined,
   const options = args.slice(1);
   assertKnown(options, { value: ["--confirm"], boolean: ["--count-only"] }, "agent retention run option");
   // The engine's own dry run, not the CLI's: `--dry-run` prints a recap and
-  // sends nothing, while this asks the engine to count what it WOULD delete.
+  // sends no writes, while this asks the engine to count what it WOULD delete.
   // Two different questions, so two different flags.
   const count = options.includes("--count-only");
 
@@ -949,6 +957,29 @@ async function exportAgent(args: string[], context: CommandContext | undefined, 
   const scope = await scopeFor(deps, context, "read");
   const res = await call(deps, scope, { path: agentPath(slug, "/export") });
   writeRawResponse(deps.io, res.raw);
+  const { carried, keyOnly } = bundleSecrets(res.body);
+  if (carried.length > 0) {
+    deps.io.stderr(
+      `note: the bundle carries the values of ${carried.length} non-sensitive setting(s): ${carried.join(", ")}. ` +
+        `${keyOnly.length === 0 ? "" : `Credentials travel as names only (${keyOnly.join(", ")}). `}Treat the file accordingly.\n`,
+    );
+  }
+}
+
+/**
+ * Since 1.2.0 a bundle carries the VALUE of a key a tool or hook declares
+ * non-sensitive — a bucket name, an allowlist, a select choice — and `agent
+ * import` writes it. A credential still travels as its key alone and has to be
+ * set again on the target.
+ */
+function bundleSecrets(bundle: unknown): { carried: string[]; keyOnly: string[] } {
+  const secrets = (bundle as { instance?: { secrets?: unknown } } | null)?.instance?.secrets;
+  if (!Array.isArray(secrets)) return { carried: [], keyOnly: [] };
+  const rows = secrets as { key?: unknown; value?: unknown }[];
+  return {
+    carried: rows.filter((row) => typeof row.value === "string").map((row) => String(row.key)),
+    keyOnly: rows.filter((row) => typeof row.value !== "string").map((row) => String(row.key)),
+  };
 }
 
 async function importAgent(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -960,19 +991,25 @@ async function importAgent(args: string[], context: CommandContext | undefined, 
   assertKnown(options, { value: ["--file", "--confirm"] }, "agent import option");
   const file = requireFile(options, "import");
   const body = await readPayloadObject(deps, file);
+  const { carried, keyOnly } = bundleSecrets(body);
+  const secretLines = [
+    ...(carried.length === 0 ? [] : [`Write the settings the bundle carries values for: ${carried.join(", ")}.`]),
+    ...(keyOnly.length === 0 ? [] : [`Credentials to set afterwards, which travel as names only: ${keyOnly.join(", ")}.`]),
+  ];
 
   const scope = await scopeFor(deps, context);
   const plan =
     slug === undefined
       ? {
           title: "Import a new agent",
-          changes: [`Create an agent from ${file === "-" ? "stdin" : file} in the addressed workspace.`],
+          changes: [`Create an agent from ${file === "-" ? "stdin" : file} in the addressed workspace.`, ...secretLines],
         }
       : {
           title: `Overwrite ${slug} from a bundle`,
           changes: [
             `Replace ${slug}'s configuration with ${file === "-" ? "stdin" : file}.`,
             "Prompts, tools, channels and hooks are overwritten, not merged.",
+            ...secretLines,
           ],
           destructive: { confirm: slug },
         };
@@ -1004,6 +1041,7 @@ async function models(args: string[], context: CommandContext | undefined, deps:
         text(model.tier),
         text(model.costInput),
         text(model.costOutput),
+        cacheWriteCell(model),
         model.supportsThinking ? "yes" : "no",
         // Read from the engine's catalog, never inferred from the model id: the
         // catalog is what the runtime consults before it accepts an image.
@@ -1013,11 +1051,38 @@ async function models(args: string[], context: CommandContext | undefined, deps:
   }
   deps.io.stdout(
     `${renderTable({
-      headers: ["PROVIDER", "MODEL", "TIER", "IN /1M", "OUT /1M", "THINKING", "VISION"],
+      headers: ["PROVIDER", "MODEL", "TIER", "IN /1M", "OUT /1M", "CACHE WRITE /1M", "THINKING", "VISION"],
       rows,
       emptyMessage: provider === undefined ? "This deployment configures no providers." : `No provider named ${provider}.`,
     })}\n`,
   );
+
+  // Served beside the providers since 1.2.0, so a registered embedder is
+  // discoverable: an older engine sends none and the section is left out.
+  const embedders = (res.body as { embedders?: EmbedderRow[] } | null)?.embedders;
+  if (Array.isArray(embedders) && provider === undefined) {
+    deps.io.stdout(
+      `\n${renderTable({
+        headers: ["EMBEDDER", "DIMENSIONS"],
+        rows: embedders.map((embedder) => [text(embedder.id), (embedder.supportedDims ?? []).join(", ") || "-"]),
+        emptyMessage: "This deployment configures no embedders.",
+      })}\n`,
+    );
+  }
+}
+
+/**
+ * Anthropic's first-party models price a write by its cache TTL, so they carry
+ * a second rate for the five-minute writes; every other model has one.
+ */
+function cacheWriteCell(model: ModelRow): string {
+  const write = text(model.costCacheWrite);
+  return model.costCacheWrite5m === undefined ? write : `${write} (5m ${model.costCacheWrite5m})`;
+}
+
+interface EmbedderRow {
+  id: string;
+  supportedDims?: number[];
 }
 
 interface ModelRow {
@@ -1025,6 +1090,9 @@ interface ModelRow {
   tier: string | null;
   costInput: number;
   costOutput: number;
+  costCacheWrite?: number;
+  /** Only on models with two write tiers: the rate of the five-minute writes. */
+  costCacheWrite5m?: number;
   supportsThinking: boolean;
   /** Absent on an engine that predates the field; absent reads as no vision. */
   supportsVision?: boolean;
@@ -1227,15 +1295,16 @@ The old token stops working immediately — update every producer first.`,
   retention: {
     show: {
       summary: "show an agent's retention policy",
-      usage: "Usage: polyant-cli agent retention show <slug>\n\nNo policy still means the deployment default applies, and says so.",
+      usage: "Usage: polyant-cli agent retention show <slug>\n\nNo policy means nothing is purged on a schedule: there is no deployment-wide\nwindow to fall back on.",
       action: retentionShow,
     },
     set: {
       summary: "set the retention policy from a JSON file or stdin",
       usage: `Usage: polyant-cli agent retention set <slug> --file <path|->
 
-Needs enabled, schedule, retentionDays (may be null) and preserveGovernance.
-Purging is permanent: the engine has no archive.`,
+Needs enabled, schedule, retentionDays and preserveGovernance. retentionDays is
+a positive integer and is refused absent or null: a policy has to state how much
+history it keeps. Purging is permanent — the engine has no archive.`,
       action: retentionSet,
       mutates: true,
     },
@@ -1256,7 +1325,7 @@ Purging is permanent: the engine has no archive.`,
        polyant-cli agent retention run <slug> --count-only
 
 --count-only is the ENGINE's dry run: it reports what would go. \`--dry-run\` is
-the CLI's, and sends nothing at all.`,
+the CLI's, and sends no writes.`,
       action: retentionRun,
       mutates: true,
     },
@@ -1314,7 +1383,12 @@ A snapshot freezes the agent's configuration as an immutable numbered version.`,
   },
   export: {
     summary: "print an agent's full configuration as a bundle",
-    usage: "Usage: polyant-cli agent export <slug>\n\nRound-trips into `agent import`.",
+    usage: `Usage: polyant-cli agent export <slug>
+
+Round-trips into \`agent import\`. Since engine 1.2.0 the bundle carries the
+values of the settings a tool or hook declares non-sensitive — a bucket name, an
+allowlist — and import writes them back. Credentials still travel as key names
+only; stderr names which keys carry a value.`,
     action: exportAgent,
   },
   import: {
@@ -1331,9 +1405,15 @@ replaced, not merged. Without one, a new agent lands in the addressed workspace.
     summary: "list the providers and models this deployment offers",
     usage: `Usage: polyant-cli agent models [--provider <name>]
 
-Costs are per million tokens, straight from the engine's catalog. VISION is what
-decides whether a channel may hand this model an image; a model without it drops
-attachments rather than failing the turn.`,
+Costs are per million tokens, straight from the engine's catalog. CACHE WRITE
+shows a second "5m" rate where the provider prices five-minute writes apart
+from the hour-long ones. VISION is what decides whether a channel may hand this
+model an image; a model without it drops attachments rather than failing the
+turn.
+
+Underneath, the embedders this deployment can use and the dimensions each can
+emit: \`agent update --set embeddingProvider=<id>\` is accepted only for one
+that can emit the agent's stored dimension.`,
     action: models,
   },
 };

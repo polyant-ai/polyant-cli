@@ -127,6 +127,16 @@ describe("run", () => {
     expect(help).toContain("api");
     expect(help).toContain("\n  config");
     expect(help).toContain("whoami");
+    expect(help).toContain("/api/docs");
+    expect(help).toContain("/api/openapi.json");
+    expect(help).toContain("interactive API docs");
+    expect(help).toContain("request body schemas are not yet published");
+  });
+
+  it("explains that prompt dry-run reads current state", async () => {
+    expect(await run(["agent", "prompt", "set", "--help"])).toBe(ExitCode.Ok);
+    expect(out.join("")).toContain("reads current state");
+    expect(out.join("")).toContain("sends no writes");
   });
 
   it("should_show_only_agent_actions_in_agent_help", async () => {
@@ -229,7 +239,7 @@ describe("--help --json", () => {
   interface Catalogue {
     name: string;
     version: string;
-    globalOptions: { flag: string }[];
+    globalOptions: { flag: string; summary: string }[];
     exitCodes: { code: number; meaning: string }[];
     commands: Node[];
   }
@@ -255,7 +265,7 @@ describe("--help --json", () => {
     expect(catalogue.commands.map((c) => c.path)).toEqual(Object.keys(COMMANDS).sort());
 
     const paths = new Set(flatten(catalogue.commands).map((n) => n.path));
-    for (const expected of ["agent chat", "agent secrets set", "monitor events", "role permissions", "workspace delete"]) {
+    for (const expected of ["agent chat", "agent checkup", "agent secrets set", "monitor events", "org create", "org tasks list", "role permissions", "workspace delete"]) {
       expect(paths).toContain(expected);
     }
   });
@@ -265,6 +275,9 @@ describe("--help --json", () => {
     expect(catalogue.exitCodes.map((e) => e.code)).toEqual([0, 1, 2, 3]);
     expect(catalogue.globalOptions.map((o) => o.flag)).toContain("--workspace");
     expect(catalogue.globalOptions.map((o) => o.flag)).toContain("--dry-run");
+    expect(catalogue.globalOptions.find((o) => o.flag === "--dry-run")).toMatchObject({
+      summary: expect.stringContaining("send no writes"),
+    });
     expect(catalogue.version).toBe(renderVersion());
   });
 

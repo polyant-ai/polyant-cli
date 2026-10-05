@@ -8,6 +8,7 @@ import type { Command, CommandContext } from "../command.js";
 import { resolveScope } from "../runtime/scope.js";
 import type { GlobalOptions } from "../runtime/global-options.js";
 import { processOutput } from "../render/output.js";
+import { credentialKind, type CredentialKind } from "../runtime/credential.js";
 
 export const WHOAMI_USAGE = `Usage: polyant-cli whoami [options]
 
@@ -23,15 +24,27 @@ Permissions come from /api/service-context when the engine serves it. Until
 that contract lands, they are reported as not verified rather than guessed:
 /api/me/access serves user principals only.
 
+Both credentials the engine accepts on X-Polyant-Key are reported: a management
+key (pk_), which is org-scoped and machine-owned, and a personal access token
+(pat_), which acts as the person who issued it. The two reach different routes —
+/api/service-context is management-key only, /api/me is the personal token's
+identity — so whoami says which one is configured and asks the one that answers.
+
 This command exits 0 whenever it can resolve a target, even if the instance
 never answers — reporting an unreachable instance is its job, not a failure of
 its own. Read the "reachable" field. If you need a non-zero exit for a health
 gate, use "polyant-cli api GET /health" instead.`;
 
+export { credentialKind, type CredentialKind };
+
 export interface WhoamiReport {
   target: string;
   baseUrl: string;
   prod: boolean;
+  /** Derived from the key's own prefix, with no request. */
+  credential: CredentialKind;
+  /** The person a personal access token acts as, when that is what is configured. */
+  user?: { id?: string; email?: string; name?: string };
   reachable: boolean;
   service: string | null;
   agents: { slug: string; status: string; authEnabled: boolean }[];
@@ -101,6 +114,24 @@ async function loadAgents(target: ResolvedTarget): Promise<Partial<WhoamiReport>
 /** The route the CLI expects; named once so the report can point at it. */
 const SERVICE_CONTEXT_PATH = "/api/service-context";
 
+
+/**
+ * Who a personal access token acts as. Only asked when the key is one: with a
+ * management key /api/me answers 401, and reporting that as a failed probe would
+ * add noise to the normal case.
+ */
+async function probeUser(target: ResolvedTarget): Promise<Partial<WhoamiReport>> {
+  try {
+    const res = await request(target, { path: "/api/me" });
+    const body = res.body as { user?: Record<string, unknown> } & Record<string, unknown>;
+    const user = (body?.user ?? body) as Record<string, unknown>;
+    const pick = (field: string) => (typeof user?.[field] === "string" ? { [field]: user[field] as string } : {});
+    return { user: { ...pick("id"), ...pick("email"), ...pick("name") } };
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Introspection is optional by design: the route is a pending engine contract,
  * so a 404 or 403 is an expected answer and must leave the report honest rather
@@ -162,14 +193,18 @@ function isKey(value: unknown): value is NonNullable<WhoamiReport["key"]> {
 }
 
 export async function collectWhoami(target: ResolvedTarget): Promise<WhoamiReport> {
+  const credential = credentialKind(target.key);
   const health = await probeHealth(target);
   // The agent list is only meaningful once the instance answers at all.
   const agents = health.reachable ? await loadAgents(target) : {};
-  const identity = health.reachable ? await probeServiceContext(target) : {};
+  // A personal token cannot read service-context, so asking it would report
+  // "unverified" for a credential that has a perfectly good identity route.
+  const identity = !health.reachable ? {} : credential === "personal-token" ? await probeUser(target) : await probeServiceContext(target);
   return {
     target: target.name,
     baseUrl: target.baseUrl,
     prod: target.prod,
+    credential,
     reachable: false,
     service: null,
     agents: [],
@@ -186,6 +221,18 @@ function describeOrg(org: NonNullable<WhoamiReport["organization"]>): string {
   return detail.length === 0 ? org.slug : `${org.slug} (${detail.join(", ")})`;
 }
 
+function describeCredential(kind: CredentialKind): string {
+  if (kind === "management-key") return "management API key (pk_) — org-scoped, machine-owned";
+  if (kind === "personal-token") return "personal access token (pat_) — acts as the person who issued it";
+  return 'unrecognised prefix — the engine expects "pk_" for a management key or "pat_" for a personal token';
+}
+
+function describeUser(user: NonNullable<WhoamiReport["user"]>): string {
+  const detail = [user.name, user.id].filter((value) => value !== undefined && value !== "");
+  const label = user.email ?? user.id ?? "(unknown)";
+  return detail.length === 0 ? label : `${label} (${detail.join(", ")})`;
+}
+
 function describeKey(key: NonNullable<WhoamiReport["key"]>): string {
   const name = key.name ?? key.id ?? "(unnamed)";
   return key.expiresAt === undefined || key.expiresAt === null ? `${name} (no expiry)` : `${name} (expires ${key.expiresAt})`;
@@ -195,10 +242,14 @@ export function renderWhoami(report: WhoamiReport): string {
   const lines = [
     `target:      ${report.target}${report.prod ? " (PROD)" : ""}`,
     `baseUrl:     ${report.baseUrl}`,
+    `credential:  ${describeCredential(report.credential)}`,
     `reachable:   ${report.reachable ? `yes (${report.service ?? "unknown service"})` : `no${report.unreachableReason ? ` — ${report.unreachableReason}` : ""}`}`,
     Array.isArray(report.permissions)
       ? `permissions: ${report.permissions.length === 0 ? "(none granted)" : report.permissions.join(", ")}`
-      : `permissions: not verified — no usable GET ${SERVICE_CONTEXT_PATH} for a management API key`,
+      : report.credential === "personal-token"
+        ? `permissions: not verified — a personal token reads GET /api/me, not ${SERVICE_CONTEXT_PATH}`
+        : `permissions: not verified — no usable GET ${SERVICE_CONTEXT_PATH} for a management API key`,
+    ...(report.user === undefined ? [] : [`user:        ${describeUser(report.user)}`]),
     ...(report.organization === undefined ? [] : [`org:         ${describeOrg(report.organization)}`]),
     ...(report.key === undefined ? [] : [`key:         ${describeKey(report.key)}`]),
     ...(report.features === undefined ? [] : [`features:    ${report.features.length === 0 ? "(none)" : report.features.join(", ")}`]),

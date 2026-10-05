@@ -240,13 +240,24 @@ describe("agent events", () => {
 });
 
 describe("agent retention", () => {
-  // "No policy" is not "keep nothing" — the deployment default still applies.
-  it("says the deployment default applies when there is no policy", async () => {
-    const h = harness([response({ policy: null, defaultDays: 90 })]);
+  // There is no deployment-wide window any more, so no policy means no purging.
+  it("says nothing is purged when there is no policy", async () => {
+    const h = harness([response({ policy: null })]);
 
     await leaf(h.command, ["retention", "show"])(["acme"], context());
 
-    expect(h.out.join("")).toContain("no retention policy. The deployment default of 90 days applies");
+    expect(h.out.join("")).toContain("no retention policy: nothing is purged on a schedule");
+  });
+
+  it("refuses a null retentionDays, which the route no longer accepts", async () => {
+    const h = harness([], {
+      readPayload: async () =>
+        JSON.stringify({ enabled: true, schedule: { type: "cron", expression: "0 3 * * *" }, retentionDays: null, preserveGovernance: true }),
+    });
+
+    await expect(leaf(h.command, ["retention", "set"])(["acme", "--file", "-"], context({ yes: true }))).rejects.toThrow(
+      /retentionDays as a positive integer/,
+    );
   });
 
   it("names the field a retention payload is missing", async () => {
@@ -275,7 +286,53 @@ describe("agent retention", () => {
   });
 });
 
+const BUNDLE = {
+  version: 1,
+  type: "agent",
+  instance: {
+    slug: "acme",
+    secrets: [
+      { key: "s3_bucket_name", configured: true, value: "acme-attachments" },
+      { key: "openai_api_key", configured: true },
+    ],
+  },
+};
+
+describe("agent export", () => {
+  // Since 1.2.0 a non-sensitive setting travels with its value; the file is then
+  // not safe to paste anywhere, and stderr says which keys made it so.
+  it("prints the bundle unchanged and names the keys that carry a value", async () => {
+    const h = harness([response(BUNDLE)]);
+
+    await leaf(h.command, ["export"])(["acme"], context());
+
+    expect(h.out.join("")).toBe(JSON.stringify(BUNDLE));
+    expect(h.err.join("")).toContain("carries the values of 1 non-sensitive setting(s): s3_bucket_name");
+    expect(h.err.join("")).toContain("Credentials travel as names only (openai_api_key)");
+  });
+
+  it("says nothing when no key carries a value", async () => {
+    const h = harness([response({ version: 1, instance: { secrets: [{ key: "openai_api_key", configured: true }] } })]);
+
+    await leaf(h.command, ["export"])(["acme"], context());
+
+    expect(h.err.join("")).not.toContain("carries the values");
+  });
+});
+
 describe("agent import", () => {
+  it("says which settings it writes and which credentials are left to set", async () => {
+    const h = harness([], { readPayload: async () => JSON.stringify(BUNDLE) });
+
+    await leaf(h.command, ["import"])(["--file", "-"], context({ dryRun: true }));
+
+    const recap = h.err.join("");
+    expect(recap).toContain("Write the settings the bundle carries values for: s3_bucket_name.");
+    expect(recap).toContain("Credentials to set afterwards, which travel as names only: openai_api_key.");
+    // The value itself stays out of the recap.
+    expect(recap).not.toContain("acme-attachments");
+  });
+
   // Same body, opposite blast radius, told apart by whether a slug is named.
   it("creates in the addressed workspace when no slug is named", async () => {
     const h = harness([response({ instance: {} }, 201)], { readPayload: async () => JSON.stringify({ version: 1 }) });
@@ -320,9 +377,9 @@ describe("agent models", () => {
       providers: {
         openai: {
           models: [
-            { id: "gpt-4o", tier: null, costInput: 2, costOutput: 8, supportsThinking: false, supportsVision: true },
-            { id: "gpt-3.5", tier: null, costInput: 1, costOutput: 2, supportsThinking: false, supportsVision: false },
-            { id: "legacy", tier: null, costInput: 1, costOutput: 2, supportsThinking: false },
+            { id: "gpt-4o", tier: null, costInput: 2, costOutput: 8, costCacheWrite: 2, supportsThinking: false, supportsVision: true },
+            { id: "gpt-3.5", tier: null, costInput: 1, costOutput: 2, costCacheWrite: 1, supportsThinking: false, supportsVision: false },
+            { id: "legacy", tier: null, costInput: 1, costOutput: 2, costCacheWrite: 1, supportsThinking: false },
           ],
         },
       },
@@ -333,10 +390,36 @@ describe("agent models", () => {
 
     const table = h.out.join("");
     expect(table).toContain("VISION");
-    // PROVIDER MODEL TIER IN OUT THINKING VISION
-    expect(table).toMatch(/gpt-4o\s+-\s+2\s+8\s+no\s+yes/);
-    expect(table).toMatch(/gpt-3\.5\s+-\s+1\s+2\s+no\s+no/);
-    expect(table).toMatch(/legacy\s+-\s+1\s+2\s+no\s+no/);
+    // PROVIDER MODEL TIER IN OUT CACHE-WRITE THINKING VISION
+    expect(table).toMatch(/gpt-4o\s+-\s+2\s+8\s+2\s+no\s+yes/);
+    expect(table).toMatch(/gpt-3\.5\s+-\s+1\s+2\s+1\s+no\s+no/);
+    expect(table).toMatch(/legacy\s+-\s+1\s+2\s+1\s+no\s+no/);
+    // An engine before 1.2.0 sends no embedders, and the section is left out.
+    expect(table).not.toContain("EMBEDDER");
+  });
+
+  it("shows the five-minute write rate and the embedders a 1.2.0 engine serves", async () => {
+    const body = {
+      providers: {
+        anthropic: {
+          models: [
+            { id: "claude-sonnet-5-5", tier: null, costInput: 2, costOutput: 10, costCacheWrite: 4, costCacheWrite5m: 2.5, supportsThinking: true, supportsVision: true },
+          ],
+        },
+      },
+      embedders: [
+        { id: "openai", supportedDims: [1024, 1536] },
+        { id: "regolo", supportedDims: [1024] },
+      ],
+    };
+    const h = harness([response(body)]);
+
+    await leaf(h.command, ["models"])([], context());
+
+    const table = h.out.join("");
+    expect(table).toMatch(/claude-sonnet-5-5\s+-\s+2\s+10\s+4 \(5m 2\.5\)\s+yes\s+yes/);
+    expect(table).toMatch(/openai\s+1024, 1536/);
+    expect(table).toMatch(/regolo\s+1024/);
   });
 });
 

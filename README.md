@@ -11,6 +11,11 @@ drift. What the CLI does own is everything around the call — resolving the tar
 and the credential, recapping a write before it happens, and turning the answer
 into an exit code.
 
+The selected target serves interactive API documentation at `/api/docs` and the
+raw OpenAPI contract at `/api/openapi.json`. Some request body schemas are not
+yet published there; use the route documentation or engine source for those
+payloads instead of guessing them.
+
 ## Install
 
 Requires **Node 20 or newer** (`engines` enforces it). The package ships
@@ -110,6 +115,8 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | 0.2.x | 1.1.0 and 1.1.0-ee | adds `agent mcp`, `agent a2a`, `agent memory`, `agent optouts`, `agent events url` and `agent channels whatsapp`; `agent update` gains `--stt-provider` |
 | 0.3.x | the first engine release after 1.1.0-ee | adds `monitor ai-logs`, `monitor traces` and `agent messages`; the three routes merged to the engine's develop on 2026-09-01, so against 1.1.0-ee or older all three answer `404` |
 | 0.4.x | the same, plus the engine's develop as of 2026-09-02 | adds `workspace skills` and `workspace plugins`; `agent update` gains `--memory-scope`, `monitor events` gains `--conversation`, `agent models` gains a VISION column, and `agent channels show` reports an unreadable config and an engine-side disable |
+| 0.6.x | 1.2.0 and 1.2.0-ee, verified against the engine's develop (2026-10-01) | adds `agent budget`, `agent providers`, `agent channels slack url` and `agent conversations show --follow`; `agent checkup` gains `--fail-on`, `monitor status` probes the scheduler, `agent models` lists the embedders and the five-minute cache-write rate, `agent tools show` names a tool's plugin, and `agent secrets` accepts the keys a tool declares. Reads the 1.2.0 plugin and provider lists, where an ungranted row is absent — against 0.5.x those made `workspace providers admit` and `workspace plugins assign` refuse everything |
+| 0.5.x | the engine's develop as of 2026-09-14 | adds `org providers`, `org connections`, `workspace providers`, `workspace connections`, `org audit`, `org knowledge`, `workspace knowledge`, `agent shared-knowledge`, `agent checks`, `agent health`, `analytics checks` and `member invitations`; `agent update` gains `--set` and `--provider-connection`, and `whoami` reports which credential is on the header |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
 `agent a2a enable` is a `400` — the field does not exist there. Everything else
@@ -145,12 +152,43 @@ parses this CLI's output:
   --count-only` passes the engine's answer through, so the counts it reports are
   wider than they were.
 
-When a command starts answering `404` or `403`, the engine's controllers are the
-contract: the permission decorator on the route (`@RequirePermission`, or
-`@PlatformAdminOnly` for the platform lane) and the `@Query` parameters it
-actually declares. A generated OpenAPI artefact has been planned but is not
-served — there is no `GET /api/openapi.json` to diff against, and no
-`api-index.md` beside it.
+When a command starts answering `404` or `403`, inspect `/api/docs` on the
+selected target: it is the engine-owned route catalogue. Some request body
+schemas are not yet published, so use the route documentation or engine source
+for those payloads. The permission decorator
+on the route (`@RequirePermission`, or `@PlatformAdminOnly` for the platform lane)
+remains the authority the document is generated from.
+
+Six retention and provider changes on that develop are visible without a new
+command:
+
+- A retention policy must state its window. `retention_days` is `NOT NULL` and the
+  route refuses a policy without it, so `agent retention set` now rejects a
+  payload whose `retentionDays` is null instead of forwarding it. There is no
+  deployment-wide default left to inherit: `agent retention show` reports "no
+  policy" as "nothing is purged", which is what it now means.
+- `PATCH /api/instances/:slug` accepts `providerConnectionId`, and six per-agent
+  settings that used to be silently dropped — `datetimeTimezone`,
+  `datetimeLocale`, `dedupSimilarityThreshold`, `messageSoftDebounceMs`,
+  `messageTypingDelayMs`, `messageMaxRestarts` — are actually persisted. The
+  engine still IGNORES a field it does not treat as writable, answering `200`
+  with a fresh `updatedAt`, so `agent update` checks the instance it gets back
+  and exits `1` on a field that still carries its old value. A value the engine
+  normalised counts as written, and `confirmWipe` is not checked because the
+  engine acts on it without storing it.
+- An organisation's provider credentials became named **connections**, and the
+  migration carried each existing secret over as one called "Predefinita", lent
+  to every workspace. `org secrets` still works and still describes the old
+  shape; `org connections` is where a second credential per provider, or a
+  workspace that may not use one, becomes expressible.
+- Providers and models are governed on three tiers. `org providers show` reports
+  the organisation's admission — a platform-admin decision this key cannot make —
+  and `workspace providers` is the half an organisation's own admin owns.
+- Documents can live in a library owned by the organisation or by a workspace,
+  granted onward and switched on per agent. `agent knowledge` is unchanged and
+  still means the agent's OWN documents.
+- Eighty mutating routes record what they did, and an organisation can read its
+  own trail through `org audit management`.
 
 One family is deliberately absent. Every `/api/platform/*` route — platform
 plugins, platform skills, deployment-wide analytics and audit logs — is declared
@@ -222,6 +260,16 @@ do, so a leaked shell profile is not a leaked account. Two consequences to expec
   `/api/me/tokens`, `/api/invitations/accept`) refuse a personal token outright,
   and so does the whole platform lane below. `api` calls to those answer `403`,
   and that is the engine's decision, not a missing capability here.
+
+**A personal token cannot be issued from here, and neither can a management key
+issue one.** `/api/me/tokens` refuses a token (a credential that can mint its
+successor survives its own revocation) and refuses a management key too (there is
+no user row to attach the token to) — so both of the CLI's credentials are out,
+and there is no `polyant-cli token` family to add. Issue one from the account page
+in the web console, then put it in the environment variable `keyEnv` names.
+`whoami` reports which of the two it found, and with a token names the person it
+acts as, since `/api/service-context` is closed to a human principal exactly as
+`/api/me` is closed to a machine one.
 
 ```yaml
 default: staging
@@ -362,10 +410,17 @@ stderr rather than resolving it silently.
 polyant-cli --org acme --workspace platform agent list
 polyant-cli --context engineering agent list
 polyant-cli --context engineering agent show acme
+polyant-cli --context engineering agent checkup acme
+polyant-cli --context engineering agent checkup acme --fail-on broken
 polyant-cli --context engineering agent create acme --name Acme --model claude-sonnet-4
 polyant-cli --context engineering agent update acme --model claude-opus-5
 polyant-cli --context engineering agent update acme --memory-scope conversation
+polyant-cli --context engineering agent update acme --set memoryEnabled=true
+polyant-cli --context engineering agent providers acme
 polyant-cli --context engineering agent delete acme --yes --confirm acme
+
+polyant-cli --context engineering agent budget show acme
+polyant-cli --context engineering agent budget set acme --file budget.json --yes
 
 polyant-cli --context engineering agent prompt show acme --section identity
 polyant-cli --context engineering agent prompt set acme --section identity --file identity.md
@@ -375,6 +430,7 @@ polyant-cli --context engineering agent tools set acme --enable web_search,crm
 
 polyant-cli --context engineering agent channels show acme
 polyant-cli --context engineering agent channels set acme telegram --file telegram.json
+polyant-cli --context engineering agent channels slack url acme
 polyant-cli --context engineering agent channels remove acme telegram --yes --confirm telegram
 
 polyant-cli --context engineering agent secrets show acme --configured-only
@@ -391,10 +447,14 @@ echo "riassumi la policy di reso" | polyant-cli --context engineering agent chat
 polyant-cli --context engineering agent chat acme --message "2+2?" --expect 4
 
 polyant-cli --context engineering agent conversations list acme --limit 20
+polyant-cli --context engineering agent conversations show acme <conversationId> --follow --max 50
 polyant-cli --context engineering agent conversations list acme --from 2026-09-03 --to 2026-09-04
 polyant-cli --context engineering agent conversations show acme <conversationId>
 polyant-cli --context engineering agent messages acme --from 2026-08-31 --limit 200
 ```
+
+`agent show` labels provider/model values as stored and effective, so an unset
+field does not hide the engine fallback.
 
 `agent messages` reads every conversation of one agent in a single call, where
 `agent conversations show` reads one. The table truncates content to 80
@@ -424,7 +484,8 @@ value, including when a flag changes nothing.
 
 `delete`, `channels remove`, and `hooks remove` are destructive: they require
 `--yes` plus `--confirm <slug|type|hookId>`. `--dry-run` prints the recap and
-sends nothing.
+sends no writes. It may still read current state when the recap depends on it;
+`prompt set` does this to report the actual character delta.
 
 `agent chat` sends one turn through the **playground** route and
 streams the reply. Reply text goes to stdout as it arrives; steps, reasoning and
@@ -457,10 +518,12 @@ The value comes only from a file or stdin, and **is never printed** — not in t
 recap, which reports its length and where it came from, and not on stdout. There
 is no `--value` flag: an inline secret lands in shell history and in `ps`.
 
-Both writes refuse a key the agent does not declare, naming the ones it does, and
-`unset` additionally refuses a key that is not configured. The engine answers
+`set` refuses a key the agent does not declare, naming the ones it does, and
+`unset` refuses a key that is not configured, a typo included. The engine answers
 `200` either way, so without those checks a typo would report success while the
-real credential stayed in place.
+real credential stayed in place. The keys an agent's tools declare come from a
+route that needs `tool:read`; a key without it still manages the stored secrets,
+and the CLI says on stderr that a tool key never stored is not listed.
 
 Channel and hook configuration is accepted only from a named file or stdin
 (`--file -`), never from an inline flag where a secret would land in shell
@@ -479,6 +542,13 @@ printf %s "$TOKEN" | polyant-cli agent skills env set acme triage --key ZENDESK_
 polyant-cli agent knowledge list acme
 polyant-cli agent knowledge add acme --file faq.md --yes
 polyant-cli agent knowledge export acme > kb.json
+
+polyant-cli agent shared-knowledge show acme
+polyant-cli agent shared-knowledge enable acme d-1 --yes
+
+polyant-cli agent checks show acme --days 30
+polyant-cli agent checks dismiss acme tools-failing --note "known, fix planned" --yes
+polyant-cli agent health acme
 
 polyant-cli agent tasks list acme
 polyant-cli agent tasks create acme --file digest.json --yes
@@ -532,15 +602,40 @@ of a one-line confirmation.
 
 `agent retention run` deletes permanently — the engine has no archive.
 `--count-only` is the **engine's** dry run, which really calls it and reports what
-it would remove; `--dry-run` is the CLI's, and sends nothing at all.
+it would remove; `--dry-run` is the CLI's, and sends no writes.
 
 `agent import` with a slug **overwrites** that agent — prompts, tools, channels and
 hooks are replaced, not merged — and needs `--confirm <slug>`. Without a slug it
 creates a new agent in the addressed workspace instead. Same body, opposite blast
 radius.
 
-`agent retention show` reports the deployment default when an agent has no policy
-of its own, because "no policy" is not "keep nothing".
+`agent retention show` reports "no policy" as **nothing is purged**. The engine
+used to fall back to a deployment-wide window; it does not any more — the column
+is `NOT NULL` and `agent retention set` refuses a payload without a positive
+`retentionDays`, because the window is the most destructive value in the product
+and it is now declared rather than inherited.
+
+`agent update --set <field>=<value>` reaches the writable settings with no flag of
+their own — timezone and locale, the debounce and typing delays, the cache TTL,
+the opt-out wording. The value is read as JSON when it parses as one, so
+`cacheEnabled=true` sends a boolean and `datetimeTimezone=Europe/Rome` a string;
+`agent show <slug> --json` lists the field names. The engine ignores a field it
+does not treat as writable — with a `200` and a fresh `updatedAt`, which is
+exactly the shape that let a panel report a save that never happened — so the CLI
+compares the instance it gets back against what it asked for and fails on a field
+that did not land.
+
+`agent checks` is the supervision verdict: what the engine has decided is wrong
+with an agent, counted over a window of recent activity. That is a different
+question from `monitor status`, which reports what an agent IS. The engine serves
+check IDs and i18n keys rather than sentences — the same verdicts feed the panel
+in every language — so the CLI prints the ID, the severity and the measurement
+that raised it. A dismissal stops the check counting at **every** tier, including
+`analytics checks` and the organisation's dashboard, and it silences the verdict
+and not the cause. `agent health` is the raw per-tool and per-hook counts the
+checks are computed from, and it keeps the turns where a gate produced no verdict
+apart from the turns a gate blocked: those proceeded with a check that did not
+run, and zero there is what tells a quiet agent from a blind one.
 
 `agent mcp set` is a **replacement**, not a patch: the payload needs `name`,
 `url`, `authMode` (`none`, `static` or `oauth`) and `config` together, and what
@@ -669,7 +764,9 @@ the CLI reads the slug from `GET /api/service-context`.
 
 ```bash
 polyant-cli org list
+polyant-cli org create acme --name "Acme Inc"
 polyant-cli org rename --name "Acme Inc" --yes
+polyant-cli org tasks list
 
 polyant-cli workspace list
 polyant-cli workspace create labs --name Labs --yes
@@ -693,6 +790,30 @@ polyant-cli org secrets show
 printf %s "$OPENAI_KEY" | polyant-cli org secrets set --key openai_api_key --file - --yes
 polyant-cli org plugins
 
+polyant-cli member invitations list --pending-only
+polyant-cli member invitations create ada@example.com --role member --workspace labs --yes
+polyant-cli member invitations revoke i-1 --yes --confirm i-1
+
+polyant-cli org audit management --action secret.write --actor ada@example.com
+polyant-cli org audit authz --workspace labs
+
+polyant-cli org providers show
+polyant-cli org providers managed-only --on --yes
+polyant-cli org connections list
+printf '{"api_key":"%s"}' "$OPENAI_KEY" | polyant-cli org connections create Produzione --provider openai --file - --yes
+polyant-cli org connections update c-1 --name Legacy --yes
+polyant-cli org connections delete c-1 --yes --confirm c-1
+
+polyant-cli workspace providers list labs
+polyant-cli workspace providers admit labs anthropic --yes
+polyant-cli workspace providers model labs openai gpt-4o-mini --off --yes
+polyant-cli workspace connections assign labs c-1 --yes
+
+polyant-cli org knowledge list
+polyant-cli org knowledge add --file ./handbook.pdf --yes
+polyant-cli org knowledge grant d-1 labs --yes
+polyant-cli workspace knowledge list labs
+
 polyant-cli workspace skills list labs
 polyant-cli workspace skills assign labs billing --yes
 polyant-cli workspace skills revoke labs billing --yes --confirm billing
@@ -701,6 +822,10 @@ polyant-cli workspace plugins list labs
 polyant-cli workspace plugins assign labs sales --yes
 polyant-cli workspace plugins revoke labs sales --yes --confirm sales
 ```
+
+`org tasks list` collects every workspace and agent before printing, so its CLI
+output is all-or-nothing. The sequential reads are eventually consistent, not a
+server-side snapshot.
 
 Workspaces and roles are addressed by **slug** and **key** on the command line,
 but the engine's paths for an update or a delete take the row's uuid, so the CLI
@@ -717,11 +842,17 @@ than storing a value that would be silently ignored.
 `workspace skills` and `workspace plugins` are the workspace's allow-list: which
 of the organisation's skills, and which of its plugins, agents in that workspace
 may actually use. What an agent sees is the **intersection** of the
-organisation's grant and this assignment, which is why `workspace plugins list`
-reports GRANTED and ASSIGNED as separate columns — a plugin needs both. Assigning
-a plugin the organisation does not hold is refused locally rather than written as
-a row that changes nothing; the grant itself is a platform-admin action, made
-from the web console.
+organisation's grant and this assignment. Since engine 1.2.0 the plugin listing
+stops at what the organisation holds — an ungranted plugin is absent, not shown
+as ungranted — so `workspace plugins list` has no grant column, and a name
+missing from it may be ungranted or not installed at all. Assigning a plugin the
+organisation does not hold is refused locally rather than written as a row that
+changes nothing. Holding one is decided in the web console: an Organization Admin
+installs a marketplace plugin, and a Platform Admin grants a plugin baked into the
+image. AVAILABLE, in both plugin listings, reads whichever field the engine sends
+for the row: `compatible` for a baked plugin, the installed release's `health`
+for a marketplace one, and `unknown` when it sends neither.
+`workspace providers list` follows the same rule for providers.
 
 The listings are the whole organisation catalogue with an ASSIGNED column, not
 the assigned subset, because "why does this agent not have that skill" is
@@ -741,6 +872,57 @@ actually decides a workspace-scoped permission. It resolves each workspace id ba
 to its slug. Both it and `workspace member` are Enterprise: on a deployment
 without the licensed feature the engine answers `403`, the same shape as a missing
 permission — `whoami` lists the features so the two can be told apart.
+
+`member invitations` is how somebody gets INTO the organisation; every other
+member command addresses a person who is already in it. The token is printed once
+and only its hash is kept, and `emailSent` says whether the invitation was
+actually posted — which is exactly when you need the token by hand. An address the
+organisation's SSO sign-in list would later lock out is refused at creation rather
+than at acceptance, so an invitation that cannot work never exists.
+
+`org audit` reads the two trails the engine keeps apart, and so does the CLI.
+`management` is one row per mutating management route — who changed what, and the
+metadata the route recorded, which is the only thing that says WHAT changed.
+`authz` is who was allowed or refused. A refusal leaves no row in the first and a
+successful change leaves none in the second, so folding them together would
+produce a stream where an absent row means either. Neither is `monitor events`,
+which lists an agent's tool events: what an agent did on a turn, not what a person
+did to the configuration. The management trail is not behind the advanced-audit
+entitlement — the record of who changed what is the base compliance trail — while
+the authorization one is.
+
+`org providers`, `org connections`, `workspace providers` and `workspace
+connections` are the provider governance surface, and they are two orthogonal
+things. **Admissibility** intersects across three tiers: the platform admits a
+provider to an organisation, the organisation admits it to a workspace, and an
+agent needs both — so `workspace providers admit` is refused locally for a
+provider the organisation does not hold, because the row would change nothing.
+Models go the other way: they are switched **off**, never on, at the organisation
+or the workspace tier, and either veto is enough, so a catalogue refresh reaches
+the tenant that paid for it instead of waiting for someone to enable each model.
+**Connections** are named credentials owned by the organisation and lent to
+workspaces, so whoever builds an agent picks one by name with `agent update
+--provider-connection` and never sees the key. Credentials are read from a file or
+stdin, never a flag, and are checked against the shape the engine reports for that
+provider before anything is sent. Revoking a connection from a workspace
+**stops** the agents there that use it rather than falling back to another
+credential — a fallback would mean revoking a key revoked nothing while the spend
+moved. Deleting one is refused while any agent still selects it, so point those
+agents elsewhere first. `org providers managed-only --on` is the switch that makes a named
+connection compulsory; turn it on after the connections exist and the workspaces
+have them, because an agent carrying its own key stops on its next turn.
+
+`org knowledge` and `workspace knowledge` are the shared libraries, and
+`agent shared-knowledge` is the agent's switch over them. A document reaches a
+turn only when all three tiers agree: it is in a library, the workspace is granted
+it, and the agent has switched it on. This is not `agent knowledge`, which is the
+agent's own documents — uploaded to it, deleted with it, reachable by nothing else.
+The uploads are the only multipart writes in this CLI, so they take a real path
+and not `-`: a multipart part carries a filename and stdin has none.
+`agent shared-knowledge show` marks a document the agent cannot use rather than
+hiding it — a library indexed with one embedder and an agent configured with
+another is the hardest thing to diagnose from a distance — and reports separately
+a document that was switched on and later withdrawn, which is a loss to act on.
 
 `org list` is also `org show`: a management key sees one organisation and the
 engine serves no per-organisation detail route. `member show` selects locally over
@@ -801,7 +983,7 @@ names on stderr anything the engine skipped, which the counts alone hide.
 
 ```bash
 polyant-cli governance overview
-polyant-cli governance analytics [--org]
+polyant-cli governance analytics [--org-wide]
 polyant-cli governance metadata
 polyant-cli governance policy list
 polyant-cli governance policy create --file policy.json --yes
@@ -813,7 +995,7 @@ organisation. `overview`, `tools` and `metadata` answer for the addressed
 workspace or the deployment. **Assigning** a policy to an agent is a third thing
 again — `agent governance set`. Creating a policy assigns it to nothing.
 
-`governance analytics` covers the addressed workspace; `--org` aggregates every
+`governance analytics` covers the addressed workspace; `--org-wide` aggregates every
 workspace in the organisation. `governance metadata` is the vocabulary for a
 policy payload, including which gate type belongs to which category.
 
@@ -868,6 +1050,15 @@ so. The permission is `agent.dev:write` (admin and above).
 Active target, whether the instance answers, and the agents the key can see.
 Add `--json` for a single JSON object.
 
+It first names **which credential** is on the header, from the key's own prefix
+and with no request: a `pk_` management key, a `pat_` personal token, or an
+unrecognised prefix said as such rather than assumed. That decides the rest, since
+the two reach different identity routes — `/api/service-context` is management-key
+only and `/api/me` is the personal token's — so a `403` further on is read against
+the credential that actually produced it. With a personal token the report names
+the person it acts as instead of the key, and says plainly that permissions are
+not verified because that route is not the one a token may read.
+
 Permissions come from `GET /api/service-context` when the engine serves it: the
 report then names the key's organisation, its effective permission keys, and the
 workspaces it may address. That route is a pending engine contract, so until it
@@ -910,7 +1101,7 @@ the product commands: a recap on stderr naming the target, the method, the path,
 where the body came from, and which query keys are set — then a confirmation, or
 `--yes` in automation. A production target always needs `--yes`. `DELETE`
 additionally needs `--confirm <path>`: an unrecoverable raw call is the one case
-worth naming the target twice. `--dry-run` prints the recap and sends nothing.
+worth naming the target twice. `--dry-run` prints the recap and sends no writes.
 
 The recap never prints the body and never parses it. Both directions are
 byte-for-byte: the response is printed exactly as received, and the request body
@@ -950,3 +1141,8 @@ npm run build
 
 `npm link` puts the working copy on your PATH — see [Install](#from-a-local-clone)
 for the difference between that and `npm i -g .`.
+
+Before each engine release, `/engine-release-sync` in Claude Code
+(`.claude/skills/engine-release-sync/`) diffs the engine's `develop` against the
+engine this CLI last matched, proposes what to update, add, remove and modify,
+and proves the changes against a throwaway engine it starts and removes itself.

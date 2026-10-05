@@ -28,12 +28,12 @@ async function governanceOverview(args: string[], context: CommandContext | unde
 }
 
 async function governanceAnalytics(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
-  assertKnown(args, { value: ["--from", "--to"], boolean: ["--org"] }, "governance analytics option");
+  assertKnown(args, { value: ["--from", "--to"], boolean: ["--org-wide"] }, "governance analytics option");
   // Two different aggregations behind one word: the workspace route answers for
   // the workspace the request addresses, the organisation route for every
   // workspace in it. Naming both "analytics" and picking by flag keeps the
   // distinction visible instead of hiding it in a slug.
-  if (args.includes("--org")) {
+  if (args.includes("--org-wide")) {
     const { scope, org } = await readScope(deps, context);
     const res = await call(deps, scope, { path: orgPath(org, "/governance/analytics"), query: range(args) });
     return writeRawResponse(deps.io, res.raw);
@@ -194,9 +194,9 @@ export const governanceFamily: Record<string, Node> = {
   },
   analytics: {
     summary: "governance activity over a period",
-    usage: `Usage: polyant-cli governance analytics [--from <iso>] [--to <iso>] [--org]
+    usage: `Usage: polyant-cli governance analytics [--from <iso>] [--to <iso>] [--org-wide]
 
-Without --org this answers for the addressed workspace; with it, for every
+Without --org-wide this answers for the addressed workspace; with it, for every
 workspace in the organisation. ${ORG_NOTE}`,
     action: governanceAnalytics,
   },

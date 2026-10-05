@@ -208,7 +208,11 @@ Options:
 
 The playground route is an alias of the per-instance chat route, with the same
 per-agent authentication: it does NOT honour the management key. An agent with
-authEnabled true answers 401 here, because the CLI holds no runtime agent key.`;
+authEnabled true answers 401 here, because the CLI holds no runtime agent key.
+
+Interrupting before the reply's first output cancels the turn on the engine
+(1.2.0); once output has started, the turn runs to the end and is stored even
+if nothing is left to read it.`;
 
 export function chatCommand(deps: ServiceDependencies): Command {
   return {

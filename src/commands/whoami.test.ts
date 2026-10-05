@@ -243,11 +243,52 @@ describe("collectWhoami", () => {
   });
 });
 
+describe("the credential on the header", () => {
+  const PAT: ResolvedTarget = { ...TARGET, key: "pat_11111111-1111-1111-1111-111111111111_secret" };
+
+  // One header carries both credentials and they reach different routes, so a
+  // caller reading a 403 has to know which of the two it presented.
+  it("names a management key by its prefix, without asking the engine", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(500, {})));
+
+    expect((await collectWhoami(TARGET)).credential).toBe("management-key");
+  });
+
+  it("asks /api/me for a personal token instead of service-context, which refuses it", async () => {
+    const paths: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL) => {
+        paths.push(url.pathname);
+        if (url.pathname === "/health") return jsonResponse(200, { service: "polyant" });
+        if (url.pathname === "/api/me") return jsonResponse(200, { user: { id: "u-1", email: "ada@example.com", name: "Ada" } });
+        return jsonResponse(200, { instances: [] });
+      }),
+    );
+
+    const report = await collectWhoami(PAT);
+
+    expect(report.credential).toBe("personal-token");
+    expect(report.user).toEqual({ id: "u-1", email: "ada@example.com", name: "Ada" });
+    expect(paths).not.toContain("/api/service-context");
+  });
+
+  it("says an unrecognised prefix is unrecognised rather than assuming a management key", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(500, {})));
+
+    const report = await collectWhoami({ ...TARGET, key: "something-else" });
+
+    expect(report.credential).toBe("unknown");
+    expect(renderWhoami(report)).toContain("unrecognised prefix");
+  });
+});
+
 describe("renderWhoami", () => {
   const report: WhoamiReport = {
     target: "prod",
     baseUrl: "https://example.polyant.ai",
     prod: true,
+    credential: "management-key",
     reachable: true,
     service: "polyant",
     agents: [{ slug: "acme", status: "active", authEnabled: true }],

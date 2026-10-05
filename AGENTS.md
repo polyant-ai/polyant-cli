@@ -56,7 +56,7 @@ confirmation. In automation you have three options, in increasing order of
 commitment:
 
 ```bash
-polyant-cli --dry-run agent update acme --model gpt-4.1   # recap only, sends nothing
+polyant-cli --dry-run agent update acme --model gpt-4.1   # recap only, sends no writes
 polyant-cli --yes     agent update acme --model gpt-4.1   # accept the recap
 polyant-cli --yes --confirm acme agent delete acme        # destructive: name it twice
 ```
@@ -92,12 +92,15 @@ its job. Use `monitor status` when you need a gate that fails.
 
 | goal | command |
 |---|---|
-| what exists | `agent list`, `workspace list`, `org list` |
-| one agent in detail | `agent show <slug>` — reports the workspace it really lives in |
-| is it healthy | `monitor status` — exits non-zero when a probe fails |
+| bootstrap an organisation | `org create <slug> --name <name>` — creates its `general` workspace |
+| what exists | `agent list`, `workspace list`, `org list`, `org tasks list` |
+| one agent in detail | `agent show <slug>` — reports stored and effective provider/model separately |
+| is it healthy | `agent checkup <slug> [--fail-on broken\|warning\|note]` for operational checks; `monitor status` for probes, the scheduler included |
 | what happened | `monitor events --limit 50`, `agent logs <slug>` |
-| watch it live | `monitor events --follow [--instance <slug>] [--max <n>]` |
+| watch it live | `monitor events --follow [--instance <slug>] [--max <n>]`, one conversation with `agent conversations show <slug> <id> --follow --max <n>` |
 | cost and latency | `analytics overview`, `analytics agent <slug>`, `analytics org` |
+| cap what an agent spends | `agent budget show <slug>`, `agent budget set <slug> --file -` (Enterprise) |
+| which models an agent may run | `agent providers <slug>`, `agent models` |
 | try an agent | `agent chat <slug> --message "…" [--expect "…"]` |
 | what an agent knows | `agent knowledge list <slug>`, `agent skills show <slug>`, `agent memory list <slug>` |
 | tools from elsewhere | `agent mcp show <slug>`, `agent mcp test <slug> --file -` |
@@ -109,6 +112,9 @@ its job. Use `monitor status` when you need a gate that fails.
 | what a workspace may use | `workspace skills list <ws>`, `workspace plugins list <ws>` |
 | run your local tools against a remote agent | `dev token issue <slug>` → `dev init` → `dev connect <slug> --watch` |
 | anything not covered | `api <METHOD> <path>` |
+
+`org tasks list` is all-or-nothing at the CLI output boundary, but its sequential
+API reads are eventually consistent rather than a server-side snapshot.
 
 `--follow` has no deadline: bound it with `--max <n>` or you will wait forever.
 `dev connect` never returns at all — it holds a session open until interrupted,
@@ -125,15 +131,27 @@ Anything sensitive is read from a file or stdin, never from a flag:
 printf %s "$OPENAI_KEY" | polyant-cli agent secrets set acme --key openai_api_key --file - --yes
 ```
 
-That holds for `agent secrets set`, `org secrets set`, `agent skills env set`,
-`channels set`, `mcp set|test`, `memory add`, `hooks add|update`, `prompt set`,
-`dev connect --token-file` (whose token otherwise comes from the environment) and
-`api --data`. Every structured
+That holds for `agent secrets set`, `org secrets set`, `org connections
+create|update`, `agent skills env set`, `channels set`, `mcp set|test`,
+`memory add`, `hooks add|update`, `prompt set`, `dev connect --token-file` (whose
+token otherwise comes from the environment) and `api --data`. Every structured
 payload — a hook, a channel, a scheduled task, a retention policy, a governance
-assignment, an import bundle — arrives the same way, as `--file <path|->`. Recaps report a payload's **length and source**,
+assignment, an import bundle — arrives the same way, as `--file <path|->`. The
+two library uploads (`org knowledge add`, `workspace knowledge add`) are the
+exception on the `-` half alone: they are multipart, a part carries a filename,
+and stdin has none, so they take a real path and refuse `-` rather than inventing
+a name. Recaps report a payload's **length and source**,
 never its content. `secrets show` and `channels show` report key *names* and
-whether they are configured — the engine never serves a stored value and neither
-does the CLI.
+whether they are configured — those routes never serve a stored value and neither
+does the CLI. One exception, from engine 1.2.0: `agent export` carries the
+values of settings a tool or hook declares non-sensitive (a bucket name, an
+allowlist), and `agent import` writes them back. Credentials still travel as
+names only, and the export names on stderr which keys carry a value.
+
+The selected target serves interactive API documentation at `/api/docs` and the
+raw OpenAPI contract at `/api/openapi.json`. Some request body schemas are not
+yet published there; use the route documentation or engine source for those
+payloads rather than inventing a body.
 
 ## The escape hatch
 
@@ -157,7 +175,9 @@ repeats it. Read the message: it names the flag, the missing scope component, or
 the permission.
 
 **Do not confuse `--dry-run` with an engine dry run.** `--dry-run` is the CLI's:
-it prints the recap and sends nothing. `agent retention run --count-only` is the
+it prints the recap and sends no writes. It may perform reads needed for an
+accurate recap: `prompt set`, for example, reads current state before reporting
+the change. `agent retention run --count-only` is the
 engine's: it really calls the engine, which reports what it *would* delete. Only
 the second one tells you anything about the data.
 

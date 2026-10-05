@@ -5,6 +5,7 @@ import type {
   AgentDetailResponse,
   ChannelsResponse,
   ConversationsResponse,
+  FeedEvent,
   HooksResponse,
   ListAgentsResponse,
   MessageListResponse,
@@ -14,12 +15,13 @@ import type {
   ToolsResponse,
 } from "../api/types.js";
 import type { Command, CommandContext } from "../command.js";
-import { ConfigError } from "../exit.js";
+import { CliError, ConfigError, ExitCode, RemoteError } from "../exit.js";
 import { writeCompositeJson, writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
 import {
   call,
+  callStream,
   cappedTotal,
   expectArray,
   maybe,
@@ -34,10 +36,14 @@ import { buildNode, type Node } from "../runtime/tree.js";
 import { preflight, reportWrite, requireSlug } from "../runtime/workspace.js";
 import type { ResolvedScope } from "../runtime/scope.js";
 import { AGENT_FAMILY_EXTRAS } from "./agent-ops.js";
+import { agentSharedKnowledgeFamily } from "./knowledge-library.js";
+import { agentSupervisionFamily } from "./supervision.js";
+import { agentBudgetFamily } from "./budget.js";
+import { agentProvidersLeaf } from "./providers.js";
 import { AGENT_DATA_EXTRAS } from "./agent-data.js";
 import { AGENT_INTEROP_EXTRAS } from "./agent-interop.js";
 import { chat, CHAT_USAGE } from "./agent-chat.js";
-import { createMonitorCommand } from "./monitor.js";
+import { createMonitorCommand, renderFeedEvent } from "./monitor.js";
 
 /** Kept as a name of its own so the agent tests read as agent tests. */
 export type AgentCommandDependencies = ServiceDependencies;
@@ -75,8 +81,10 @@ async function show(args: string[], context: CommandContext | undefined, deps: A
     { label: "name", value: text(agent.name) },
     { label: "description", value: text(agent.description) },
     { label: "status", value: text(agent.status) },
-    { label: "provider", value: text(agent.provider) },
-    { label: "model", value: text(agent.model) },
+    { label: "provider (stored)", value: text(agent.provider) },
+    { label: "model (stored)", value: text(agent.model) },
+    { label: "provider (effective)", value: text(agent.effectiveProvider) },
+    { label: "model (effective)", value: text(agent.effectiveModel) },
     { label: "authEnabled", value: text(agent.authEnabled) },
     { label: "a2aEnabled", value: agent.a2aEnabled === true ? "true" : "false" },
     { label: "memoryEnabled", value: text(agent.memoryEnabled) },
@@ -107,9 +115,14 @@ async function create(args: string[], context: CommandContext | undefined, deps:
   };
 
   const scope = await scopeFor(deps, context);
-  const changes = Object.entries(body)
-    .filter(([field]) => field !== "slug")
-    .map(([field, value]) => `Set ${field} to ${JSON.stringify(value)}.`);
+  const changes = [
+    ...Object.entries(body)
+      .filter(([field]) => field !== "slug")
+      .map(([field, value]) => `Set ${field} to ${JSON.stringify(value)}.`),
+    // The engine's 1.2.0 defaults, said because both used to be on: an agent
+    // copied by hand from an older one silently loses memory and voice messages.
+    "Memory starts off and speech transcription disabled; turn them on with agent update.",
+  ];
   if (!(await preflight(deps, scope, context, options, { title: `Create agent ${slug}`, changes }))) return;
 
   const res = await call(deps, scope, { method: "POST", path: "/api/instances", body });
@@ -122,8 +135,94 @@ function optional(options: readonly string[], flag: string, field: string): Reco
 }
 
 const UPDATE_FLAGS = {
-  value: ["--name", "--description", "--provider", "--model", "--status", "--stt-provider", "--memory-scope", "--confirm"],
+  value: [
+    "--name",
+    "--description",
+    "--provider",
+    "--model",
+    "--status",
+    "--stt-provider",
+    "--memory-scope",
+    "--provider-connection",
+    "--set",
+    "--confirm",
+  ],
 } as const;
+
+/**
+ * Fields the DTO reports but nothing may write. Everything else the agent's own
+ * read carries is offered to `--set`, so a field the engine adds is settable
+ * here the day it ships instead of waiting for a flag.
+ */
+const READ_ONLY_FIELDS = new Set(["id", "slug", "workspaceId", "workspaceSlug", "createdAt", "updatedAt"]);
+
+/**
+ * `--set field=value`, repeatable, for the twenty-odd writable settings that do
+ * not have a flag of their own — timezone, debounce, cache TTL, the opt-out
+ * wording. A flag each would be a wall of options for fields most callers never
+ * touch, and a hand-written list of them would be the exact drift that let six
+ * settings reach the API and never be persisted.
+ *
+ * The value is read as JSON when it parses as one, so `--set cacheEnabled=true`
+ * sends a boolean and `--set cacheTtl=300` a number; anything else is the string
+ * it looks like, so `--set datetimeTimezone=Europe/Rome` needs no quoting.
+ */
+function parseSetFlags(options: readonly string[]): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (let index = 0; index < options.length; index += 1) {
+    if (options[index] !== "--set") continue;
+    const pair = options[index + 1];
+    if (pair === undefined || pair.startsWith("--")) throw new ConfigError("--set needs <field>=<value>.");
+    const separator = pair.indexOf("=");
+    if (separator <= 0) throw new ConfigError(`--set needs <field>=<value>; got ${JSON.stringify(pair)}.`);
+    const field = pair.slice(0, separator);
+    const raw = pair.slice(separator + 1);
+    if (READ_ONLY_FIELDS.has(field)) throw new ConfigError(`${field} is reported by the engine but cannot be written.`);
+    if (Object.hasOwn(body, field)) throw new ConfigError(`--set names ${field} twice.`);
+    try {
+      body[field] = JSON.parse(raw) as unknown;
+    } catch {
+      body[field] = raw;
+    }
+  }
+  return body;
+}
+
+/**
+ * Request parameters the route acts on and never stores, so the instance it
+ * answers with cannot echo them: `confirmWipe` authorises an embedder switch.
+ */
+const OPERATION_PARAMETERS = new Set(["confirmWipe"]);
+
+/** Loose on purpose: the engine turns a numeric string into a number. */
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b) || String(a) === String(b);
+}
+
+/**
+ * The engine copies a PATCH body through its own list of writable keys and
+ * ignores anything else — silently, with a 200 and a fresh `updatedAt`. So the
+ * write is verified against the instance the route ANSWERS with rather than
+ * trusted: an ignored field would otherwise be reported here as a change that
+ * happened.
+ *
+ * A field counts as ignored only when the answer still carries the value it had
+ * BEFORE and the request asked for a different one. Comparing with the request
+ * alone misread every value the engine normalises — keywords trimmed and
+ * deduplicated, a temperature clamped, a field mapping rewritten — as a write
+ * that did not happen.
+ */
+function unwrittenFields(
+  requested: Record<string, unknown>,
+  before: Record<string, unknown>,
+  after: Record<string, unknown> | undefined,
+): string[] {
+  if (after === undefined) return [];
+  return Object.keys(requested).filter((field) => {
+    if (OPERATION_PARAMETERS.has(field)) return false;
+    return !sameValue(requested[field], before[field]) && sameValue(before[field], after[field]);
+  });
+}
 
 /**
  * The engine's own union. "disabled" is the one that matters: an unrecognised
@@ -162,14 +261,16 @@ async function update(args: string[], context: CommandContext | undefined, deps:
   const slug = requireSlug(args, "update");
   const options = args.slice(1);
   assertKnown(options, UPDATE_FLAGS, "agent update option");
-  const body: Record<string, string> = {
+  const body: Record<string, unknown> = {
     ...optional(options, "--name", "name"),
     ...optional(options, "--description", "description"),
     ...optional(options, "--provider", "provider"),
     ...optional(options, "--model", "model"),
     ...optional(options, "--status", "status"),
+    ...optional(options, "--provider-connection", "providerConnectionId"),
     ...sttProvider(options),
     ...memoryScope(options),
+    ...parseSetFlags(options),
   };
   if (Object.keys(body).length === 0) throw new ConfigError("polyant-cli agent update needs at least one field to change.");
 
@@ -182,13 +283,26 @@ async function update(args: string[], context: CommandContext | undefined, deps:
 
   const changes = Object.entries(body).map(([field, value]) => {
     const previous = (current as unknown as Record<string, unknown>)[field];
-    return String(previous) === value
+    return String(previous) === String(value)
       ? `Leave ${field} unchanged at ${JSON.stringify(value)}.`
       : `Change ${field} from ${JSON.stringify(text(previous))} to ${JSON.stringify(value)}.`;
   });
   if (!(await preflight(deps, scope, context, options, { title: `Update agent ${slug}`, changes }))) return;
 
   const res = await call(deps, scope, { method: "PATCH", path: `/api/instances/${encodeURIComponent(slug)}`, body });
+  const after = (res.body as Partial<AgentDetailResponse> | null)?.instance as unknown as Record<string, unknown> | undefined;
+  const ignored = unwrittenFields(body, current as unknown as Record<string, unknown>, after);
+  if (ignored.length > 0) {
+    // Exit 1, not 2: the request went through and the rest of it was written,
+    // so this is a check that failed rather than a call to correct and repeat.
+    throw new CliError(
+      `The engine accepted the request and left ${ignored.join(", ")} as ${ignored.length === 1 ? "it was" : "they were"}; ` +
+        "any other field in it was written. A field it does not treat as writable is ignored with a 200 and a fresh " +
+        "updatedAt, so this is a mistyped name, an engine older than the field, or a value the engine normalised " +
+        "back to the stored one — not a value that was rejected.",
+      ExitCode.Difference,
+    );
+  }
   reportWrite(deps, context, res, `Updated agent ${slug}.`);
 }
 
@@ -289,10 +403,19 @@ async function toolsShow(args: string[], context: CommandContext | undefined, de
     `GET /api/instances/${slug}/tools`,
   );
   const tools = args.includes("--enabled-only") ? all.filter((tool) => tool.enabled) : all;
+  // Since 1.2.0 a plugin tool is named `<namespace>:<tool>` and the response
+  // lists the plugins behind the served tools, so the namespace names its plugin.
+  const plugins = new Map(
+    ((res.body as Partial<ToolsResponse> | null)?.plugins ?? []).map((plugin) => [plugin.namespace, `${plugin.name}@${plugin.version}`]),
+  );
+  const pluginOf = (name: string): string => {
+    const separator = name.indexOf(":");
+    return separator <= 0 ? "-" : (plugins.get(name.slice(0, separator)) ?? name.slice(0, separator));
+  };
   deps.io.stdout(
     `${renderTable({
-      headers: ["NAME", "ENABLED", "CATEGORY", "SOURCE"],
-      rows: tools.map((tool) => [tool.name, tool.enabled ? "yes" : "no", text(tool.category), text(tool.source)]),
+      headers: ["NAME", "ENABLED", "CATEGORY", "SOURCE", "PLUGIN"],
+      rows: tools.map((tool) => [tool.name, tool.enabled ? "yes" : "no", text(tool.category), text(tool.source), pluginOf(tool.name)]),
       emptyMessage: `Agent ${slug} has no tools to show.`,
     })}\n`,
   );
@@ -482,6 +605,15 @@ async function whatsappUrl(args: string[], context: CommandContext | undefined, 
   writeRawResponse(deps.io, res.raw);
 }
 
+async function slackUrl(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
+  const slug = requireSlug(args, "channels slack url");
+  assertKnown(args.slice(1), {}, "agent channels slack url option");
+  const scope = await scopeFor(deps, context, "read");
+  const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}/channels/slack/webhook-url` });
+  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+  deps.io.stdout(`${text((res.body as { webhookUrl?: unknown } | null)?.webhookUrl)}\n`);
+}
+
 async function whatsappRotate(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "channels whatsapp rotate");
   const options = args.slice(1);
@@ -513,8 +645,24 @@ function secretsPath(slug: string, key?: string): string {
  * The declared key set, read rather than assumed: it varies per agent with the
  * tools and channels it has, so a hardcoded list would drift and would reject
  * keys the engine accepts.
+ *
+ * Two reads, because `/secrets` lists the engine's well-known keys plus the ones
+ * already STORED: a key an enabled tool declares — `s3_use_task_role` and
+ * `aws_region` for fileUpload, `http_allowed_domains`, a plugin's own — shows up
+ * there only once it is set, so checking against it alone refused exactly the
+ * per-agent storage settings 1.2.0 asks to configure.
  */
-async function secretsOf(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<SecretsResponse["secrets"]> {
+interface DeclaredSecrets {
+  secrets: SecretsResponse["secrets"];
+  /**
+   * The tools route answered 403: it needs `tool:read`, which a key scoped to
+   * secrets alone does not hold. The listing then lacks tool keys not yet
+   * stored, and whoever reads a refusal built on it has to be told why.
+   */
+  toolKeysUnreadable: boolean;
+}
+
+async function storedSecrets(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<SecretsResponse["secrets"]> {
   const res = await call(deps, scope, { path: secretsPath(slug) });
   return expectArray<SecretsResponse["secrets"][number]>(
     (res.body as Partial<SecretsResponse> | null)?.secrets,
@@ -522,17 +670,48 @@ async function secretsOf(deps: AgentCommandDependencies, scope: ResolvedScope, s
   );
 }
 
+async function secretsOf(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<DeclaredSecrets> {
+  const listed = await storedSecrets(deps, scope, slug);
+  const known = new Set(listed.map((secret) => secret.key));
+  const declared = await toolDeclaredSecrets(deps, scope, slug);
+  if (declared === undefined) return { secrets: listed, toolKeysUnreadable: true };
+  return {
+    secrets: [...listed, ...declared.filter((key) => !known.has(key)).map((key) => ({ key, configured: false }))],
+    toolKeysUnreadable: false,
+  };
+}
+
+/**
+ * The keys the agent's enabled tools declare. An engine without the route
+ * declares none; a key without `tool:read` gets `undefined`, because the
+ * enrichment must not cost a secrets-only key the secrets it may manage.
+ */
+async function toolDeclaredSecrets(deps: AgentCommandDependencies, scope: ResolvedScope, slug: string): Promise<string[] | undefined> {
+  try {
+    const res = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}/tools/required-secrets` });
+    const specs = (res.body as { requiredSecrets?: { key?: unknown }[] } | null)?.requiredSecrets;
+    return Array.isArray(specs) ? specs.map((spec) => spec.key).filter((key): key is string => typeof key === "string") : [];
+  } catch (error) {
+    if (error instanceof RemoteError && error.status === 404) return [];
+    if (error instanceof RemoteError && error.status === 403) return undefined;
+    throw error;
+  }
+}
+
+const TOOL_KEYS_UNREADABLE =
+  "The keys this agent's tools declare need tool:read, which this key lacks, so a tool key that was never stored is not listed.";
+
 async function secretsShow(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "secrets show");
   assertKnown(args.slice(1), { boolean: ["--configured-only"] }, "agent secrets show option");
   const scope = await scopeFor(deps, context, "read");
-  const res = await call(deps, scope, { path: secretsPath(slug) });
-  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+  if (wantsJson(context)) {
+    const res = await call(deps, scope, { path: secretsPath(slug) });
+    return writeRawResponse(deps.io, res.raw);
+  }
 
-  const all = expectArray<SecretsResponse["secrets"][number]>(
-    (res.body as Partial<SecretsResponse> | null)?.secrets,
-    `GET ${secretsPath(slug)}`,
-  );
+  const { secrets: all, toolKeysUnreadable } = await secretsOf(deps, scope, slug);
+  if (toolKeysUnreadable) deps.io.stderr(`note: ${TOOL_KEYS_UNREADABLE}\n`);
   const secrets = args.includes("--configured-only") ? all.filter((secret) => secret.configured) : all;
   // Presence only. The engine never serves the value, and this command must never
   // become the place where one is printed.
@@ -551,13 +730,14 @@ function requireKey(options: readonly string[], action: string): string {
   return key;
 }
 
-function assertDeclared(secrets: readonly SecretsResponse["secrets"][number][], key: string, slug: string): SecretsResponse["secrets"][number] {
+function assertDeclared({ secrets, toolKeysUnreadable }: DeclaredSecrets, key: string, slug: string): SecretsResponse["secrets"][number] {
   const found = secrets.find((secret) => secret.key === key);
   if (found !== undefined) return found;
   // A typo would otherwise be accepted as a new key by the engine, so the real
   // credential would stay untouched while the command reported success.
   throw new ConfigError(
-    `Agent ${slug} declares no secret named ${JSON.stringify(key)}. Declared: ${secrets.map((secret) => secret.key).join(", ")}.`,
+    `Agent ${slug} declares no secret named ${JSON.stringify(key)}. Declared: ${secrets.map((secret) => secret.key).join(", ")}.` +
+      (toolKeysUnreadable ? ` ${TOOL_KEYS_UNREADABLE}` : ""),
   );
 }
 
@@ -598,9 +778,10 @@ async function secretsUnset(args: string[], context: CommandContext | undefined,
   const key = requireKey(options, "secrets unset");
 
   const scope = await scopeFor(deps, context);
-  const secrets = await secretsOf(deps, scope, slug);
-  const existing = assertDeclared(secrets, key, slug);
-  if (!existing.configured) {
+  // Stored keys only: removing one needs nothing the tools route would add, and
+  // `/secrets` lists every key that is stored.
+  const existing = (await storedSecrets(deps, scope, slug)).find((secret) => secret.key === key);
+  if (existing === undefined || !existing.configured) {
     // The engine answers 200 for a key it never held, so without this a mistyped
     // or already-removed key would report success while the real one stayed put.
     throw new ConfigError(`Secret ${key} is not configured on ${slug}; there is nothing to remove.`);
@@ -796,8 +977,14 @@ async function conversationsShow(args: string[], context: CommandContext | undef
   const id = args[1];
   if (id === undefined || id.startsWith("--")) throw new ConfigError("polyant-cli agent conversations show needs a conversation id.");
   const options = args.slice(2);
-  assertKnown(options, { value: ["--limit"] }, "agent conversations show option");
+  assertKnown(options, { value: ["--limit", "--max"], boolean: ["--follow"] }, "agent conversations show option");
+  const following = options.includes("--follow");
+  const max = positiveInteger(takeValue(options, "--max"), "--max");
+  if (max !== undefined && !following) throw new ConfigError("--max bounds --follow; it means nothing without it.");
   const scope = await scopeFor(deps, context, "read");
+  // JSON Lines, like `monitor events --follow`: a composite document cannot be
+  // streamed, so a JSON follow prints the live frames alone.
+  if (following && wantsJson(context)) return followConversation(deps, scope, context, slug, id, max);
   const encoded = encodeURIComponent(id);
   const conversation = await call(deps, scope, { path: `/api/conversations/${encoded}`, query: { instanceId: slug } });
   const messages = await call(deps, scope, {
@@ -837,6 +1024,54 @@ async function conversationsShow(args: string[], context: CommandContext | undef
       emptyMessage: "No messages in this conversation.",
     })}\n`,
   );
+  if (following) await followConversation(deps, scope, context, slug, id, max);
+}
+
+/**
+ * One conversation as it happens, on any channel (engine 1.2.0): the turn's
+ * live events while it runs, and a `persisted` signal each time a message or a
+ * hook run for it is stored — the cue to re-read the transcript, which the
+ * signal itself does not carry. Never returns on its own: bound it with --max.
+ */
+async function followConversation(
+  deps: AgentCommandDependencies,
+  scope: ResolvedScope,
+  context: CommandContext | undefined,
+  slug: string,
+  id: string,
+  max: string | undefined,
+): Promise<void> {
+  const limit = max === undefined ? Infinity : Number(max);
+  const stream = await callStream(deps, scope, {
+    path: "/api/activity-stream/conversation",
+    // `instanceId` takes the agent's SLUG here, whatever the name says.
+    query: { conversationId: id, instanceId: slug },
+    timeoutMs: 0,
+  });
+  if (!wantsJson(context)) deps.io.stderr(`following conversation ${id} — interrupt to stop\n`);
+
+  let seen = 0;
+  for await (const event of stream.events) {
+    if (event.event === "persisted") {
+      deps.io.stdout(
+        wantsJson(context)
+          ? `${JSON.stringify({ event: "persisted" })}\n`
+          : `${new Date().toISOString()}  persisted  a message or hook run was stored\n`,
+      );
+    } else if (wantsJson(context)) {
+      deps.io.stdout(`${event.data}\n`);
+    } else {
+      let parsed: FeedEvent | undefined;
+      try {
+        parsed = JSON.parse(event.data) as FeedEvent;
+      } catch {
+        parsed = undefined;
+      }
+      deps.io.stdout(`${parsed === undefined ? event.data : renderFeedEvent(parsed)}\n`);
+    }
+    seen += 1;
+    if (seen >= limit) return;
+  }
 }
 
 /**
@@ -924,6 +1159,28 @@ const LEAVES: Record<string, Node> = {
     usage: `Usage: polyant-cli agent update <slug> [--name <name>] [--description <text>] [--status <status>]
                                  [--provider <name>] [--model <id>] [--stt-provider <p>]
                                  [--memory-scope <agent|conversation>]
+                                 [--provider-connection <id>] [--set <field>=<value> ...]
+
+--set reaches the writable settings with no flag of their own: the timezone and
+locale, the debounce and typing delays, the cache TTL, the opt-out wording. The
+value is read as JSON when it parses as one, so cacheEnabled=true sends a boolean
+and datetimeTimezone=Europe/Rome a string. Run \`agent show <slug> --json\` for the
+field names. Two worth knowing from engine 1.2.0: memoryEnabled=true, since new
+agents start with memory off, and webContextFieldMapping='{"customerId":"customer.id"}',
+which maps the \`context\` a web chat sends onto conversation state — the web twin
+of the HTTP channel's mapping. Use \`agent providers <slug>\` to see which
+--provider, --model and --provider-connection values the agent may take.
+
+The engine IGNORES a field it does not treat as writable — with a 200 and a fresh
+updatedAt — so the response is checked: a field it asked to change and that comes
+back with its old value exits 1, since the rest of the request was written. A
+value the engine normalised (keywords trimmed, a temperature clamped) counts as
+written. confirmWipe=true authorises an embedder switch that would delete the
+agent's memories and knowledge, and is not checked, because nothing stores it.
+
+--provider-connection points the agent at one of the organisation's named
+credentials (\`org connections list\`), and is required once the organisation has
+managed connections on.
 
 --stt-provider is one of openai, aws, deepgram or disabled. "disabled" is a real
 setting, not an absent one: the agent then tells a sender that voice messages
@@ -950,7 +1207,10 @@ the key they were written with, so a flip changes what NEW turns can recall.`,
     },
     set: {
       summary: "replace one prompt section from a file or stdin",
-      usage: "Usage: polyant-cli agent prompt set <slug> --section <key> --file <path|->",
+      usage: `Usage: polyant-cli agent prompt set <slug> --section <key> --file <path|->
+
+This command reads current state to build an accurate recap. With --dry-run it
+still performs that read, but sends no writes.`,
       action: promptSet,
       mutates: true,
     },
@@ -958,7 +1218,12 @@ the key they were written with, so a flip changes what NEW turns can recall.`,
   tools: {
     show: {
       summary: "list the tools available to an agent",
-      usage: "Usage: polyant-cli agent tools show <slug> [--enabled-only]",
+      usage: `Usage: polyant-cli agent tools show <slug> [--enabled-only]
+
+PLUGIN names the plugin a namespaced tool comes from. Since engine 1.2.0 the
+GitHub, Render, HubSpot and Markdown-to-PDF families are plugins, named
+\`github:issue\`, \`hubspot:contact\`, \`extra:markdownToPdf\` and so on; an agent
+that had the old flat names must be re-enabled on the namespaced ones.`,
       action: toolsShow,
     },
     set: {
@@ -982,7 +1247,14 @@ person did, or when nobody has.`,
     },
     set: {
       summary: "set one channel's configuration from a file or stdin",
-      usage: "Usage: polyant-cli agent channels set <slug> <type> --file <path|-> [--disable]",
+      usage: `Usage: polyant-cli agent channels set <slug> <type> --file <path|-> [--disable]
+
+Since engine 1.2.0 Telegram and Slack arrive through webhooks, not through a
+connection the engine opens. Slack takes botToken and signingSecret — there is
+no appToken any more, and Socket Mode must be off in the Slack app, whose
+Request URL is \`agent channels slack url\`. Telegram registers its own webhook
+when the channel starts, so the engine needs a public HTTPS address with
+/webhooks/* routed to it.`,
       action: channelsSet,
       mutates: true,
     },
@@ -991,6 +1263,18 @@ person did, or when nobody has.`,
       usage: "Usage: polyant-cli agent channels remove <slug> <type> --yes --confirm <type>",
       action: channelsRemove,
       mutates: true,
+    },
+    slack: {
+      url: {
+        summary: "print the Request URL to paste into the Slack app",
+        usage: `Usage: polyant-cli agent channels slack url <slug>
+
+The address Slack must POST events to, for the app's Event Subscriptions and
+Interactivity Request URL. It carries no secret — Slack's signing secret
+authenticates the request — so channel:read is enough. The engine builds it from
+its public base URL: a localhost address means that base URL is not set.`,
+        action: slackUrl,
+      },
     },
     whatsapp: {
       url: {
@@ -1016,7 +1300,13 @@ only copy. Update the Twilio Console before the next inbound message.`,
   secrets: {
     show: {
       summary: "list which secrets an agent has configured",
-      usage: "Usage: polyant-cli agent secrets show <slug> [--configured-only]",
+      usage: `Usage: polyant-cli agent secrets show <slug> [--configured-only]
+
+The engine's well-known keys, the keys already stored, and the keys the agent's
+enabled tools declare (fileUpload's s3_bucket_name, aws_region and
+s3_use_task_role, httpRequest's http_allowed_domains, a plugin's own). Presence
+only. With --json the engine's own list is printed unchanged, without the
+tool-declared keys.`,
       action: secretsShow,
     },
     set: {
@@ -1087,7 +1377,15 @@ with either.`,
     },
     show: {
       summary: "show one conversation and its messages",
-      usage: "Usage: polyant-cli agent conversations show <slug> <conversationId> [--limit <n>]",
+      usage: `Usage: polyant-cli agent conversations show <slug> <conversationId> [--limit <n>]
+       polyant-cli agent conversations show <slug> <conversationId> --follow [--max <n>]
+
+--follow prints the transcript, then stays on the conversation: the engine
+first replays the conversation's recent events, then sends each turn's events
+live as it runs, on any channel, and a "persisted" line each time a
+message or hook run is stored — re-run without --follow to read it. It has no
+deadline: bound it with --max <n> events. With --json the follow prints the
+live frames alone, as JSON Lines. Needs engine 1.2.0.`,
       action: conversationsShow,
     },
   },
@@ -1106,7 +1404,9 @@ reach answers 404 or 403; it does not answer an empty list.`,
 const AGENT_SUMMARIES: Record<string, string> = {
   agent: "manage agents, their configuration and their conversations",
   "agent a2a": "expose an agent over the Agent2Agent protocol",
+  "agent budget": "an agent's spend caps (Enterprise)",
   "agent channels": "manage an agent's channels",
+  "agent channels slack": "the Slack inbound webhook address",
   "agent channels whatsapp": "reveal and rotate the WhatsApp inbound webhook secret",
   "agent compliance": "an agent's model card, snapshots and reports",
   "agent conversations": "manage an agent's conversations",
@@ -1119,7 +1419,9 @@ const AGENT_SUMMARIES: Record<string, string> = {
   "agent optouts": "manage the contacts that have opted out of this agent",
   "agent prompt": "manage an agent's prompt",
   "agent retention": "manage an agent's data retention",
+  "agent checks": "the supervision verdicts raised on this agent",
   "agent secrets": "manage an agent's secrets",
+  "agent shared-knowledge": "the shared library documents this agent draws on",
   "agent skills": "manage the skills an agent has enabled",
   "agent skills env": "manage a skill's environment on one agent",
   "agent tasks": "manage an agent's scheduled tasks",
@@ -1134,7 +1436,21 @@ const AGENT_SUMMARIES: Record<string, string> = {
  */
 export function createAgentCommand(overrides: Partial<AgentCommandDependencies> = {}): Command {
   const deps = { ...processServiceDependencies, ...overrides };
-  return buildNode({ ...LEAVES, ...AGENT_FAMILY_EXTRAS, ...AGENT_INTEROP_EXTRAS, ...AGENT_DATA_EXTRAS }, deps, ["agent"], AGENT_SUMMARIES);
+  return buildNode(
+    {
+      ...LEAVES,
+      ...AGENT_FAMILY_EXTRAS,
+      ...AGENT_INTEROP_EXTRAS,
+      ...AGENT_DATA_EXTRAS,
+      ...agentSupervisionFamily,
+      "shared-knowledge": agentSharedKnowledgeFamily,
+      budget: agentBudgetFamily,
+      providers: agentProvidersLeaf,
+    },
+    deps,
+    ["agent"],
+    AGENT_SUMMARIES,
+  );
 }
 
 export const agentCommand = createAgentCommand();

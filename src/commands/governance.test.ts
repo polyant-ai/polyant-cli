@@ -63,10 +63,12 @@ describe("governance analytics", () => {
     expect(h.calls[0]).toMatchObject({ path: "/api/governance/analytics", query: { from: "2026-01-01" } });
   });
 
-  it("addresses the organisation route under --org", async () => {
+  // `--org-wide`, because `--org` is the global flag that names an organisation:
+  // the parser takes it, with the next token as its value, before this runs.
+  it("addresses the organisation route under --org-wide", async () => {
     const h = harness([response({ total: 0 })]);
 
-    await leaf(h.commands, ["analytics"])(["--org"], context());
+    await leaf(h.commands, ["analytics"])(["--org-wide"], context());
 
     expect(h.calls[0].path).toBe("/api/organizations/default/governance/analytics");
   });

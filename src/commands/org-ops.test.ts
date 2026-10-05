@@ -246,14 +246,36 @@ describe("member set-role", () => {
 });
 
 describe("org plugins", () => {
-  it("shows which plugins this organisation is granted", async () => {
+  it("lists the plugins this organisation holds, with no grant column to misread", async () => {
+    const h = harness([response({ plugins: [{ name: "sales", version: "1.2.0", compatible: false }] })]);
+
+    await leaf(h.commands, ["org", "plugins"])([], context());
+
+    const table = h.out.join("");
+    expect(table).not.toContain("GRANTED");
+    expect(table).toMatch(/sales\s+1\.2\.0\s+no \(incompatible\)/);
+  });
+
+  it("reads a marketplace plugin's health, which carries no compatible flag", async () => {
+    // The engine's rows for a marketplace installation have `health` and no
+    // `compatible`; reading `compatible` alone reported every one as "no".
     const h = harness([
-      response({ plugins: [{ name: "sales", version: "1.2.0", compatible: true, enabled: false }] }),
+      response({
+        plugins: [
+          { pluginId: "p-1", name: "hubspot", version: "1.1.0", toolNames: ["hubspot_note"], health: "ready" },
+          { pluginId: "p-2", name: "oauthdemo", version: "0.1.0", toolNames: [], health: "revoked" },
+          { name: "mystery", version: "0.0.1" },
+        ],
+      }),
     ]);
 
     await leaf(h.commands, ["org", "plugins"])([], context());
 
-    expect(h.out.join("")).toMatch(/sales\s+1\.2\.0\s+no\s+yes/);
+    const table = h.out.join("");
+    expect(table).toMatch(/hubspot\s+1\.1\.0\s+yes/);
+    expect(table).toMatch(/oauthdemo\s+0\.1\.0\s+no \(revoked\)/);
+    // A row with neither field is not guessed into a "no".
+    expect(table).toMatch(/mystery\s+0\.0\.1\s+unknown/);
   });
 });
 
@@ -267,9 +289,10 @@ const WS_SKILLS = {
 
 const WS_PLUGINS = {
   plugins: [
-    { name: "sales", version: "1.2.0", compatible: true, grantedToOrg: true, assigned: false },
-    { name: "ticketing", version: "0.9.0", compatible: true, grantedToOrg: false, assigned: false },
-    { name: "legacy", version: "0.1.0", compatible: true, grantedToOrg: true, assigned: true },
+    { name: "sales", version: "1.2.0", compatible: true, assigned: false },
+    { name: "legacy", version: "0.1.0", compatible: false, assigned: true },
+    { pluginId: "p-1", name: "hubspot", version: "1.1.0", available: true, health: "ready", assigned: false },
+    { pluginId: "p-2", name: "flaky", version: "0.2.0", available: false, health: "unavailable", assigned: false },
   ],
 };
 
@@ -357,15 +380,34 @@ describe("workspace skills", () => {
 });
 
 describe("workspace plugins", () => {
-  it("reports the organisation's grant and the workspace's assignment separately", async () => {
+  it("reports the workspace's assignment of each plugin the organisation holds", async () => {
     const h = harness([response(WS_PLUGINS)]);
 
     await leaf(h.commands, ["workspace", "plugins", "list"])(["labs"], context());
 
     const table = h.out.join("");
-    // NAME VERSION GRANTED ASSIGNED COMPATIBLE
-    expect(table).toMatch(/sales\s+1\.2\.0\s+yes\s+no\s+yes/);
-    expect(table).toMatch(/ticketing\s+0\.9\.0\s+no\s+no\s+yes/);
+    // NAME VERSION ASSIGNED AVAILABLE
+    expect(table).toMatch(/sales\s+1\.2\.0\s+no\s+yes/);
+    expect(table).toMatch(/legacy\s+0\.1\.0\s+yes\s+no \(incompatible\)/);
+    expect(table).toMatch(/hubspot\s+1\.1\.0\s+no\s+yes/);
+    expect(table).toMatch(/flaky\s+0\.2\.0\s+no\s+no \(unavailable\)/);
+  });
+
+  it("assigns a healthy marketplace plugin without warning it cannot run", async () => {
+    const h = harness([response(WS_PLUGINS), response({ assigned: true })]);
+
+    await leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "hubspot"], context({ yes: true }));
+
+    expect(h.calls[1]).toMatchObject({ method: "PUT", path: "/api/organizations/default/workspaces/labs/plugins/hubspot" });
+    expect(h.err.join("")).not.toMatch(/refuse|cannot run|incompatible/);
+  });
+
+  it("warns in the recap when the engine reports the plugin unavailable", async () => {
+    const h = harness([response(WS_PLUGINS), response({ assigned: true })]);
+
+    await leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "flaky"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain("The engine reports this plugin unavailable");
   });
 
   it("assigns a plugin the organisation holds", async () => {
@@ -379,21 +421,15 @@ describe("workspace plugins", () => {
     });
   });
 
-  it("refuses to assign a plugin the organisation does not hold, because the row would change nothing", async () => {
+  it("refuses a plugin absent from the listing, because the row would change nothing", async () => {
+    // Absent covers both "not granted" and "not installed": the engine lists
+    // only what the organisation holds and does not say which.
     const h = harness([response(WS_PLUGINS)]);
 
     await expect(
       leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "ticketing"], context({ yes: true })),
-    ).rejects.toThrow(/does not hold plugin ticketing/);
+    ).rejects.toThrow(/holds no plugin "ticketing".*Held: sales, legacy, hubspot, flaky/s);
     expect(h.calls.filter((c) => c.method !== undefined && c.method !== "GET")).toEqual([]);
-  });
-
-  it("refuses a plugin this deployment has not installed", async () => {
-    const h = harness([response(WS_PLUGINS)]);
-
-    await expect(
-      leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "ghost"], context({ yes: true })),
-    ).rejects.toThrow(/no plugin "ghost"/);
   });
 
   it("revokes an assigned plugin once the name is confirmed", async () => {
@@ -431,5 +467,35 @@ describe("dry runs", () => {
       const writes = h.calls.filter((c) => c.method !== undefined && c.method !== "GET");
       expect(writes, path.join(" ")).toEqual([]);
     }
+  });
+});
+
+describe("credential writes on a personal token", () => {
+  // The engine refuses these with a 403 since 1.2.0; refused here before any read.
+  it.each([
+    [["apikey", "create"], ["ci", "--permissions", "agent:read"]],
+    [["apikey", "update"], ["k-1", "--name", "ci"]],
+    [["role", "create"], ["auditor", "--permissions", "agent:read"]],
+  ])("%j refuses a pat_ credential locally", async (path, args) => {
+    const h = harness([], { env: { POLYANT_KEY_DEV: "pat_dev_token" } });
+
+    await expect(leaf(h.commands, path)(args, context({ yes: true }))).rejects.toThrow(/cannot run on a personal token/);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("binds the creator as owner when a person creates a workspace, and says so", async () => {
+    const h = harness([response({ workspace: { slug: "sales" } }, 201)], { env: { POLYANT_KEY_DEV: "pat_dev_token" } });
+
+    await leaf(h.commands, ["workspace", "create"])(["sales", "--name", "Sales"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain("You become the workspace's owner");
+  });
+
+  it("does not claim an owner when a management key creates one", async () => {
+    const h = harness([response({ workspace: { slug: "sales" } }, 201)]);
+
+    await leaf(h.commands, ["workspace", "create"])(["sales"], context({ yes: true }));
+
+    expect(h.err.join("")).not.toContain("owner");
   });
 });
