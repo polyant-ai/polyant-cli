@@ -253,7 +253,29 @@ describe("org plugins", () => {
 
     const table = h.out.join("");
     expect(table).not.toContain("GRANTED");
-    expect(table).toMatch(/sales\s+1\.2\.0\s+no/);
+    expect(table).toMatch(/sales\s+1\.2\.0\s+no \(incompatible\)/);
+  });
+
+  it("reads a marketplace plugin's health, which carries no compatible flag", async () => {
+    // The engine's rows for a marketplace installation have `health` and no
+    // `compatible`; reading `compatible` alone reported every one as "no".
+    const h = harness([
+      response({
+        plugins: [
+          { pluginId: "p-1", name: "hubspot", version: "1.1.0", toolNames: ["hubspot_note"], health: "ready" },
+          { pluginId: "p-2", name: "oauthdemo", version: "0.1.0", toolNames: [], health: "revoked" },
+          { name: "mystery", version: "0.0.1" },
+        ],
+      }),
+    ]);
+
+    await leaf(h.commands, ["org", "plugins"])([], context());
+
+    const table = h.out.join("");
+    expect(table).toMatch(/hubspot\s+1\.1\.0\s+yes/);
+    expect(table).toMatch(/oauthdemo\s+0\.1\.0\s+no \(revoked\)/);
+    // A row with neither field is not guessed into a "no".
+    expect(table).toMatch(/mystery\s+0\.0\.1\s+unknown/);
   });
 });
 
@@ -269,6 +291,8 @@ const WS_PLUGINS = {
   plugins: [
     { name: "sales", version: "1.2.0", compatible: true, assigned: false },
     { name: "legacy", version: "0.1.0", compatible: false, assigned: true },
+    { pluginId: "p-1", name: "hubspot", version: "1.1.0", available: true, health: "ready", assigned: false },
+    { pluginId: "p-2", name: "flaky", version: "0.2.0", available: false, health: "unavailable", assigned: false },
   ],
 };
 
@@ -362,9 +386,28 @@ describe("workspace plugins", () => {
     await leaf(h.commands, ["workspace", "plugins", "list"])(["labs"], context());
 
     const table = h.out.join("");
-    // NAME VERSION ASSIGNED COMPATIBLE
+    // NAME VERSION ASSIGNED AVAILABLE
     expect(table).toMatch(/sales\s+1\.2\.0\s+no\s+yes/);
-    expect(table).toMatch(/legacy\s+0\.1\.0\s+yes\s+no/);
+    expect(table).toMatch(/legacy\s+0\.1\.0\s+yes\s+no \(incompatible\)/);
+    expect(table).toMatch(/hubspot\s+1\.1\.0\s+no\s+yes/);
+    expect(table).toMatch(/flaky\s+0\.2\.0\s+no\s+no \(unavailable\)/);
+  });
+
+  it("assigns a healthy marketplace plugin without warning it cannot run", async () => {
+    const h = harness([response(WS_PLUGINS), response({ assigned: true })]);
+
+    await leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "hubspot"], context({ yes: true }));
+
+    expect(h.calls[1]).toMatchObject({ method: "PUT", path: "/api/organizations/default/workspaces/labs/plugins/hubspot" });
+    expect(h.err.join("")).not.toMatch(/refuse|cannot run|incompatible/);
+  });
+
+  it("warns in the recap when the engine reports the plugin unavailable", async () => {
+    const h = harness([response(WS_PLUGINS), response({ assigned: true })]);
+
+    await leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "flaky"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain("The engine reports this plugin unavailable");
   });
 
   it("assigns a plugin the organisation holds", async () => {
@@ -385,7 +428,7 @@ describe("workspace plugins", () => {
 
     await expect(
       leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "ticketing"], context({ yes: true })),
-    ).rejects.toThrow(/holds no plugin "ticketing".*Held: sales, legacy/s);
+    ).rejects.toThrow(/holds no plugin "ticketing".*Held: sales, legacy, hubspot, flaky/s);
     expect(h.calls.filter((c) => c.method !== undefined && c.method !== "GET")).toEqual([]);
   });
 

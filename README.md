@@ -844,11 +844,15 @@ of the organisation's skills, and which of its plugins, agents in that workspace
 may actually use. What an agent sees is the **intersection** of the
 organisation's grant and this assignment. Since engine 1.2.0 the plugin listing
 stops at what the organisation holds — an ungranted plugin is absent, not shown
-as ungranted — so `workspace plugins list` has only an ASSIGNED column, and a name
+as ungranted — so `workspace plugins list` has no grant column, and a name
 missing from it may be ungranted or not installed at all. Assigning a plugin the
 organisation does not hold is refused locally rather than written as a row that
-changes nothing; the grant itself is a platform-admin action, made from the web
-console. `workspace providers list` follows the same rule for providers.
+changes nothing. Holding one is decided in the web console: an Organization Admin
+installs a marketplace plugin, and a Platform Admin grants a plugin baked into the
+image. AVAILABLE, in both plugin listings, reads whichever field the engine sends
+for the row: `compatible` for a baked plugin, the installed release's `health`
+for a marketplace one, and `unknown` when it sends neither.
+`workspace providers list` follows the same rule for providers.
 
 The listings are the whole organisation catalogue with an ASSIGNED column, not
 the assigned subset, because "why does this agent not have that skill" is
