@@ -1220,10 +1220,10 @@ still performs that read, but sends no writes.`,
       summary: "list the tools available to an agent",
       usage: `Usage: polyant-cli agent tools show <slug> [--enabled-only]
 
-PLUGIN names the plugin a namespaced tool comes from. Since engine 1.2.0 the
-GitHub, Render, HubSpot and Markdown-to-PDF families are plugins, named
-\`github:issue\`, \`hubspot:contact\`, \`extra:markdownToPdf\` and so on; an agent
-that had the old flat names must be re-enabled on the namespaced ones.`,
+PLUGIN names the plugin a namespaced tool (\`<namespace>:<tool>\`) comes from.
+Since engine 1.2.0 the GitHub, Render, HubSpot and Markdown-to-PDF families are
+plugins. The upgrade renames an agent's old flat names in place, so they stay
+enabled and work again once the plugin is installed.`,
       action: toolsShow,
     },
     set: {
