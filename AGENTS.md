@@ -100,6 +100,7 @@ its job. Use `monitor status` when you need a gate that fails.
 | watch it live | `monitor events --follow [--instance <slug>] [--max <n>]`, one conversation with `agent conversations show <slug> <id> --follow --max <n>` |
 | cost and latency | `analytics overview`, `analytics agent <slug>`, `analytics org` |
 | cap what an agent spends | `agent budget show <slug>`, `agent budget set <slug> --file -` (Enterprise) |
+| answer phone calls | `agent channels voice status <slug>`, `agent channels voice settings show\|set <slug>` (Enterprise) |
 | which models an agent may run | `agent providers <slug>`, `agent models` |
 | try an agent | `agent chat <slug> --message "…" [--expect "…"]` |
 | what an agent knows | `agent knowledge list <slug>`, `agent skills show <slug>`, `agent memory list <slug>` |

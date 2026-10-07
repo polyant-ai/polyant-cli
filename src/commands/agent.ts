@@ -39,6 +39,7 @@ import { AGENT_FAMILY_EXTRAS } from "./agent-ops.js";
 import { agentSharedKnowledgeFamily } from "./knowledge-library.js";
 import { agentSupervisionFamily } from "./supervision.js";
 import { agentBudgetFamily } from "./budget.js";
+import { agentVoiceFamily } from "./voice.js";
 import { agentProvidersLeaf } from "./providers.js";
 import { AGENT_DATA_EXTRAS } from "./agent-data.js";
 import { AGENT_INTEROP_EXTRAS } from "./agent-interop.js";
@@ -1254,7 +1255,11 @@ connection the engine opens. Slack takes botToken and signingSecret — there is
 no appToken any more, and Socket Mode must be off in the Slack app, whose
 Request URL is \`agent channels slack url\`. Telegram registers its own webhook
 when the channel starts, so the engine needs a public HTTPS address with
-/webhooks/* routed to it.`,
+/webhooks/* routed to it.
+
+The voice channel takes its settings through \`agent channels voice settings
+set\`, which validates the profile before saving; this command would store the
+raw shape unchecked.`,
       action: channelsSet,
       mutates: true,
     },
@@ -1296,6 +1301,7 @@ only copy. Update the Twilio Console before the next inbound message.`,
         mutates: true,
       },
     },
+    voice: agentVoiceFamily,
   },
   secrets: {
     show: {
@@ -1408,6 +1414,8 @@ const AGENT_SUMMARIES: Record<string, string> = {
   "agent channels": "manage an agent's channels",
   "agent channels slack": "the Slack inbound webhook address",
   "agent channels whatsapp": "reveal and rotate the WhatsApp inbound webhook secret",
+  "agent channels voice": "the telephone voice channel: readiness and settings (Enterprise)",
+  "agent channels voice settings": "read and replace the voice channel's settings",
   "agent compliance": "an agent's model card, snapshots and reports",
   "agent conversations": "manage an agent's conversations",
   "agent events": "manage an agent's event sources",

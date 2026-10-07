@@ -116,6 +116,7 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | 0.3.x | the first engine release after 1.1.0-ee | adds `monitor ai-logs`, `monitor traces` and `agent messages`; the three routes merged to the engine's develop on 2026-09-01, so against 1.1.0-ee or older all three answer `404` |
 | 0.4.x | the same, plus the engine's develop as of 2026-09-02 | adds `workspace skills` and `workspace plugins`; `agent update` gains `--memory-scope`, `monitor events` gains `--conversation`, `agent models` gains a VISION column, and `agent channels show` reports an unreadable config and an engine-side disable |
 | 0.6.x | 1.2.0 and 1.2.0-ee, verified against the engine's develop (2026-10-01) | adds `agent budget`, `agent providers`, `agent channels slack url` and `agent conversations show --follow`; `agent checkup` gains `--fail-on`, `monitor status` probes the scheduler, `agent models` lists the embedders and the five-minute cache-write rate, `agent tools show` names a tool's plugin, and `agent secrets` accepts the keys a tool declares. Reads the 1.2.0 plugin and provider lists, where an ungranted row is absent — against 0.5.x those made `workspace providers admit` and `workspace plugins assign` refuse everything |
+| 0.7.x | 1.2.0-ee with the telephone voice channel, verified against the engine's develop (2026-10-07) | adds `agent channels voice status` and `agent channels voice settings show\|set`; an engine built without the voice package reports `available: no`, and 1.2.0 OSS answers `404` |
 | 0.5.x | the engine's develop as of 2026-09-14 | adds `org providers`, `org connections`, `workspace providers`, `workspace connections`, `org audit`, `org knowledge`, `workspace knowledge`, `agent shared-knowledge`, `agent checks`, `agent health`, `analytics checks` and `member invitations`; `agent update` gains `--set` and `--provider-connection`, and `whoami` reports which credential is on the header |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
@@ -431,6 +432,9 @@ polyant-cli --context engineering agent tools set acme --enable web_search,crm
 polyant-cli --context engineering agent channels show acme
 polyant-cli --context engineering agent channels set acme telegram --file telegram.json
 polyant-cli --context engineering agent channels slack url acme
+polyant-cli --context engineering agent channels voice status acme
+polyant-cli --context engineering agent channels voice settings show acme > voice.json
+polyant-cli --context engineering agent channels voice settings set acme --file voice.json --yes
 polyant-cli --context engineering agent channels remove acme telegram --yes --confirm telegram
 
 polyant-cli --context engineering agent secrets show acme --configured-only
@@ -684,6 +688,19 @@ a server-generated secret instead. That secret is bearer-equivalent: `channels
 show` withholds it, both routes need `channel:write`, and a `404` means the
 channel is not in API-Key mode rather than that the agent is missing. Rotating
 invalidates the current URL immediately; update the Twilio Console first.
+
+The telephone voice channel (Enterprise) has commands of its own because its
+stored shape packs the voice profile into a JSON string that `channels set`
+would merge without checking. `agent channels voice status` gives the URL to
+paste into the Twilio number's "A call comes in" setting and lists what a call
+still needs: fields, keys (`elevenlabs_api_key`, `deepgram_api_key` for the
+default speech recognition, `typesafe_api_key` for the judges) and failing
+checks. `settings show` prints the settings as the JSON `settings set` takes, so
+the file can be versioned; `settings set` replaces the whole configuration,
+has the engine check every field before the recap, and saves nothing while an
+issue remains. Keep `twilio.authToken` out of a versioned file: an absent token
+keeps the stored one. Saving an enabled channel synthesizes the agent's fixed
+phrases again, which spends ElevenLabs characters.
 
 ### `polyant-cli monitor`
 
