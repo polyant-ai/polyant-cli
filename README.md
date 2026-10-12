@@ -257,10 +257,11 @@ against both at 1.2.0: a command that needs an Enterprise route answers `404`
 against an OSS engine.
 
 **The credential comes first.** An OSS engine accepts a management key (`pk_…`)
-on `X-Polyant-Key`, but serves no route or panel page that issues one, and it does
-not know personal tokens: a `pat_…` is refused with `401`. Enterprise issues both,
-management keys through `apikey create`. Against OSS the CLI therefore needs a
-management key provisioned outside the engine's API.
+on `X-Polyant-Key` and, from 1.2.0, issues one from the panel: an organization
+Owner opens **API keys** in the sidebar, creates a key and copies the token, which
+is shown once. The key carries the Owner permission set. An OSS engine does not
+know personal tokens: a `pat_…` is refused with `401`. Enterprise issues both, and
+management keys also through `apikey create`.
 
 **Works against OSS:**
 
@@ -275,6 +276,8 @@ management key provisioned outside the engine's API.
 - `whoami`, which reports the key's permissions as unverified because the OSS
   engine has no `GET /api/service-context`;
 - `member list`, `show`, `remove` and `set-role`, with an explicit `--org`;
+- `apikey list`. Creating and revoking a key needs a signed-in panel session on
+  OSS, so `apikey create` and `apikey delete` answer `403` with a key;
 - `api`, every `config` command, and `dev init`, which run locally or forward as
   given.
 
@@ -288,8 +291,8 @@ panel's URL, `/organizations/<org>/workspaces/<workspace>/…`.
   `agent channels voice`, `agent checkup`, `agent checks`, `agent health`,
   `agent compliance`, `agent governance`, `agent retention`, `agent providers`,
   `agent provider-roles`, `agent connections` and `agent shared-knowledge`;
-- administration: every `org`, `workspace`, `role`, `apikey` and `skill` command,
-  and `member invitations`;
+- administration: every `org`, `workspace`, `role` and `skill` command,
+  `apikey update`, `apikey permissions` and `member invitations`;
 - observability and policy: `monitor ai-logs`, `monitor traces`, `analytics
   checks`, `analytics org`, and every `governance` command;
 - dev mode: `dev token` and `dev connect`.
