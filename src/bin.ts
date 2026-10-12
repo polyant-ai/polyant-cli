@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { run } from "./cli.js";
 
 // Pipes are asynchronous on POSIX: process.exit() discards whatever libuv has

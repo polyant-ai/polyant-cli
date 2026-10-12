@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Response shapes, in one module on purpose: every command reads them from here,

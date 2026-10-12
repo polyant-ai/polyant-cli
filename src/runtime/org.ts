@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { RoleSummary, RolesResponse, WorkspaceSummary, WorkspacesResponse } from "../api/types.js";
 import type { CommandContext } from "../command.js";
 import { ConfigError } from "../exit.js";

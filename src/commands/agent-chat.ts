@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { Command, CommandContext } from "../command.js";
 import { CliError, ConfigError, ExitCode, RemoteError } from "../exit.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";

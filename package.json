@@ -1,8 +1,13 @@
 {
   "name": "@polyant-ai/cli",
-  "version": "0.7.0",
+  "version": "0.9.0",
   "description": "Configure a Polyant instance as code",
-  "license": "LicenseRef-Polyant-Enterprise",
+  "author": "Exelab S.r.l.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/polyant-ai/polyant-cli.git"
+  },
   "type": "module",
   "bin": {
     "polyant-cli": "dist/bin.js"
@@ -14,12 +19,9 @@
     "src",
     "README.md",
     "AGENTS.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "access": "restricted"
-  },
   "engines": {
     "node": ">=20"
   },

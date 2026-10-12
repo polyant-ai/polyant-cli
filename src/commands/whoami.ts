@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { parseArgs } from "node:util";
 import { ConfigError } from "../exit.js";
 import { loadWorkspaceConfig, type ResolvedTarget } from "../config.js";

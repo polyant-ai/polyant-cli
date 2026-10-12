@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi } from "vitest";
 import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
@@ -340,6 +340,45 @@ describe("agent import", () => {
     await leaf(h.command, ["import"])(["--file", "-"], context({ yes: true }));
 
     expect(h.calls[0].path).toBe("/api/instances/import");
+  });
+
+  it("says provider connections do not travel with the bundle", async () => {
+    const h = harness([], { readPayload: async () => JSON.stringify({ version: 1 }) });
+
+    await leaf(h.command, ["import"])(["--file", "-"], context({ dryRun: true }));
+
+    expect(h.err.join("")).toContain("Provider connections do not travel");
+  });
+
+  // stdout stays the engine's response; the warnings are repeated on stderr, and
+  // an unbound role (engine 1.2.0-ee) points at the command that binds it.
+  it("repeats the engine's warnings on stderr, provider_role_required included", async () => {
+    const result = {
+      slug: "acme-copy",
+      instanceId: "i-2",
+      warnings: [
+        { type: "secret_required", message: "Set tavily_api_key." },
+        {
+          type: "provider_role_required",
+          role: "chat",
+          message: 'Bind the agent\'s "chat" role to a provider connection: PUT /api/instances/acme-copy/provider-roles/chat',
+        },
+        { type: "provider_role_required", role: "voice_tts", message: "Bind the agent's \"voice_tts\" role." },
+      ],
+      sectionsReplaced: [],
+      sectionsSkipped: [],
+    };
+    const h = harness([response(result, 201)], { readPayload: async () => JSON.stringify({ version: 1 }) });
+
+    await leaf(h.command, ["import"])(["--file", "-"], context({ yes: true }));
+
+    expect(JSON.parse(h.out.join(""))).toEqual(result);
+    const err = h.err.join("");
+    expect(err).toContain("warning (secret_required): Set tavily_api_key.");
+    expect(err).toContain('warning (provider_role_required): Bind the agent\'s "chat" role');
+    // Built from the structured role field, one command per role.
+    expect(err).toContain("polyant-cli agent provider-roles bind acme-copy chat <connectionId>");
+    expect(err).toContain("polyant-cli agent provider-roles bind acme-copy voice_tts <connectionId>");
   });
 
   it("overwrites the named agent, and refuses without a matching --confirm", async () => {

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi } from "vitest";
 import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
@@ -176,6 +176,28 @@ describe("org providers and connections", () => {
     expect(text).toContain("Predefinita");
   });
 
+  // Engine 1.2.0-ee: the read adds the ambient AWS grant and the catalogue of
+  // providers a connection may be for, with what each can serve.
+  it("reports the ambient AWS grant and what each provider can serve", async () => {
+    const h = harness([
+      response({
+        ...PROVIDERS,
+        ambientAwsGranted: true,
+        catalog: [
+          { provider: "deepgram", capabilities: ["stt"] },
+          { provider: "openai", capabilities: ["embedding", "model", "stt"] },
+        ],
+      }),
+    ]);
+
+    await leaf(h.commands, ["org", "providers", "show"])([], context());
+
+    const text = h.out.join("");
+    expect(text).toMatch(/ambient AWS identity:\s+granted/);
+    expect(text).toMatch(/deepgram\s+stt/);
+    expect(text).toMatch(/openai\s+embedding, model, stt/);
+  });
+
   it("checks a credential against the shape the engine reports, before sending it", async () => {
     const h = harness([response(PROVIDERS)], { readPayload: async () => JSON.stringify({ apikey: "sk-1" }) });
 
@@ -205,12 +227,26 @@ describe("org providers and connections", () => {
     expect(`${h.out.join("")}${h.err.join("")}`).not.toContain("sk-secret-value");
   });
 
-  it("says the engine refuses to delete a connection an agent still selects", async () => {
+  it("says the engine refuses to delete a connection a role is still bound to", async () => {
     const h = harness([response({ deleted: true })]);
 
     await leaf(h.commands, ["org", "connections", "delete"])(["c-1", "--confirm", "c-1"], context({ yes: true }));
 
-    expect(h.err.join("")).toContain("refuses while an agent still selects it");
+    expect(h.err.join("")).toContain("refuses while a role of an agent or of the organisation is bound to it");
+  });
+
+  // Engine 1.2.0-ee: 409 on the organisation route too, as on the agent's.
+  it("surfaces the engine's 409 when a role is still bound to the connection", async () => {
+    const conflict = new RemoteError(
+      "This connection is still bound to a role of an agent or of the organization. Bind those roles elsewhere first.",
+      ExitCode.Config,
+      409,
+    );
+    const h = harness([conflict]);
+
+    await expect(leaf(h.commands, ["org", "connections", "delete"])(["c-1", "--confirm", "c-1"], context({ yes: true }))).rejects.toThrow(
+      /still bound to a role of an agent or of the organization/,
+    );
   });
 
   // Create and update take org.secret:write; the checks before them read with

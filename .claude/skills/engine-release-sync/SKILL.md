@@ -12,10 +12,12 @@ response that changed shape answers 200 and the CLI misreads it. This skill find
 both kinds of change in the engine's next release and lands the CLI changes they
 need on `develop`, proven against a live engine.
 
-Two engine repos, siblings of this one: `polyant-engine` (a superset — it
-merges `polyant`'s develop) and `polyant` (OSS). The next release is each repo's
-`origin/develop`; the current one is `origin/main`. Work against enterprise; read
-OSS only for its release notes.
+The engine lives in its own repository. `ENGINE_DIR` names the checkout to work
+against (default: a `polyant` checkout beside this one). The CLI also covers
+Polyant Enterprise, a superset of the OSS engine: when you maintain those commands,
+point `ENGINE_DIR` at an Enterprise checkout, whose routes cover both, and read the
+OSS repository only for its release notes. In either repository the next release
+is `origin/develop` and the current one is `origin/main`.
 
 ## 1. Baseline — what the CLI last matched
 
@@ -23,17 +25,18 @@ Read the top row of the README's Compatibility table and the most recent
 `feat:`/`chore(release):` commit bodies on `origin/develop`. They name the engine
 the CLI was last verified against: a release tag, or "develop as of <date>", or a
 SHA. Turn it into an engine SHA (`git log --first-parent origin/develop
---until=<date>` when it is a date) and do the same for OSS.
+--until=<date>` when it is a date), and into an OSS SHA too when `ENGINE_DIR` is
+an Enterprise checkout.
 
 Also compare the CLI's own branches: `git log origin/develop..origin/main` lists
 CLI work that never came back to develop. It is merged first, in step 5.
 
-**Done when** you hold one engine SHA and one OSS SHA, and can say in one line
-why each is the right one.
+**Done when** you hold the engine SHA (and the OSS SHA, when they differ), and can
+say in one line why each is the right one.
 
 ## 2. Inventory — what changed in the engine
 
-From the baseline to `origin/develop`, in enterprise:
+From the baseline to `origin/develop`, in `ENGINE_DIR`:
 
 - `scripts/routes.sh <repo> <rev>` at both revisions, then `diff`: routes added and removed.
 - `docs/releases/v*.md`, `docs/UPGRADING.md` and `CHANGELOG.md` on develop, both repos: the intent, the breaking changes, the migrations.
@@ -69,9 +72,12 @@ per item, with the engine PR or file that motivates it. Say what you left out.
 scripts/ephemeral-up.sh [rev]        # default origin/develop; prints the CLI wrapper path
 ```
 
-It runs enterprise at `rev` from a detached worktree with its own Postgres
-(`:55499`) and port (`:4499`), mints an admin session, and issues a management key
-and a personal token. The wrapper `pc` runs this worktree's `dist/` against it;
+It runs the engine in `ENGINE_DIR` at `rev` from a detached worktree with its own
+Postgres (`:55499`) and port (`:4499`), mints an admin session, and issues a
+management key and a personal token. Issuing them takes the key routes Polyant
+Enterprise serves: the OSS engine accepts a management key but has no route that
+issues one, so against an OSS checkout the script stops at its credentials step.
+The wrapper `pc` runs this worktree's `dist/` against it;
 `--target ephemeral-pat` switches to the personal token. `$WORKDIR/session.tok` is
 a browser-equivalent admin session for platform routes the CLI cannot reach
 (granting dev mode, a plugin, a provider): `curl -H "Authorization: Bearer $(cat
@@ -115,7 +121,7 @@ expected, and every smoke failure is explained.
 
 Bump `package.json` and `package-lock.json` (`npm version <x.y.0>
 --no-git-tag-version`); add the Compatibility row naming the engine release and
-the engine SHA you verified against, which is the next run's baseline; update
+the date of the engine develop you verified against, which is the next run's baseline; update
 the README examples and `AGENTS.md`'s "Where to start". Commit: code with tests,
 then docs and version. Commit on the branch; push and open the PR when the user
 asks.

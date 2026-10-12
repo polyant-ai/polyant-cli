@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { readFile } from "node:fs/promises";
 import { request as processRequest, requestStream as processRequestStream, type ApiResponse, type RequestOptions, type StreamResponse } from "../api/client.js";
 import type { CommandContext } from "../command.js";

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { isAbsolute, join, resolve } from "node:path";
 import type { CommandContext } from "../command.js";
 import { CliError, ConfigError, ExitCode, type ExitCodeValue } from "../exit.js";

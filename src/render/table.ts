@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 
 /** A pre-formatted table: callers turn domain values into strings before rendering. */
 export interface Table {

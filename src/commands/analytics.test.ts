@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from "vitest";
 import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { CommandContext } from "../command.js";

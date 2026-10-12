@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi } from "vitest";
 import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
@@ -67,12 +67,24 @@ const STATUS = {
   signatures: "verified",
   locales: ["it-IT"],
   defaultLocale: "it-IT",
-  secrets: { elevenlabs_api_key: "organization", deepgram_api_key: null },
-  missingSecrets: ["deepgram_api_key"],
+  roles: [
+    { role: "voice_tts", inUse: true, required: true, requiredProvider: "elevenlabs", ready: true, problem: null, message: null },
+    {
+      role: "voice_stt",
+      inUse: true,
+      required: true,
+      requiredProvider: "deepgram",
+      ready: false,
+      problem: "unbound",
+      message: 'agent "acme" has no connection bound to its voice_stt role.',
+    },
+    { role: "voice_decisions", inUse: false, required: false, requiredProvider: "typesafe", ready: false, problem: "unbound", message: "x" },
+  ],
+  missingRoles: ["voice_stt"],
   missingFields: ["twilio.authToken"],
   configError: null,
   issues: [],
-  checks: [{ id: "voice_secret_missing", severity: "broken", section: "channels", params: { key: "deepgram_api_key" } }],
+  checks: [{ id: "voice_role_unready", severity: "broken", section: "channels", params: { role: "voice_stt" } }],
 };
 
 const SETTINGS = {
@@ -84,7 +96,9 @@ const SETTINGS = {
 };
 
 describe("agent channels voice status", () => {
-  it("prints the webhook URL, what is missing, and where each key comes from", async () => {
+  // Engine 1.2.0-ee: each part of a call authenticates with the connection bound
+  // to a role, so the status reports roles where it used to report secrets.
+  it("prints the webhook URL, what is missing, and each voice role with its readiness", async () => {
     const h = harness([response(STATUS)]);
 
     await leaf(h.agent, ["channels", "voice", "status"])(["acme"], context());
@@ -94,8 +108,12 @@ describe("agent channels voice status", () => {
     expect(out).toContain("https://polyant.example/webhooks/twilio/acme/voice");
     expect(out).toMatch(/ready:\s+no/);
     expect(out).toMatch(/missing fields:\s+twilio\.authToken/);
-    expect(out).toContain("elevenlabs_api_key organization, deepgram_api_key unset");
-    expect(out).toMatch(/broken\s+voice_secret_missing/);
+    expect(out).toMatch(/missing roles:\s+voice_stt/);
+    expect(out).toMatch(/voice_tts\s+yes\s+yes\s+elevenlabs\s+yes/);
+    expect(out).toContain('voice_stt: agent "acme" has no connection bound to its voice_stt role.');
+    // An unused role is not a problem a call meets.
+    expect(out).not.toContain("voice_decisions: x");
+    expect(out).toMatch(/broken\s+voice_role_unready/);
   });
 
   it("passes the engine's body through with --json", async () => {

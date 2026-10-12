@@ -1,15 +1,16 @@
 #!/bin/bash
-# Starts a throwaway Polyant Enterprise engine at one revision, with its own
+# Starts a throwaway Polyant engine at one revision, with its own
 # Postgres, a management key (pk_), a personal token (pat_) and a CLI wrapper
 # pointed at it. Nothing it creates touches the engine checkout or another
 # instance: the engine runs from a detached worktree, the database from its own
 # container, on ports of its own.
 #
 # Usage: ephemeral-up.sh [engine-rev]          (default origin/develop)
-# Env:   ENTERPRISE_DIR  the polyant-engine checkout  (default: sibling of the CLI repo)
+# Env:   ENGINE_DIR      the engine checkout (default: a `polyant` checkout beside the CLI repo).
+#                        Issuing the credentials needs the key routes Polyant Enterprise serves.
 #        WORKDIR         where state, logs and the wrapper live (default $TMPDIR/polyant-cli-sync)
 #        PG_PORT, API_PORT                                 (default 55499, 4499)
-#        PLUGIN_DIRS     plugins to load (default: extra-plugins when present)
+#        PLUGIN_DIRS     plugins to load (default: none)
 # Prints the wrapper path last. Tear down with ephemeral-down.sh.
 set -euo pipefail
 
@@ -18,38 +19,36 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 CLI_COMMON=$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir)
 AI_ROOT=$(cd "$CLI_COMMON/../.." && pwd)
 CLI_TOP=$(git -C "$HERE" rev-parse --show-toplevel)
-ENTERPRISE_DIR=${ENTERPRISE_DIR:-$AI_ROOT/polyant-engine}
+ENGINE_DIR=${ENGINE_DIR:-$AI_ROOT/polyant}
 WORKDIR=${WORKDIR:-${TMPDIR:-/tmp}/polyant-cli-sync}
 PG_PORT=${PG_PORT:-55499}
 API_PORT=${API_PORT:-4499}
 # Named after its port: two instances on different ports keep separate
 # containers, and two on the same port could not run side by side anyway.
 PG_NAME=polyant-cli-sync-pg-$PG_PORT
-if [ -z "${PLUGIN_DIRS+x}" ]; then
-  PLUGIN_DIRS=$([ -d "$AI_ROOT/extra-plugins" ] && echo "$AI_ROOT/extra-plugins" || echo "")
-fi
+PLUGIN_DIRS=${PLUGIN_DIRS:-}
 
 mkdir -p "$WORKDIR"
 ENGINE=$WORKDIR/engine
 
 echo "• engine worktree at $REV" >&2
-git -C "$ENTERPRISE_DIR" fetch -q origin
-SHA=$(git -C "$ENTERPRISE_DIR" rev-parse "$REV")
+git -C "$ENGINE_DIR" fetch -q origin
+SHA=$(git -C "$ENGINE_DIR" rev-parse "$REV")
 # A worktree left by an earlier run is reused only at the revision asked for:
 # state.env records $SHA as what was tested, so running anything else would
 # make that record false. A stale one is rebuilt, dependencies included.
 if [ -d "$ENGINE" ] && [ "$(git -C "$ENGINE" rev-parse HEAD 2>/dev/null)" != "$SHA" ]; then
   echo "• the existing worktree is not at $SHA; rebuilding it" >&2
-  git -C "$ENTERPRISE_DIR" worktree remove --force "$ENGINE"
+  git -C "$ENGINE_DIR" worktree remove --force "$ENGINE"
 fi
-[ -d "$ENGINE" ] || git -C "$ENTERPRISE_DIR" worktree add -q --detach "$ENGINE" "$SHA"
+[ -d "$ENGINE" ] || git -C "$ENGINE_DIR" worktree add -q --detach "$ENGINE" "$SHA"
 
 # Reuse the checkout's dependencies only when its lockfile is the target's;
 # otherwise install, which is slow but is the only honest choice.
 if [ ! -e "$ENGINE/node_modules" ]; then
-  if [ -d "$ENTERPRISE_DIR/node_modules" ] && git -C "$ENTERPRISE_DIR" diff --quiet "$SHA" -- package-lock.json packages/engine/package.json 2>/dev/null; then
-    ln -s "$ENTERPRISE_DIR/node_modules" "$ENGINE/node_modules"
-    [ -d "$ENTERPRISE_DIR/packages/engine/node_modules" ] && ln -s "$ENTERPRISE_DIR/packages/engine/node_modules" "$ENGINE/packages/engine/node_modules"
+  if [ -d "$ENGINE_DIR/node_modules" ] && git -C "$ENGINE_DIR" diff --quiet "$SHA" -- package-lock.json packages/engine/package.json 2>/dev/null; then
+    ln -s "$ENGINE_DIR/node_modules" "$ENGINE/node_modules"
+    [ -d "$ENGINE_DIR/packages/engine/node_modules" ] && ln -s "$ENGINE_DIR/packages/engine/node_modules" "$ENGINE/packages/engine/node_modules"
   else
     echo "• npm ci (the checkout's lockfile differs from $REV)" >&2
     (cd "$ENGINE" && npm ci --silent)
@@ -107,7 +106,7 @@ curl -sf "http://localhost:$API_PORT/health" >/dev/null || { tail -30 "$WORKDIR/
 echo "• credentials" >&2
 read -r USER_ID ORG_ID < <(docker exec "$PG_NAME" psql -U polyant -d polyant -Atc \
   "select u.id || ' ' || o.id from users u, organizations o where u.email='admin@cli-sync.local' and o.is_default" | tr '|' ' ')
-SESSION=$(node "$HERE/mint-session.mjs" "$ENTERPRISE_DIR/node_modules" "$AUTH_SECRET" "$USER_ID" admin@cli-sync.local "$ORG_ID")
+SESSION=$(node "$HERE/mint-session.mjs" "$ENGINE_DIR/node_modules" "$AUTH_SECRET" "$USER_ID" admin@cli-sync.local "$ORG_ID")
 echo "$SESSION" >"$WORKDIR/session.tok"
 B=http://localhost:$API_PORT
 H="Authorization: Bearer $SESSION"
@@ -139,7 +138,7 @@ exec node "$CLI_TOP/dist/bin.js" "\$@"
 WRAP
 chmod +x "$WORKDIR/pc"
 cat >"$WORKDIR/state.env" <<STATE
-ENTERPRISE_DIR=$ENTERPRISE_DIR
+ENGINE_DIR=$ENGINE_DIR
 ENGINE=$ENGINE
 ENGINE_SHA=$SHA
 PG_NAME=$PG_NAME

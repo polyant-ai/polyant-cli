@@ -66,10 +66,16 @@ actions — `agent delete`, `channels remove`, `channels whatsapp rotate`,
 `hooks remove`, `secrets unset`, `events rotate`, `mcp remove`, `memory remove`,
 `memory clear`, `optouts opt-in`, `workspace delete`, `role delete`,
 `member remove`, `workspace skills revoke`, `workspace plugins revoke`,
-`dev token revoke`, and any non-GET `api` DELETE — additionally require
+`dev token revoke`, `agent provider-roles unbind`, `agent connections delete`,
+`org provider-roles unbind`, `org ambient-aws revoke`, and any non-GET `api` DELETE — additionally require
 `--confirm <name>` matching the thing being destroyed.
 
 ## Before the first command
+
+Know which engine you face. The open-source engine serves the agent families and
+basic monitoring; organisations, workspaces, roles, keys, governance, retention,
+providers, `agent chat` and dev mode need Polyant Enterprise and answer `404`
+against OSS. The README's "OSS and Enterprise" section lists every command.
 
 The CLI needs a target and a management key. `polyant.yaml` declares the target
 and the **name** of the environment variable holding the key; the value only ever
@@ -102,6 +108,7 @@ its job. Use `monitor status` when you need a gate that fails.
 | cap what an agent spends | `agent budget show <slug>`, `agent budget set <slug> --file -` (Enterprise) |
 | answer phone calls | `agent channels voice status <slug>`, `agent channels voice settings show\|set <slug>` (Enterprise) |
 | which models an agent may run | `agent providers <slug>`, `agent models` |
+| which credential an agent runs on | `agent provider-roles show <slug>`, `agent provider-roles bind <slug> <role> <connectionId>` (Enterprise) |
 | try an agent | `agent chat <slug> --message "…" [--expect "…"]` |
 | what an agent knows | `agent knowledge list <slug>`, `agent skills show <slug>`, `agent memory list <slug>` |
 | tools from elsewhere | `agent mcp show <slug>`, `agent mcp test <slug> --file -` |
@@ -129,11 +136,11 @@ which makes a scenario check a one-liner.
 Anything sensitive is read from a file or stdin, never from a flag:
 
 ```bash
-printf %s "$OPENAI_KEY" | polyant-cli agent secrets set acme --key openai_api_key --file - --yes
+printf %s "$TAVILY_KEY" | polyant-cli agent secrets set acme --key tavily_api_key --file - --yes
 ```
 
 That holds for `agent secrets set`, `org secrets set`, `org connections
-create|update`, `agent skills env set`, `channels set`, `mcp set|test`,
+create|update`, `agent connections create|update`, `agent skills env set`, `channels set`, `mcp set|test`,
 `memory add`, `hooks add|update`, `prompt set`, `dev connect --token-file` (whose
 token otherwise comes from the environment) and `api --data`. Every structured
 payload — a hook, a channel, a scheduled task, a retention policy, a governance

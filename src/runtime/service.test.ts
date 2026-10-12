@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from "vitest";
 import type { CommandContext } from "../command.js";
 import type { WorkspaceConfig } from "../config.js";
@@ -64,9 +64,9 @@ describe("scopeFor", () => {
   });
 
   it("should_name_the_discarded_POLYANT_URL_when_the_target_key_is_missing", async () => {
-    const env = { POLYANT_URL: "https://ticketing.example.polyant.ai" };
+    const env = { POLYANT_URL: "https://tenant.example.polyant.ai" };
     await expect(scopeFor(deps(env), context({}), "read")).rejects.toThrow(
-      /POLYANT_URL is set.*Pass --url https:\/\/ticketing\.example\.polyant\.ai/s,
+      /POLYANT_URL is set.*Pass --url https:\/\/tenant\.example\.polyant\.ai/s,
     );
   });
 

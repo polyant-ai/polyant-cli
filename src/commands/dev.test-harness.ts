@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * The shared harness for the three dev command families. A `.test-harness.ts`

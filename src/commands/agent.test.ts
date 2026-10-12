@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi } from "vitest";
 import type { ApiResponse, RequestOptions, StreamEvent, StreamResponse } from "../api/client.js";
 import type { CommandContext } from "../command.js";
@@ -329,12 +329,23 @@ describe("agent update", () => {
     );
   });
 
-  it("points an agent at a named provider connection", async () => {
-    const h = harness([response({ instance: AGENT }), response({ instance: { ...AGENT, providerConnectionId: "c-1" } })]);
+  // Engine 1.2.0-ee answers 400 for providerConnectionId: the chat connection is
+  // a role binding. The flag fails before any request, naming its replacement.
+  it("refuses the removed --provider-connection, naming the role binding that replaced it", async () => {
+    const h = harness([]);
 
-    await leaf(h.command, ["update"])(["acme", "--provider-connection", "c-1"], context({ yes: true }));
+    await expect(leaf(h.command, ["update"])(["acme", "--provider-connection", "c-1"], context({ yes: true }))).rejects.toThrow(
+      /--provider-connection was removed.*agent provider-roles bind acme chat c-1/,
+    );
+    expect(h.calls).toEqual([]);
+  });
 
-    expect(h.calls[1]).toMatchObject({ method: "PATCH", body: { providerConnectionId: "c-1" } });
+  it("says a provider change needs the chat role rebound", async () => {
+    const h = harness([response({ instance: AGENT }), response({ instance: { ...AGENT, provider: "openai" } })]);
+
+    await leaf(h.command, ["update"])(["acme", "--provider", "openai"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain("The chat role must be bound to a connection for openai");
   });
 
   it("refuses an update with no field to change", async () => {
@@ -745,6 +756,31 @@ describe("agent secrets", () => {
       leaf(h.command, ["secrets", "set"])(["acme", "--key", "openai_api_kye", "--file", "-"], context({ yes: true })),
     ).rejects.toThrow(/declares no secret named "openai_api_kye". Declared: openai_api_key, anthropic.*s3_use_task_role/);
     expect(h.request).toHaveBeenCalledTimes(2);
+  });
+
+  // Engine 1.2.0-ee: the listing stops offering a provider key, so the local
+  // refusal says where such a key went instead of only naming the declared ones.
+  it("points an undeclared key at provider connections", async () => {
+    const h = harness([response(secrets), response(required)], { readPayload: async () => "x" });
+
+    await expect(
+      leaf(h.command, ["secrets", "set"])(["acme", "--key", "deepgram_api_key", "--file", "-"], context({ yes: true })),
+    ).rejects.toThrow(/no longer a secret.*agent connections create.*agent provider-roles bind/);
+  });
+
+  // A copy the upgrade left behind is still listed, so the write reaches the
+  // engine, whose 400 already names the connection routes.
+  it("surfaces the engine's refusal of a provider key a connection now holds", async () => {
+    const refusal = new RemoteError(
+      "openai_api_key is a provider credential held by provider connections, not secrets: use a connection the organization lends to the workspace, or create one for this agent with POST /api/instances/acme/provider-connections, then bind it with PUT /api/instances/acme/provider-roles/<role>.",
+      ExitCode.Config,
+      400,
+    );
+    const h = harness([response(secrets), response(required), refusal], { readPayload: async () => "sk-x" });
+
+    await expect(
+      leaf(h.command, ["secrets", "set"])(["acme", "--key", "openai_api_key", "--file", "-"], context({ yes: true })),
+    ).rejects.toThrow(/held by provider connections.*\/provider-roles\/<role>/);
   });
 
   it("refuses an empty value instead of storing one", async () => {

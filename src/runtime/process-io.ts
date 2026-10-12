@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { createInterface } from "node:readline/promises";
 import type { ConfirmationIO } from "./confirm.js";
 

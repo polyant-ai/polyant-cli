@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { GlobalOptions } from "./runtime/global-options.js";
 
 /** Normalized process-wide options made available to a resolved command. */

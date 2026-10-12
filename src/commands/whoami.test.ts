@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ResolvedTarget } from "../config.js";
 

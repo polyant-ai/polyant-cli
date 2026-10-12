@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi } from "vitest";
 import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
@@ -116,6 +116,14 @@ describe("org secrets", () => {
     await expect(
       leaf(h.commands, ["org", "secrets", "set"])(["--key", "auth_api_key", "--file", "-"], context({ yes: true })),
     ).rejects.toThrow(/cannot share a credential named "auth_api_key".*openai_api_key/s);
+  });
+
+  it("points a key it cannot share at provider connections", async () => {
+    const h = harness([response(ORG_SECRETS)], { readPayload: async () => "v" });
+
+    await expect(
+      leaf(h.commands, ["org", "secrets", "set"])(["--key", "bedrock_api_key", "--file", "-"], context({ yes: true })),
+    ).rejects.toThrow(/no longer a secret.*org connections create.*workspace connections assign/s);
   });
 
   it("refuses to remove a credential that is not configured", async () => {
@@ -247,13 +255,13 @@ describe("member set-role", () => {
 
 describe("org plugins", () => {
   it("lists the plugins this organisation holds, with no grant column to misread", async () => {
-    const h = harness([response({ plugins: [{ name: "sales", version: "1.2.0", compatible: false }] })]);
+    const h = harness([response({ plugins: [{ name: "booking", version: "1.2.0", compatible: false }] })]);
 
     await leaf(h.commands, ["org", "plugins"])([], context());
 
     const table = h.out.join("");
     expect(table).not.toContain("GRANTED");
-    expect(table).toMatch(/sales\s+1\.2\.0\s+no \(incompatible\)/);
+    expect(table).toMatch(/booking\s+1\.2\.0\s+no \(incompatible\)/);
   });
 
   it("reads a marketplace plugin's health, which carries no compatible flag", async () => {
@@ -289,7 +297,7 @@ const WS_SKILLS = {
 
 const WS_PLUGINS = {
   plugins: [
-    { name: "sales", version: "1.2.0", compatible: true, assigned: false },
+    { name: "booking", version: "1.2.0", compatible: true, assigned: false },
     { name: "legacy", version: "0.1.0", compatible: false, assigned: true },
     { pluginId: "p-1", name: "hubspot", version: "1.1.0", available: true, health: "ready", assigned: false },
     { pluginId: "p-2", name: "flaky", version: "0.2.0", available: false, health: "unavailable", assigned: false },
@@ -387,7 +395,7 @@ describe("workspace plugins", () => {
 
     const table = h.out.join("");
     // NAME VERSION ASSIGNED AVAILABLE
-    expect(table).toMatch(/sales\s+1\.2\.0\s+no\s+yes/);
+    expect(table).toMatch(/booking\s+1\.2\.0\s+no\s+yes/);
     expect(table).toMatch(/legacy\s+0\.1\.0\s+yes\s+no \(incompatible\)/);
     expect(table).toMatch(/hubspot\s+1\.1\.0\s+no\s+yes/);
     expect(table).toMatch(/flaky\s+0\.2\.0\s+no\s+no \(unavailable\)/);
@@ -413,11 +421,11 @@ describe("workspace plugins", () => {
   it("assigns a plugin the organisation holds", async () => {
     const h = harness([response(WS_PLUGINS), response({ assigned: true })]);
 
-    await leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "sales"], context({ yes: true }));
+    await leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "booking"], context({ yes: true }));
 
     expect(h.calls[1]).toMatchObject({
       method: "PUT",
-      path: "/api/organizations/default/workspaces/labs/plugins/sales",
+      path: "/api/organizations/default/workspaces/labs/plugins/booking",
     });
   });
 
@@ -428,7 +436,7 @@ describe("workspace plugins", () => {
 
     await expect(
       leaf(h.commands, ["workspace", "plugins", "assign"])(["labs", "ticketing"], context({ yes: true })),
-    ).rejects.toThrow(/holds no plugin "ticketing".*Held: sales, legacy, hubspot, flaky/s);
+    ).rejects.toThrow(/holds no plugin "ticketing".*Held: booking, legacy, hubspot, flaky/s);
     expect(h.calls.filter((c) => c.method !== undefined && c.method !== "GET")).toEqual([]);
   });
 
@@ -458,7 +466,7 @@ describe("dry runs", () => {
       [["workspace", "member", "set"], ["labs", "u-1", "--role", "member"], []],
       [["workspace", "skills", "assign"], ["labs", "billing"], [response(WS_SKILLS)]],
       [["workspace", "skills", "revoke"], ["labs", "triage"], [response(WS_SKILLS)]],
-      [["workspace", "plugins", "assign"], ["labs", "sales"], [response(WS_PLUGINS)]],
+      [["workspace", "plugins", "assign"], ["labs", "booking"], [response(WS_PLUGINS)]],
       [["workspace", "plugins", "revoke"], ["labs", "legacy"], [response(WS_PLUGINS)]],
     ];
     for (const [path, args, reads] of cases) {

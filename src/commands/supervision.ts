@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { CommandContext } from "../command.js";
 import type { AgentCheck, AgentChecksResponse } from "../api/types.js";
 import { CliError, ConfigError, ExitCode } from "../exit.js";

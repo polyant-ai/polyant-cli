@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { CommandContext } from "../command.js";
 import { ConfigError } from "../exit.js";
 import { writeRawResponse } from "../render/output.js";
@@ -21,11 +21,12 @@ import type { ResolvedScope } from "../runtime/scope.js";
 // --- organisation-level provider credentials --------------------------------
 
 /**
- * The organisation's provider credentials. Same wire shape as an agent's
+ * The organisation's shared credentials. Same wire shape as an agent's
  * (`PutSecretsSchema` is shared by both routes in the engine), and the same
  * value-never-printed rule — but a different resolution order: an agent's own
- * secret wins, this one is the fallback, so ten agents on one OpenAI account
- * share one key instead of ten.
+ * secret wins, this one is the fallback, so ten agents on one account share one
+ * key instead of ten. Since engine 1.2.0-ee a provider's key is not among them:
+ * it lives in a connection (`providers.ts`, `provider-roles.ts`).
  */
 function orgSecretsPath(org: string, key?: string): string {
   return orgPath(org, key === undefined ? "/secrets" : `/secrets/${encodeURIComponent(key)}`);
@@ -77,7 +78,10 @@ function assertShareable(secrets: readonly SecretRow[], key: string, org: string
   if (found !== undefined) return found;
   throw new ConfigError(
     `Organisation ${org} cannot share a credential named ${JSON.stringify(key)}. ` +
-      `Shareable: ${secrets.map((secret) => secret.key).join(", ")}.`,
+      `Shareable: ${secrets.map((secret) => secret.key).join(", ")}. ` +
+      // Since engine 1.2.0-ee: listed only while a copy from before the upgrade is stored.
+      "A model, embedding or speech provider key is no longer a secret: create a provider connection with " +
+      "`org connections create`, lend it with `workspace connections assign`, and bind the role that uses it.",
   );
 }
 
@@ -724,22 +728,28 @@ export const ORG_FAMILY_EXTRAS: Record<string, Record<string, Node>> = {
   org: {
     secrets: {
       show: {
-        summary: "list the provider credentials shared across the organisation",
-        usage: `Usage: polyant-cli org secrets show [--configured-only]\n\nPresence only — the engine never serves a value. ${ORG_NOTE}`,
+        summary: "list the credentials shared across the organisation",
+        usage: `Usage: polyant-cli org secrets show [--configured-only]
+
+Presence only — the engine never serves a value. Since engine 1.2.0-ee a
+provider's key lives in a connection (\`org connections\`); a copy the upgrade
+left behind is listed only while it is stored, so it can be removed. ${ORG_NOTE}`,
         action: orgSecretsShow,
       },
       set: {
-        summary: "set one shared provider credential from a file or stdin",
+        summary: "set one shared credential from a file or stdin",
         usage: `Usage: polyant-cli org secrets set --key <name> --file <path|->
 
 An agent's own secret wins; this one is the fallback, so setting it here changes
 every agent in the organisation that does not have its own. The value is read
-from a file or stdin, never a flag, and is never printed. ${ORG_NOTE}`,
+from a file or stdin, never a flag, and is never printed. A provider key is
+refused by the engine with a 400 naming the connection routes: it belongs in
+\`org connections create\`. ${ORG_NOTE}`,
         action: orgSecretsSet,
         mutates: true,
       },
       unset: {
-        summary: "remove one shared provider credential",
+        summary: "remove one shared credential",
         usage: `Usage: polyant-cli org secrets unset --key <name> --yes --confirm <name>\n\n${ORG_NOTE}`,
         action: orgSecretsUnset,
         mutates: true,

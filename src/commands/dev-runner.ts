@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * The child-process runner for `dev connect`, as source text.
@@ -16,8 +16,7 @@
  * `tsx -e <source>` compiles the code as if it sat in the CURRENT WORKING
  * DIRECTORY, so a bare specifier resolves from the project the child was
  * started in. That is verified, not assumed: the same command run from another
- * cwd fails with ERR_MODULE_NOT_FOUND, and the transcript of both runs is in
- * `the design notes`.
+ * cwd fails with ERR_MODULE_NOT_FOUND.
  * `dev-runner.test.ts` pins the properties that make it hold.
  *
  * Two consequences shape the code below:

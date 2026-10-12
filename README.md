@@ -18,25 +18,40 @@ payloads instead of guessing them.
 
 ## Install
 
-Requires **Node 20 or newer** (`engines` enforces it). The package ships
-TypeScript sources and compiles on install: `prepare` runs `tsc`, so every route
-below builds `dist/` for you — there is no committed build to go stale.
+Requires **Node 20 or newer** (`engines` enforces it). The CLI is distributed
+from this repository over https, and nowhere else: there is no npm registry
+package. Each release is a `v<version>` tag with a GitHub Release.
 
-### From the repository, for one workspace
+### On your PATH, globally
 
-The recommended way. The CLI's version should follow the API version of the
-instance it talks to, so pin it per project rather than installing one globally:
+Install the release tarball attached to the GitHub Release:
 
 ```bash
-npm i -D git+ssh://git@github.com/polyant-ai/polyant-cli.git#main
+npm install -g https://github.com/polyant-ai/polyant-cli/releases/download/v0.9.0/polyant-ai-cli-0.9.0.tgz
 ```
 
-`#main` is what resolves today: **no release tag has been cut yet.** Once one is,
-pin to it instead — `#v0.1.0` — so a project's CLI does not move under it on the
-next push to `main`.
+Then `polyant-cli --version` works in any shell. The tarball carries the
+compiled `dist/`. Installing the git URL globally (`npm install -g
+git+https://…`) does not work: npm prepares a git dependency with the global flag
+still set, so the build tools never reach the clone and the install fails with
+`tsc: command not found`. Bear in mind the trade a global install makes: one
+version talks to every instance, including ones whose API has moved on — see
+[Compatibility](#compatibility).
 
-That puts the executable in `node_modules/.bin`, which npm scripts and `npx`
-already have on their PATH:
+### Per project
+
+The CLI's version should follow the API version of the instance it talks to, so a
+project that scripts against one instance can pin the release tag as a dev
+dependency:
+
+```bash
+npm install -D git+https://github.com/polyant-ai/polyant-cli.git#v0.9.0
+```
+
+This one compiles on install: `prepare` runs `tsc`, so `dist/` is built for you
+and no committed build can go stale. Pin the tag rather than a branch, so the CLI
+does not move under the project on the next push. The executable lands in
+`node_modules/.bin`, which npm scripts and `npx` already have on their PATH:
 
 ```bash
 npx polyant-cli --version
@@ -48,25 +63,12 @@ Inside `package.json` scripts, plain `polyant-cli` works with no prefix:
 { "scripts": { "agents": "polyant-cli agent list" } }
 ```
 
-### On your PATH, globally
-
-When you want `polyant-cli` in any shell without `npx` — a local operator
-console rather than a project dependency:
-
-```bash
-npm i -g git+ssh://git@github.com/polyant-ai/polyant-cli.git#main
-```
-
-Then `polyant-cli --version` works anywhere. Bear in mind the trade this makes:
-one global version now talks to every instance, including ones whose API has
-moved on.
-
 ### From a local clone
 
 For working on the CLI itself, or installing an unreleased revision:
 
 ```bash
-git clone git@github.com:polyant-ai/polyant-cli.git && cd polyant-cli && npm install && npm run build
+git clone https://github.com/polyant-ai/polyant-cli.git && cd polyant-cli && npm install && npm run build
 ```
 
 `npm install` already builds through `prepare`; the explicit `npm run build` is
@@ -100,7 +102,7 @@ polyant-cli --version
 ```
 
 Prints the package version and the Node version. If the command is not found
-after a global install, `npm bin -g` names the directory that has to be on your
+after a global install, the `bin` directory under `npm prefix -g` has to be on your
 PATH.
 
 ## Compatibility
@@ -115,9 +117,11 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | 0.2.x | 1.1.0 and 1.1.0-ee | adds `agent mcp`, `agent a2a`, `agent memory`, `agent optouts`, `agent events url` and `agent channels whatsapp`; `agent update` gains `--stt-provider` |
 | 0.3.x | the first engine release after 1.1.0-ee | adds `monitor ai-logs`, `monitor traces` and `agent messages`; the three routes merged to the engine's develop on 2026-09-01, so against 1.1.0-ee or older all three answer `404` |
 | 0.4.x | the same, plus the engine's develop as of 2026-09-02 | adds `workspace skills` and `workspace plugins`; `agent update` gains `--memory-scope`, `monitor events` gains `--conversation`, `agent models` gains a VISION column, and `agent channels show` reports an unreadable config and an engine-side disable |
-| 0.6.x | 1.2.0 and 1.2.0-ee, verified against the engine's develop (2026-10-01) | adds `agent budget`, `agent providers`, `agent channels slack url` and `agent conversations show --follow`; `agent checkup` gains `--fail-on`, `monitor status` probes the scheduler, `agent models` lists the embedders and the five-minute cache-write rate, `agent tools show` names a tool's plugin, and `agent secrets` accepts the keys a tool declares. Reads the 1.2.0 plugin and provider lists, where an ungranted row is absent — against 0.5.x those made `workspace providers admit` and `workspace plugins assign` refuse everything |
-| 0.7.x | 1.2.0-ee with the telephone voice channel, verified against the engine's develop (2026-10-07) | adds `agent channels voice status` and `agent channels voice settings show\|set`; an engine built without the voice package reports `available: no`, and 1.2.0 OSS answers `404` |
 | 0.5.x | the engine's develop as of 2026-09-14 | adds `org providers`, `org connections`, `workspace providers`, `workspace connections`, `org audit`, `org knowledge`, `workspace knowledge`, `agent shared-knowledge`, `agent checks`, `agent health`, `analytics checks` and `member invitations`; `agent update` gains `--set` and `--provider-connection`, and `whoami` reports which credential is on the header |
+| 0.6.x | 1.2.0 and 1.2.0-ee, verified against the engine's develop as of 2026-10-01 | adds `agent budget`, `agent providers`, `agent channels slack url` and `agent conversations show --follow`; `agent checkup` gains `--fail-on`, `monitor status` probes the scheduler, `agent models` lists the embedders and the five-minute cache-write rate, `agent tools show` names a tool's plugin, and `agent secrets` accepts the keys a tool declares. Reads the 1.2.0 plugin and provider lists, where an ungranted row is absent — against 0.5.x those made `workspace providers admit` and `workspace plugins assign` refuse everything |
+| 0.7.x | 1.2.0-ee with the telephone voice channel, verified against the engine's develop as of 2026-10-07 | adds `agent channels voice status` and `agent channels voice settings show\|set`; an engine built without the voice package reports `available: no`, and 1.2.0 OSS answers `404` |
+| 0.8.x | 1.2.0-ee with credential roles, written against a pre-release 1.2.0-ee engine (2026-10-08) | adds `agent provider-roles`, `agent connections`, `org provider-roles` and `org ambient-aws`; **removes** `agent update --provider-connection`, which the engine now refuses with a `400`. `agent channels voice status` reports roles where it reported keys, `org providers show` adds the ambient AWS grant and the provider catalogue, and `agent import` repeats the engine's warnings on stderr. Against an older engine the new commands answer `404`, and `voice status` refuses the old shape. From 0.8.1 the CLI follows the consistent provider-roles API of 1.2.0-ee: `agent connections list` reads `GET /api/instances/:slug/provider-connections` and shows `USABLE`, so it answers `404` against an engine that predates it |
+| 0.9.x | 1.2.0 and 1.2.0-ee, verified against the engine's develop as of 2026-10-12 (OSS and Enterprise) | the first public release, under Apache-2.0, installed from this repository: the release tarball for a global install, the tag for a project. No command added or removed: 0.9.0 carries 0.8.1's command set. Against an OSS engine only the commands listed under [OSS and Enterprise](#oss-and-enterprise) work; the rest answer `404` |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
 `agent a2a enable` is a `400` — the field does not exist there. Everything else
@@ -191,6 +195,19 @@ command:
 - Eighty mutating routes record what they did, and an organisation can read its
   own trail through `org audit management`.
 
+Engine 1.2.0-ee moves every provider credential into connections, and that is
+visible without a new command too:
+
+- Each use of a provider credential is a **role** bound to one connection: an
+  agent's `chat`, `embedding`, `stt` and voice roles, an organisation's
+  `library_embedding`. A provider key stored as a secret is read for none of
+  them, so `agent secrets set` and `org secrets set` are refused for those keys
+  with a `400` that names the connection routes, and the secret listings show a
+  copy the upgrade left behind only while it is stored.
+- `PATCH` and `POST /api/instances` refuse `providerConnectionId`, which is why
+  `agent update --provider-connection` is gone. A new agent answers nothing until
+  its `chat` role is bound.
+
 One family is deliberately absent. Every `/api/platform/*` route — platform
 plugins, platform skills, deployment-wide analytics and audit logs — is declared
 `@PlatformAdminOnly()`, which admits **only a human principal** whose
@@ -230,6 +247,56 @@ unaffected: they administer **custom org roles**, which the engine still has.
 permissions the key actually holds, and the workspaces it may address. A command
 failing with `404` against a reachable instance means that route is older or newer
 than this CLI.
+
+## OSS and Enterprise
+
+The CLI drives two editions of the engine: the open-source
+[Polyant](https://github.com/polyant-ai/polyant) engine and Polyant Enterprise,
+which serves a superset of the same management API. What follows was checked
+against both at 1.2.0: a command that needs an Enterprise route answers `404`
+against an OSS engine.
+
+**The credential comes first.** An OSS engine accepts a management key (`pk_…`)
+on `X-Polyant-Key`, but serves no route or panel page that issues one, and it does
+not know personal tokens: a `pat_…` is refused with `401`. Enterprise issues both,
+management keys through `apikey create`. Against OSS the CLI therefore needs a
+management key provisioned outside the engine's API.
+
+**Works against OSS:**
+
+- agents: `agent list`, `show`, `create`, `update`, `delete`, `export`, `import`,
+  `models` and `logs`, and the families `agent prompt`, `tools`, `hooks`,
+  `channels` (all but `channels voice`), `secrets`, `skills`, `knowledge`,
+  `tasks`, `events`, `mcp`, `memory`, `optouts`, `conversations` and `a2a`. The
+  OSS engine has no memory scope, so `agent update --memory-scope` exits `1`,
+  reporting the field as not written;
+- `analytics overview` and `analytics agent`; `monitor status`, `monitor events`
+  and `monitor stats`;
+- `whoami`, which reports the key's permissions as unverified because the OSS
+  engine has no `GET /api/service-context`;
+- `member list`, `show`, `remove` and `set-role`, with an explicit `--org`;
+- `api`, every `config` command, and `dev init`, which run locally or forward as
+  given.
+
+A write needs `--org` and `--workspace` on both editions (or a context naming
+them). An OSS engine cannot list them for the CLI, so read the slugs from the
+panel's URL, `/organizations/<org>/workspaces/<workspace>/…`.
+
+**Needs Enterprise:**
+
+- agents: `agent chat` (the playground stream), `agent messages`, `agent budget`,
+  `agent channels voice`, `agent checkup`, `agent checks`, `agent health`,
+  `agent compliance`, `agent governance`, `agent retention`, `agent providers`,
+  `agent provider-roles`, `agent connections` and `agent shared-knowledge`;
+- administration: every `org`, `workspace`, `role`, `apikey` and `skill` command,
+  and `member invitations`;
+- observability and policy: `monitor ai-logs`, `monitor traces`, `analytics
+  checks`, `analytics org`, and every `governance` command;
+- dev mode: `dev token` and `dev connect`.
+
+Some Enterprise features are also licensed per deployment. Where a deployment
+lacks one, the engine answers `403`, the same shape as a missing permission;
+`whoami` lists the features so the two can be told apart.
 
 ## Configuration
 
@@ -418,6 +485,11 @@ polyant-cli --context engineering agent update acme --model claude-opus-5
 polyant-cli --context engineering agent update acme --memory-scope conversation
 polyant-cli --context engineering agent update acme --set memoryEnabled=true
 polyant-cli --context engineering agent providers acme
+polyant-cli --context engineering agent provider-roles show acme
+polyant-cli --context engineering agent provider-roles bind acme chat 3f6c0d1e-…
+polyant-cli --context engineering agent provider-roles unbind acme stt --yes --confirm stt
+printf '{"api_key":"%s"}' "$ANTHROPIC_KEY" | polyant-cli --context engineering agent connections create acme Mia --provider anthropic --file - --yes
+polyant-cli --context engineering agent connections list acme
 polyant-cli --context engineering agent delete acme --yes --confirm acme
 
 polyant-cli --context engineering agent budget show acme
@@ -438,7 +510,7 @@ polyant-cli --context engineering agent channels voice settings set acme --file 
 polyant-cli --context engineering agent channels remove acme telegram --yes --confirm telegram
 
 polyant-cli --context engineering agent secrets show acme --configured-only
-printf %s "$OPENAI_KEY" | polyant-cli --context engineering agent secrets set acme --key openai_api_key --file - --yes
+printf %s "$TAVILY_KEY" | polyant-cli --context engineering agent secrets set acme --key tavily_api_key --file - --yes
 polyant-cli --context engineering agent secrets unset acme --key openai_api_key --yes --confirm openai_api_key
 
 polyant-cli --context engineering agent hooks show acme
@@ -513,10 +585,32 @@ turn is admitted by the absence of auth rather than by the key. Turn the flag of
 on the agent you rehearse against, or drive a closed agent with its own key
 through `/v1/chat/completions`.
 
-`agent secrets` is how an agent's provider credentials are set — `openai_api_key`,
-`anthropic_api_key`, the `aws_provider_*` trio, and whatever else its tools and
-channels declare. The key set is read from the engine per agent, never assumed, so
-`secrets show` lists exactly what that agent accepts.
+`agent provider-roles` and `agent connections` are how an agent gets the
+provider credentials it runs on (engine 1.2.0-ee). Each use of a credential is a
+role, bound to exactly one connection: one the organisation lends to the agent's
+workspace, or one private to the agent. `provider-roles show` lists every role
+the engine knows, whether the agent uses it, what it is bound to and whether it
+can run — with the engine's own reason when it cannot — and the connections each
+role may take. The engine filters that list by the same test the binding
+applies, the provider the agent runs the role on included, and `bind` checks the
+connection against it before writing. A connection that is bound but no longer
+fits the role is still named, with the engine's reason. A role with no binding stops instead of
+falling back to another key, and so does one bound to a private connection in an
+organisation that accepts only its own. There `agent connections list` still
+lists a private connection made before the switch, marked USABLE no, and `agent
+connections delete` removes it; while a role is bound to a connection, the
+engine refuses the delete with a `409`, on the organisation's connections too. A
+private connection's credential is read from a file or stdin and checked against
+the shape the engine reports for the agent, as for `org connections`.
+
+`agent secrets` sets the credentials an agent's tools and channels declare. Since
+engine 1.2.0-ee that no longer includes a provider's key (`openai_api_key`,
+`anthropic_api_key`, the `aws_provider_*` trio, the voice keys): the engine
+refuses those with a `400` naming the connection routes, and the CLI's own
+refusal of an undeclared key says the same. A copy the upgrade left behind stays
+listed while it is stored, so `secrets unset` can remove it. The key set is read
+from the engine per agent, never assumed, so `secrets show` lists exactly what
+that agent accepts.
 
 The value comes only from a file or stdin, and **is never printed** — not in the
 recap, which reports its length and where it came from, and not on stdout. There
@@ -611,7 +705,10 @@ it would remove; `--dry-run` is the CLI's, and sends no writes.
 `agent import` with a slug **overwrites** that agent — prompts, tools, channels and
 hooks are replaced, not merged — and needs `--confirm <slug>`. Without a slug it
 creates a new agent in the addressed workspace instead. Same body, opposite blast
-radius.
+radius. stdout is the engine's response; its warnings are repeated on stderr. A
+bundle carries no provider connection, so each role the imported agent uses
+comes back as a `provider_role_required` warning naming the role in its `role`
+field, and the CLI prints the `agent provider-roles bind` command for each.
 
 `agent retention show` reports "no policy" as **nothing is purged**. The engine
 used to fall back to a deployment-wide window; it does not any more — the column
@@ -693,9 +790,10 @@ The telephone voice channel (Enterprise) has commands of its own because its
 stored shape packs the voice profile into a JSON string that `channels set`
 would merge without checking. `agent channels voice status` gives the URL to
 paste into the Twilio number's "A call comes in" setting and lists what a call
-still needs: fields, keys (`elevenlabs_api_key`, `deepgram_api_key` for the
-default speech recognition, `typesafe_api_key` for the judges) and failing
-checks. `settings show` prints the settings as the JSON `settings set` takes, so
+still needs: fields, the voice roles the saved settings use (`voice_tts`,
+`voice_stt`, `voice_turn_detection`, `voice_text_model`, `voice_decisions`) with
+the provider each must be on and whether its connection can run, and failing
+checks. The roles are bound with `agent provider-roles bind`. `settings show` prints the settings as the JSON `settings set` takes, so
 the file can be versioned; `settings set` replaces the whole configuration,
 has the engine check every field before the recap, and saves nothing while an
 issue remains. Keep `twilio.authToken` out of a versioned file: an absent token
@@ -804,7 +902,7 @@ polyant-cli workspace bindings
 polyant-cli workspace member set labs u-1 --role member --yes
 
 polyant-cli org secrets show
-printf %s "$OPENAI_KEY" | polyant-cli org secrets set --key openai_api_key --file - --yes
+printf %s "$TAVILY_KEY" | polyant-cli org secrets set --key tavily_api_key --file - --yes
 polyant-cli org plugins
 
 polyant-cli member invitations list --pending-only
@@ -820,6 +918,10 @@ polyant-cli org connections list
 printf '{"api_key":"%s"}' "$OPENAI_KEY" | polyant-cli org connections create Produzione --provider openai --file - --yes
 polyant-cli org connections update c-1 --name Legacy --yes
 polyant-cli org connections delete c-1 --yes --confirm c-1
+polyant-cli org provider-roles show
+polyant-cli org provider-roles bind library_embedding c-1 --yes
+polyant-cli org ambient-aws show beta
+polyant-cli org ambient-aws revoke beta --yes --confirm beta
 
 polyant-cli workspace providers list labs
 polyant-cli workspace providers admit labs anthropic --yes
@@ -836,8 +938,8 @@ polyant-cli workspace skills assign labs billing --yes
 polyant-cli workspace skills revoke labs billing --yes --confirm billing
 
 polyant-cli workspace plugins list labs
-polyant-cli workspace plugins assign labs sales --yes
-polyant-cli workspace plugins revoke labs sales --yes --confirm sales
+polyant-cli workspace plugins assign labs booking --yes
+polyant-cli workspace plugins revoke labs booking --yes --confirm booking
 ```
 
 `org tasks list` collects every workspace and agent before printing, so its CLI
@@ -850,8 +952,9 @@ resolves the name off the collection first. Workspace deletion is final — the
 engine exposes no archive — so it needs `--yes` plus `--confirm <slug>`.
 
 `org secrets` is the organisation-level twin of `agent secrets`: an agent's own
-credential wins and this one is the fallback, so ten agents on one OpenAI account
-share one key. The engine only offers the keys that can legitimately apply at this
+credential wins and this one is the fallback, so ten agents on one search
+account share one key. Since engine 1.2.0-ee a provider's key is not one of them:
+it lives in `org connections`. The engine only offers the keys that can legitimately apply at this
 level — an inbound credential like `auth_api_key` authenticates a caller to one
 agent and stays per-agent — and the CLI refuses anything outside that set rather
 than storing a value that would be silently ignored.
@@ -918,16 +1021,31 @@ Models go the other way: they are switched **off**, never on, at the organisatio
 or the workspace tier, and either veto is enough, so a catalogue refresh reaches
 the tenant that paid for it instead of waiting for someone to enable each model.
 **Connections** are named credentials owned by the organisation and lent to
-workspaces, so whoever builds an agent picks one by name with `agent update
---provider-connection` and never sees the key. Credentials are read from a file or
-stdin, never a flag, and are checked against the shape the engine reports for that
-provider before anything is sent. Revoking a connection from a workspace
-**stops** the agents there that use it rather than falling back to another
-credential — a fallback would mean revoking a key revoked nothing while the spend
-moved. Deleting one is refused while any agent still selects it, so point those
-agents elsewhere first. `org providers managed-only --on` is the switch that makes a named
-connection compulsory; turn it on after the connections exist and the workspaces
-have them, because an agent carrying its own key stops on its next turn.
+workspaces, so whoever builds an agent binds its roles to one by name with
+`agent provider-roles bind` and never sees the key. Credentials are read from a
+file or stdin, never a flag, and are checked against the shape the engine reports
+for that provider before anything is sent. Revoking a connection from a workspace
+**stops** the roles there that are bound to it rather than falling back to
+another credential — a fallback would mean revoking a key revoked nothing while
+the spend moved. Deleting one is refused while a role of an agent or of the
+organisation is bound to it, so bind those roles elsewhere first. `org
+provider-roles` binds the organisation's own roles: today `library_embedding`,
+the embedder its shared libraries are indexed with. `org providers managed-only
+--on` allows agents only the organisation's connections; turn it on after the
+agents' roles are bound to them, because a role bound to a connection private to
+an agent stops at its next use.
+
+`org ambient-aws` is the Platform Admin's grant of the deployment's own AWS
+identity to one organisation: with it, a Bedrock connection may hold a region
+alone and its calls are signed, and billed, as the deployment; without it, a
+Bedrock connection needs a key of its own, and revoking the grant stops the
+region-only ones at their next use. The route is `@PlatformAdminOnly()`, so it
+takes a Platform Admin's personal token and refuses a management key, which the
+CLI checks before sending anything. The organisation is named on the command
+line because a Platform Admin acts on organisations it does not belong to. The
+upgrade granted it to every organisation whose migrated Bedrock connection held
+only a region, and recorded each grant in the management audit as
+`ambient_aws.org_grant`; review those grants.
 
 `org knowledge` and `workspace knowledge` are the shared libraries, and
 `agent shared-knowledge` is the agent's switch over them. A document reaches a
@@ -1163,3 +1281,10 @@ Before each engine release, `/engine-release-sync` in Claude Code
 (`.claude/skills/engine-release-sync/`) diffs the engine's `develop` against the
 engine this CLI last matched, proposes what to update, add, remove and modify,
 and proves the changes against a throwaway engine it starts and removes itself.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to send a change and [SECURITY.md](SECURITY.md)
+to report a vulnerability.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

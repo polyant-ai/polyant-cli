@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { CommandContext } from "../command.js";
 import { ConfigError } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
@@ -31,6 +31,20 @@ interface VoiceCheck {
   params?: unknown;
 }
 
+/**
+ * One credential role a call can use (engine 1.2.0-ee): the connection bound to
+ * it in the agent's provider roles, not a key among the agent's secrets.
+ */
+interface VoiceRoleState {
+  role?: string;
+  inUse?: boolean;
+  required?: boolean;
+  requiredProvider?: string;
+  ready?: boolean;
+  problem?: string | null;
+  message?: string | null;
+}
+
 interface VoiceStatus {
   available?: boolean;
   enabled?: boolean;
@@ -40,8 +54,9 @@ interface VoiceStatus {
   signatures?: string;
   locales?: string[];
   defaultLocale?: string;
-  secrets?: Record<string, string | null>;
-  missingSecrets?: string[];
+  roles?: unknown;
+  /** Roles in use that a call cannot start without, and that cannot run now. */
+  missingRoles?: string[];
   missingFields?: string[];
   configError?: string | null;
   issues?: unknown;
@@ -86,8 +101,7 @@ async function voiceStatus(args: string[], context: CommandContext | undefined, 
   const body = (res.body ?? {}) as VoiceStatus;
   const issues = expectArray<VoiceIssue>(body.issues, `GET ${path}`);
   const checks = expectArray<VoiceCheck>(body.checks, `GET ${path}`);
-  // Where each key comes from, never its value: "agent", "organization", or unset.
-  const secrets = Object.entries(body.secrets ?? {}).map(([key, source]) => `${key} ${source ?? "unset"}`);
+  const roles = expectArray<VoiceRoleState>(body.roles, `GET ${path}`);
   writePrettyResource(deps.io, [
     { label: "ready", value: yesNo(body.ready) },
     { label: "enabled", value: yesNo(body.enabled) },
@@ -97,10 +111,22 @@ async function voiceStatus(args: string[], context: CommandContext | undefined, 
     { label: "signatures", value: text(body.signatures) },
     { label: "locales", value: `${list(body.locales)} (default ${text(body.defaultLocale)})` },
     { label: "missing fields", value: list(body.missingFields) },
-    { label: "missing secrets", value: list(body.missingSecrets) },
-    { label: "secrets", value: secrets.length === 0 ? "(none)" : secrets.join(", ") },
+    { label: "missing roles", value: list(body.missingRoles) },
     { label: "config error", value: text(body.configError) },
   ]);
+  // Which roles the saved settings use, on which provider, and whether the
+  // connection bound to each can run — never a credential.
+  deps.io.stdout(
+    `\n${renderTable({
+      headers: ["ROLE", "IN USE", "REQUIRED", "PROVIDER", "READY"],
+      rows: roles.map((role) => [text(role.role), yesNo(role.inUse), yesNo(role.required), text(role.requiredProvider), yesNo(role.ready)]),
+      emptyMessage: "The engine reported no voice roles.",
+    })}\n`,
+  );
+  const problems = roles.filter((role) => role.inUse === true && role.ready === false);
+  if (problems.length > 0) {
+    deps.io.stdout(`\n${problems.map((role) => `${text(role.role)}: ${text(role.message ?? role.problem)}`).join("\n")}\n`);
+  }
   if (issues.length > 0) deps.io.stdout(`\n${issueTable(issues)}\n`);
   // Computed as if the channel were on, so a disabled channel still lists what a call would need.
   deps.io.stdout(
@@ -202,9 +228,13 @@ export const agentVoiceFamily: Record<string, Node> = {
     usage: `Usage: polyant-cli agent channels voice status <slug>
 
 The "A call comes in" URL of the agent's Twilio number, whether a call can start,
-the fields and keys still missing (elevenlabs_api_key; deepgram_api_key for the
-default speech recognition; typesafe_api_key for the judges) and where each key
-comes from, never its value. The checks are computed as if the channel were on.
+the fields still missing, and the credential roles the saved settings use:
+voice_tts, voice_stt, voice_turn_detection, voice_text_model and the optional
+voice_decisions, each with the provider it must be on and whether the connection
+bound to it can run. A role in use that cannot is followed by the engine's
+reason. Bind them with \`agent provider-roles bind\`: since engine 1.2.0-ee the
+voice reads no key from the agent's secrets. The checks are computed as if the
+channel were on.
 "available: no" means this engine runs without the voice package. A localhost
 webhook URL means the platform Base URL is not set; Twilio needs a public HTTPS
 address that also carries WebSockets. Enterprise only, engine 1.2.0-ee or later.`,

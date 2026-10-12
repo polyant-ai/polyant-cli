@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 
 /** Injectable process output used by commands and lightweight unit tests. */
 export interface OutputIO {

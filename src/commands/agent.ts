@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { ApiResponse } from "../api/client.js";
 import type {
   AgentDetail,
@@ -41,6 +41,7 @@ import { agentSupervisionFamily } from "./supervision.js";
 import { agentBudgetFamily } from "./budget.js";
 import { agentVoiceFamily } from "./voice.js";
 import { agentProvidersLeaf } from "./providers.js";
+import { agentConnectionsFamily, agentProviderRolesFamily } from "./provider-roles.js";
 import { AGENT_DATA_EXTRAS } from "./agent-data.js";
 import { AGENT_INTEROP_EXTRAS } from "./agent-interop.js";
 import { chat, CHAT_USAGE } from "./agent-chat.js";
@@ -123,6 +124,9 @@ async function create(args: string[], context: CommandContext | undefined, deps:
     // The engine's 1.2.0 defaults, said because both used to be on: an agent
     // copied by hand from an older one silently loses memory and voice messages.
     "Memory starts off and speech transcription disabled; turn them on with agent update.",
+    // 1.2.0-ee: no provider key is read from a secret, so a new agent answers
+    // nothing until its conversation has a connection.
+    `It answers nothing until its chat role is bound: \`agent provider-roles bind ${slug} chat <connectionId>\`.`,
   ];
   if (!(await preflight(deps, scope, context, options, { title: `Create agent ${slug}`, changes }))) return;
 
@@ -144,7 +148,6 @@ const UPDATE_FLAGS = {
     "--status",
     "--stt-provider",
     "--memory-scope",
-    "--provider-connection",
     "--set",
     "--confirm",
   ],
@@ -258,9 +261,24 @@ function sttProvider(options: readonly string[]): Record<string, string> {
   return { sttProvider: value };
 }
 
+/**
+ * Removed with engine 1.2.0-ee, where the engine answers 400 for
+ * `providerConnectionId`. Named here so the flag fails pointing at its
+ * replacement instead of as an unknown option.
+ */
+function refuseRemovedFlags(slug: string, options: readonly string[]): void {
+  if (!options.includes("--provider-connection")) return;
+  const connectionId = takeValue(options, "--provider-connection") ?? "<connectionId>";
+  throw new ConfigError(
+    "--provider-connection was removed: since engine 1.2.0-ee the agent's chat connection is a role binding. " +
+      `Use polyant-cli agent provider-roles bind ${slug} chat ${connectionId}.`,
+  );
+}
+
 async function update(args: string[], context: CommandContext | undefined, deps: AgentCommandDependencies): Promise<void> {
   const slug = requireSlug(args, "update");
   const options = args.slice(1);
+  refuseRemovedFlags(slug, options);
   assertKnown(options, UPDATE_FLAGS, "agent update option");
   const body: Record<string, unknown> = {
     ...optional(options, "--name", "name"),
@@ -268,7 +286,6 @@ async function update(args: string[], context: CommandContext | undefined, deps:
     ...optional(options, "--provider", "provider"),
     ...optional(options, "--model", "model"),
     ...optional(options, "--status", "status"),
-    ...optional(options, "--provider-connection", "providerConnectionId"),
     ...sttProvider(options),
     ...memoryScope(options),
     ...parseSetFlags(options),
@@ -288,6 +305,11 @@ async function update(args: string[], context: CommandContext | undefined, deps:
       ? `Leave ${field} unchanged at ${JSON.stringify(value)}.`
       : `Change ${field} from ${JSON.stringify(text(previous))} to ${JSON.stringify(value)}.`;
   });
+  if (body.provider !== undefined && String(body.provider) !== String(current.provider)) {
+    // The chat role's connection must be for the agent's provider, and the
+    // engine does not rebind it: the agent stops until the role is bound again.
+    changes.push(`The chat role must be bound to a connection for ${String(body.provider)}: see \`agent provider-roles show ${slug}\`.`);
+  }
   if (!(await preflight(deps, scope, context, options, { title: `Update agent ${slug}`, changes }))) return;
 
   const res = await call(deps, scope, { method: "PATCH", path: `/api/instances/${encodeURIComponent(slug)}`, body });
@@ -699,6 +721,17 @@ async function toolDeclaredSecrets(deps: AgentCommandDependencies, scope: Resolv
   }
 }
 
+/**
+ * Since engine 1.2.0-ee a model, embedding or speech provider's key is held by a
+ * connection, the secret listings stop offering it, and the secret routes refuse
+ * it with a 400 naming the connection routes. The CLI keeps no list of those
+ * keys (a plugin registers its own), so a refusal of an undeclared key says
+ * where such a key went.
+ */
+const PROVIDER_KEYS_MOVED =
+  "A model, embedding or speech provider key is no longer a secret: it is held by a provider connection bound to a role " +
+  "(`agent connections create`, `agent provider-roles bind`).";
+
 const TOOL_KEYS_UNREADABLE =
   "The keys this agent's tools declare need tool:read, which this key lacks, so a tool key that was never stored is not listed.";
 
@@ -738,7 +771,8 @@ function assertDeclared({ secrets, toolKeysUnreadable }: DeclaredSecrets, key: s
   // credential would stay untouched while the command reported success.
   throw new ConfigError(
     `Agent ${slug} declares no secret named ${JSON.stringify(key)}. Declared: ${secrets.map((secret) => secret.key).join(", ")}.` +
-      (toolKeysUnreadable ? ` ${TOOL_KEYS_UNREADABLE}` : ""),
+      (toolKeysUnreadable ? ` ${TOOL_KEYS_UNREADABLE}` : "") +
+      ` ${PROVIDER_KEYS_MOVED}`,
   );
 }
 
@@ -1160,7 +1194,7 @@ const LEAVES: Record<string, Node> = {
     usage: `Usage: polyant-cli agent update <slug> [--name <name>] [--description <text>] [--status <status>]
                                  [--provider <name>] [--model <id>] [--stt-provider <p>]
                                  [--memory-scope <agent|conversation>]
-                                 [--provider-connection <id>] [--set <field>=<value> ...]
+                                 [--set <field>=<value> ...]
 
 --set reaches the writable settings with no flag of their own: the timezone and
 locale, the debounce and typing delays, the cache TTL, the opt-out wording. The
@@ -1170,7 +1204,7 @@ field names. Two worth knowing from engine 1.2.0: memoryEnabled=true, since new
 agents start with memory off, and webContextFieldMapping='{"customerId":"customer.id"}',
 which maps the \`context\` a web chat sends onto conversation state — the web twin
 of the HTTP channel's mapping. Use \`agent providers <slug>\` to see which
---provider, --model and --provider-connection values the agent may take.
+--provider and --model values the agent may take.
 
 The engine IGNORES a field it does not treat as writable — with a 200 and a fresh
 updatedAt — so the response is checked: a field it asked to change and that comes
@@ -1179,9 +1213,11 @@ value the engine normalised (keywords trimmed, a temperature clamped) counts as
 written. confirmWipe=true authorises an embedder switch that would delete the
 agent's memories and knowledge, and is not checked, because nothing stores it.
 
---provider-connection points the agent at one of the organisation's named
-credentials (\`org connections list\`), and is required once the organisation has
-managed connections on.
+The credential the agent runs on is not a field: since engine 1.2.0-ee it is a
+role binding, set with \`agent provider-roles bind <slug> chat <connectionId>\`.
+--provider-connection is gone, and the engine refuses providerConnectionId with
+a 400 naming that route. Changing --provider leaves the chat role bound to a
+connection for the old provider, which the agent can no longer use.
 
 --stt-provider is one of openai, aws, deepgram or disabled. "disabled" is a real
 setting, not an absent one: the agent then tells a sender that voice messages
@@ -1312,7 +1348,12 @@ The engine's well-known keys, the keys already stored, and the keys the agent's
 enabled tools declare (fileUpload's s3_bucket_name, aws_region and
 s3_use_task_role, httpRequest's http_allowed_domains, a plugin's own). Presence
 only. With --json the engine's own list is printed unchanged, without the
-tool-declared keys.`,
+tool-declared keys.
+
+Since engine 1.2.0-ee a provider's key (openai_api_key, anthropic_api_key, the
+aws_provider_* trio and the voice keys among them) is held by a connection, and
+nothing reads it from here. A copy left by the upgrade is still listed while it
+is stored, so it can be removed with \`secrets unset\`.`,
       action: secretsShow,
     },
     set: {
@@ -1321,7 +1362,9 @@ tool-declared keys.`,
 
 The value is read from a file or stdin, never from a flag: an inline secret lands
 in shell history and in \`ps\`. It is never printed, not even in the recap — only
-its length and where it came from.`,
+its length and where it came from. A provider key is refused by the engine with
+a 400 naming the connection routes: use \`agent connections create\` and
+\`agent provider-roles bind\` instead.`,
       action: secretsSet,
       mutates: true,
     },
@@ -1417,6 +1460,7 @@ const AGENT_SUMMARIES: Record<string, string> = {
   "agent channels voice": "the telephone voice channel: readiness and settings (Enterprise)",
   "agent channels voice settings": "read and replace the voice channel's settings",
   "agent compliance": "an agent's model card, snapshots and reports",
+  "agent connections": "provider connections private to one agent (Enterprise)",
   "agent conversations": "manage an agent's conversations",
   "agent events": "manage an agent's event sources",
   "agent governance": "assign and inspect an agent's governance policies",
@@ -1426,6 +1470,7 @@ const AGENT_SUMMARIES: Record<string, string> = {
   "agent memory": "manage what an agent has remembered",
   "agent optouts": "manage the contacts that have opted out of this agent",
   "agent prompt": "manage an agent's prompt",
+  "agent provider-roles": "which connection each of an agent's credential roles runs on (Enterprise)",
   "agent retention": "manage an agent's data retention",
   "agent checks": "the supervision verdicts raised on this agent",
   "agent secrets": "manage an agent's secrets",
@@ -1454,6 +1499,8 @@ export function createAgentCommand(overrides: Partial<AgentCommandDependencies> 
       "shared-knowledge": agentSharedKnowledgeFamily,
       budget: agentBudgetFamily,
       providers: agentProvidersLeaf,
+      "provider-roles": agentProviderRolesFamily,
+      connections: agentConnectionsFamily,
     },
     deps,
     ["agent"],

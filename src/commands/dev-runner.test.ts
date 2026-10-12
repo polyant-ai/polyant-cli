@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from "vitest";
 import { DEV_EVENT_MARKER, DEV_RUNNER_ENV, DEV_RUNNER_SOURCE } from "./dev-runner.js";
 
@@ -8,9 +8,7 @@ import { DEV_EVENT_MARKER, DEV_RUNNER_ENV, DEV_RUNNER_SOURCE } from "./dev-runne
  * mistake that would work on the author's machine and fail on everyone else's,
  * or fail only once a real `tsx` ran it — which no unit test does.
  *
- * The behaviour itself was verified against a real `tsx` in a scratch project;
- * `the design notes` records
- * the commands and their output.
+ * The behaviour itself was verified against a real `tsx` in a scratch project.
  */
 describe("the dev runner source", () => {
   it("imports the SDK by bare specifier only, never by path", () => {

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { CommandContext } from "../command.js";
 import type { ScheduledTask, ScheduledTasksResponse } from "../api/types.js";
 import { ConfigError } from "../exit.js";
@@ -995,6 +995,9 @@ async function importAgent(args: string[], context: CommandContext | undefined, 
   const secretLines = [
     ...(carried.length === 0 ? [] : [`Write the settings the bundle carries values for: ${carried.join(", ")}.`]),
     ...(keyOnly.length === 0 ? [] : [`Credentials to set afterwards, which travel as names only: ${keyOnly.join(", ")}.`]),
+    // 1.2.0-ee: a connection belongs to the organisation that prepared it, so a
+    // bundle carries no binding and the engine warns for each role left unbound.
+    "Provider connections do not travel: bind each role the agent uses afterwards (`agent provider-roles show`).",
   ];
 
   const scope = await scopeFor(deps, context);
@@ -1021,6 +1024,35 @@ async function importAgent(args: string[], context: CommandContext | undefined, 
     body,
   });
   writeRawResponse(deps.io, res.raw);
+  writeImportWarnings(deps, res.body, slug);
+}
+
+interface ImportWarning {
+  type?: unknown;
+  message?: unknown;
+  /** `provider_role_required` only: the role to bind. */
+  role?: unknown;
+}
+
+/**
+ * The engine's import warnings, on stderr: stdout stays the response, byte for
+ * byte. Each says what the import could not finish, in the engine's words —
+ * since 1.2.0-ee that includes \`provider_role_required\`, one per role the agent
+ * uses with no connection bound, without which it answers nothing. Its \`role\`
+ * field names the role, so the command to run is built from it rather than
+ * read out of the sentence.
+ */
+function writeImportWarnings(deps: ServiceDependencies, response: unknown, requested: string | undefined): void {
+  const result = (response ?? {}) as { slug?: unknown; warnings?: unknown };
+  if (!Array.isArray(result.warnings)) return;
+  const warnings = result.warnings as ImportWarning[];
+  for (const warning of warnings) deps.io.stderr(`warning (${text(warning.type)}): ${text(warning.message)}\n`);
+  const unbound = warnings.filter((warning) => warning.type === "provider_role_required");
+  if (unbound.length === 0) return;
+  const slug = typeof result.slug === "string" ? result.slug : (requested ?? "<slug>");
+  const roles = unbound.map((warning) => (typeof warning.role === "string" ? warning.role : "<role>"));
+  deps.io.stderr(`note: list the connections each role may take with \`agent provider-roles show ${slug}\`, then bind each:\n`);
+  for (const role of [...new Set(roles)]) deps.io.stderr(`  polyant-cli agent provider-roles bind ${slug} ${role} <connectionId>\n`);
 }
 
 async function models(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -1397,7 +1429,12 @@ only; stderr names which keys carry a value.`,
        polyant-cli agent import <slug> --file <path|-> --yes --confirm <slug>  (overwrite)
 
 Naming a slug OVERWRITES that agent: prompts, tools, channels and hooks are
-replaced, not merged. Without one, a new agent lands in the addressed workspace.`,
+replaced, not merged. Without one, a new agent lands in the addressed workspace.
+
+stdout is the engine's response. Its warnings are repeated on stderr, one line
+each. A bundle carries no provider connection, so from engine 1.2.0-ee each role
+the agent uses with none bound is a provider_role_required warning: bind those
+roles with \`agent provider-roles bind\`, or the agent answers nothing.`,
     action: importAgent,
     mutates: true,
   },

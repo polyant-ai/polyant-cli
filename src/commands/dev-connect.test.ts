@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi } from "vitest";
 import { ExitCode } from "../exit.js";
 import type { DevChildProcess, DevCommandDependencies, DevSpawnOptions } from "./dev.js";

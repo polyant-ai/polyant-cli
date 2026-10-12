@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { WorkspaceSummary, WorkspacesResponse } from "../api/types.js";
 import type { CommandContext } from "../command.js";
 import { ConfigError, RemoteError } from "../exit.js";
@@ -348,7 +348,8 @@ async function sharedKnowledgeShow(args: string[], context: CommandContext | und
           ? "-"
           : body.embedderCredentialReady
             ? "ready"
-            : "MISSING — the vector search over shared documents fails, so they are found by full-text alone",
+            : "MISSING — the vector search over shared documents fails, so they are found by full-text alone; " +
+              "bind the organisation's library_embedding role (`org provider-roles`)",
     },
     // The agent's own embedder indexes its own knowledge only; shared documents
     // are searched with the organisation's.

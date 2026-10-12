@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { type ContextSpec, resolveTarget, type ResolvedTarget, type WorkspaceConfig } from "../config.js";
 import { ConfigError } from "../exit.js";
 import type { GlobalOptions } from "./global-options.js";

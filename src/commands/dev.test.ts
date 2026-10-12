@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from "vitest";
 import type { ApiResponse } from "../api/client.js";
 import { ExitCode, RemoteError } from "../exit.js";

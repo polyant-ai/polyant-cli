@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { ConfigError, ExitCode, RemoteError, type ExitCodeValue } from "../exit.js";
 import type { ResolvedTarget } from "../config.js";
 

@@ -1,35 +1,51 @@
 name: release
 
-# Publishes to GitHub Packages on a version tag. The package is proprietary and
-# `publishConfig` pins the registry, so a misfire cannot reach public npm.
+# A version tag becomes a GitHub Release. Nothing is published to a package
+# registry; everything installs from this repository over https:
+#
+#   npm install -D git+https://github.com/polyant-ai/polyant-cli.git#v<version>
+#   npm install -g https://github.com/polyant-ai/polyant-cli/releases/download/v<version>/polyant-ai-cli-<version>.tgz
+#
+# The first builds on the installing machine through `prepare`. A global install
+# cannot: npm prepares a git dependency with the global flag still set, so the
+# devDependencies never reach the clone and `tsc` is missing. The release
+# therefore carries the `npm pack` tarball, dist/ included, for `-g`.
 on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
+      # Creating the GitHub Release is the only write.
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-          registry-url: https://npm.pkg.github.com
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      # Refuse to publish a tag that disagrees with the manifest: `--version`
-      # reads package.json, so a mismatch would ship a build that misreports
-      # itself.
+      # Refuse a tag that disagrees with the manifest: `--version` reads
+      # package.json, so a mismatch would release a build that misreports itself.
       - name: Check the tag matches the manifest version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           PKG="$(node -p "require('./package.json').version")"
           test "$TAG" = "$PKG" || { echo "tag $TAG != package.json $PKG"; exit 1; }
-      - run: npm publish
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: node dist/bin.js --version
+      - name: Pack the tarball a global install uses
+        run: npm pack
+      - name: Create the GitHub Release
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes \
+            "polyant-ai-cli-${GITHUB_REF_NAME#v}.tgz"

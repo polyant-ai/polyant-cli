@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { readFileSync } from "node:fs";
 import type { Command } from "./command.js";
 import { agentCommand } from "./commands/agent.js";

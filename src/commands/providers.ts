@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type { CommandContext } from "../command.js";
 import { ConfigError, RemoteError } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
@@ -28,13 +28,13 @@ import { parseObject } from "./governance.js";
  * reach. `org providers show` therefore reports it and cannot change it, the same
  * way `org plugins` reports a grant it cannot make.
  *
- * `org secrets` is the older shape of the same thing, and both still work: the
- * migration carried each organisation's existing secrets into one connection
- * named "Predefinita", lent to every workspace. What `org secrets` cannot express
- * is a second credential for one provider, or a workspace that may not use it.
+ * Since engine 1.2.0-ee a connection is the only place a provider key lives:
+ * each use of one is a role bound to a connection (`provider-roles.ts`), and the
+ * secret routes refuse provider keys. The upgrade carried an organisation's
+ * provider secrets into one connection lent to every workspace.
  */
 
-interface ConnectionRow {
+export interface ConnectionRow {
   id: string;
   name: string;
   provider: string;
@@ -44,7 +44,7 @@ interface ConnectionRow {
   assigned?: boolean;
 }
 
-interface CredentialShape {
+export interface CredentialShape {
   fields: string[];
   /** Each entry is one complete set of fields that authenticates on its own. */
   accepts: string[][];
@@ -57,7 +57,11 @@ interface OrgProvidersBody {
   disabledModels?: unknown;
   connections?: unknown;
   managedConnectionsOnly?: unknown;
+  /** 1.2.0-ee: whether a Bedrock connection may sign with the deployment's AWS identity. */
+  ambientAwsGranted?: unknown;
   credentialShapes?: Record<string, CredentialShape>;
+  /** 1.2.0-ee: each provider a connection can be for, and what it can do. */
+  catalog?: unknown;
 }
 
 function connectionsPath(org: string, id?: string): string {
@@ -68,7 +72,7 @@ function workspacePath(org: string, workspace: string, rest: string): string {
   return orgPath(org, `/workspaces/${encodeURIComponent(workspace)}${rest}`);
 }
 
-function connectionTable(connections: readonly ConnectionRow[], empty: string, withAssigned: boolean): string {
+export function connectionTable(connections: readonly ConnectionRow[], empty: string, withAssigned: boolean): string {
   return renderTable({
     headers: withAssigned ? ["ID", "NAME", "PROVIDER", "FIELDS", "ASSIGNED"] : ["ID", "NAME", "PROVIDER", "FIELDS"],
     rows: connections.map((connection) => {
@@ -104,8 +108,21 @@ async function orgProvidersShow(args: string[], context: CommandContext | undefi
     // model policy: everything else the catalogue offers is available.
     { label: "models switched off", value: disabled.length === 0 ? "(none)" : disabled.join(", ") },
     { label: "managed connections only", value: body.managedConnectionsOnly === true ? "yes" : "no" },
+    // Granted by a Platform Admin (`org ambient-aws`): a region-only Bedrock connection works only with it.
+    { label: "ambient AWS identity", value: body.ambientAwsGranted === true ? "granted" : "not granted" },
   ]);
   deps.io.stdout(`\n${connectionTable(connections, `Organisation ${org} has no named provider connections.`, false)}\n`);
+  // What a connection may be for: the admitted chat and embedding providers and
+  // the speech services no admission governs, with the capabilities a role needs.
+  const catalog = Array.isArray(body.catalog) ? (body.catalog as { provider?: unknown; capabilities?: unknown }[]) : [];
+  if (catalog.length > 0) {
+    deps.io.stdout(
+      `\n${renderTable({
+        headers: ["PROVIDER", "CAN SERVE"],
+        rows: catalog.map((entry) => [text(entry.provider), Array.isArray(entry.capabilities) ? entry.capabilities.join(", ") : "-"]),
+      })}\n`,
+    );
+  }
 }
 
 async function managedOnly(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -118,8 +135,8 @@ async function managedOnly(args: string[], context: CommandContext | undefined, 
     title: `Turn managed connections ${on ? "on" : "off"} for ${org}`,
     changes: [
       on
-        ? "Every agent must name one of the organisation's connections. An agent carrying its own provider key STOPS on its next turn."
-        : "An agent may carry its own provider key again, instead of naming a connection.",
+        ? "Agents may use only the organisation's connections. A role bound to a connection private to an agent STOPS at its next use, and no agent may create one."
+        : "Agents may have provider connections of their own again.",
     ],
   };
   if (!(await preflight(deps, scope, org, context, args, plan))) return;
@@ -143,7 +160,7 @@ async function connectionsList(args: string[], context: CommandContext | undefin
  * Credentials arrive as a JSON object from a file or stdin, never as flags: the
  * values are the keys themselves, and a flag lands in shell history and in `ps`.
  */
-async function readCredentials(deps: ServiceDependencies, file: string): Promise<Record<string, string>> {
+export async function readCredentials(deps: ServiceDependencies, file: string): Promise<Record<string, string>> {
   const parsed = parseObject(await deps.readPayload(file), file === "-" ? "The stdin payload" : file);
   const credentials: Record<string, string> = {};
   for (const [field, value] of Object.entries(parsed)) {
@@ -161,7 +178,7 @@ async function readCredentials(deps: ServiceDependencies, file: string): Promise
  * the engine itself will apply rather than a second copy of the rule. A
  * mistyped field would otherwise come back as a 400 naming a Zod path.
  */
-function assertCredentialShape(shapes: Record<string, CredentialShape> | undefined, provider: string, credentials: Record<string, string>): void {
+export function assertCredentialShape(shapes: Record<string, CredentialShape> | undefined, provider: string, credentials: Record<string, string>): void {
   const shape = shapes?.[provider];
   if (shape === undefined) {
     // An unknown provider is the engine's decision to make: it holds the
@@ -297,9 +314,9 @@ async function connectionsDelete(args: string[], context: CommandContext | undef
     title: `Delete provider connection ${id}`,
     changes: [
       `Remove the credential from ${org} and from every workspace it was lent to.`,
-      // The agents' reference to it is a RESTRICT foreign key: the engine
-      // answers 400 rather than leave an agent pointing at nothing.
-      "The engine refuses while an agent still selects it: point those agents at another connection first.",
+      // A role binding's reference to it is a NO ACTION foreign key: the engine
+      // answers 409 rather than leave a role bound to nothing.
+      "The engine refuses while a role of an agent or of the organisation is bound to it: bind those roles elsewhere first.",
     ],
     destructive: { confirm: id },
   };
@@ -488,8 +505,8 @@ async function workspaceConnectionSet(
   const plan = {
     title: `${assigned ? "Lend" : "Withdraw"} connection ${connectionId} ${assigned ? "to" : "from"} workspace ${workspace}`,
     changes: assigned
-      ? [`Agents in ${workspace} may select this credential by name. They never see its value.`]
-      : [`Agents in ${workspace} stop being able to select it, and one already pointing at it stops on its next turn.`],
+      ? [`Agents in ${workspace} may bind their roles to this credential by name. They never see its value.`]
+      : [`Agents in ${workspace} stop being able to bind it, and a role already bound to it stops at its next use.`],
     ...(assigned ? {} : { destructive: { confirm: connectionId } }),
   };
   if (!(await preflight(deps, scope, org, context, options, plan))) return;
@@ -516,17 +533,22 @@ export const PROVIDER_FAMILY_EXTRAS: Record<string, Record<string, Node>> = {
 Admitting the organisation to a provider is a platform-admin action and is not
 on this key's surface: this reports it the way \`org plugins\` reports a grant it
 cannot make. What an organisation's own admin decides is per workspace — see
-\`workspace providers\`. ${TIER_NOTE} ${ORG_NOTE}`,
+\`workspace providers\`. ${TIER_NOTE}
+
+Engine 1.2.0-ee adds whether the organisation holds the ambient AWS grant
+(\`org ambient-aws\`) and the catalogue of providers a connection may be for,
+with what each can serve. ${ORG_NOTE}`,
         action: orgProvidersShow,
       },
       "managed-only": {
-        summary: "require every agent to use a named connection instead of its own key",
+        summary: "allow agents only the organisation's connections, none of their own",
         usage: `Usage: polyant-cli org providers managed-only --on
        polyant-cli org providers managed-only --off
 
-With it on, an agent carrying its own provider secret stops rather than falling
-back — which is the point: a credential nobody can see is also one nobody can
-route around. Turn it on after the connections exist and the workspaces have
+With it on, a role bound to a connection private to an agent stops rather than
+falling back, and no agent may create one — which is the point: a credential
+nobody can see is also one nobody can route around. Turn it on after the
+connections exist, the workspaces have them, and the agents' roles are bound to
 them. ${ORG_NOTE}`,
         action: managedOnly,
         mutates: true,
@@ -550,7 +572,9 @@ It is read from a file or stdin, never a flag, and never printed. The fields are
 checked against the shape the engine reports for that provider first, so a
 mistyped field fails naming what the provider takes.
 
-A new connection is lent to no workspace. ${ORG_NOTE}`,
+A new connection is lent to no workspace, and nothing uses it until a role is
+bound to it (\`agent provider-roles bind\`, \`org provider-roles bind\`). A Bedrock
+connection holding a region alone needs the ambient AWS grant. ${ORG_NOTE}`,
         action: connectionsCreate,
         mutates: true,
       },
@@ -558,8 +582,8 @@ A new connection is lent to no workspace. ${ORG_NOTE}`,
         summary: "rename a connection, or rotate its credential",
         usage: `Usage: polyant-cli org connections update <connectionId> [--name <name>] [--file <path|->]
 
---file REPLACES the credential; every agent using the connection authenticates
-with the new value from its next turn. ${ORG_NOTE}`,
+--file REPLACES the credential; every role bound to the connection authenticates
+with the new value from its next use. ${ORG_NOTE}`,
         action: connectionsUpdate,
         mutates: true,
       },
@@ -567,8 +591,8 @@ with the new value from its next turn. ${ORG_NOTE}`,
         summary: "delete a named provider credential",
         usage: `Usage: polyant-cli org connections delete <connectionId> --yes --confirm <connectionId>
 
-The engine refuses the delete while any agent still selects the connection:
-point those agents at another one first. Create and update need only
+The engine refuses the delete with a 409 while a role of an agent or of the
+organisation is bound to the connection: bind those roles elsewhere first. Create and update need only
 org.secret:write; without org.secret:read the CLI skips its own payload checks
 and says so. ${ORG_NOTE}`,
         action: connectionsDelete,
@@ -626,8 +650,8 @@ organisation's is set from the Admin Console. ${ORG_NOTE}`,
         summary: "lend a named credential to one workspace",
         usage: `Usage: polyant-cli workspace connections assign <workspaceSlug> <connectionId>
 
-Whoever builds an agent in that workspace can then pick the credential by name,
-and never sees its value. ${ORG_NOTE}`,
+Whoever builds an agent in that workspace can then bind its roles to the
+credential by name, and never sees its value. ${ORG_NOTE}`,
         action: (args, context, deps) => workspaceConnectionSet(args, context, deps, true),
         mutates: true,
       },
@@ -635,7 +659,7 @@ and never sees its value. ${ORG_NOTE}`,
         summary: "stop one workspace using a named credential",
         usage: `Usage: polyant-cli workspace connections revoke <workspaceSlug> <connectionId> --yes --confirm <connectionId>
 
-An agent pointing at it stops on its next turn rather than falling back.
+A role bound to it there stops at its next use rather than falling back.
 ${ORG_NOTE}`,
         action: (args, context, deps) => workspaceConnectionSet(args, context, deps, false),
         mutates: true,
@@ -651,8 +675,9 @@ export const agentProvidersLeaf: Node = {
 
 The workspace's view, read with agent:read alone: which providers the agent's
 workspace is admitted to, which models either tier has switched off, and the
-named connections lent to the workspace — the values \`agent update --provider\`,
-\`--model\` and \`--provider-connection\` can take without being refused. Names
-and providers only, never a credential. ${TIER_NOTE}`,
+named connections lent to the workspace — the values \`agent update --provider\`
+and \`--model\` can take without being refused. Names and providers only, never
+a credential. Which connection each of the agent's roles is bound to, and the
+ones private to the agent, are in \`agent provider-roles show\`. ${TIER_NOTE}`,
   action: agentProviders,
 };

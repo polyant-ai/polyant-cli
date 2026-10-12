@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { spawn as spawnProcess } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import type { Command, CommandContext } from "../command.js";

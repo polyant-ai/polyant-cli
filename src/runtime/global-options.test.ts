@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from "vitest";
 import { ConfigError } from "../exit.js";
 import { parseInvocation, type CommandTree } from "./global-options.js";

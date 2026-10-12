@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { ConfigError } from "../exit.js";

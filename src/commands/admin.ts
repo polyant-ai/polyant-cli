@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import type {
   MembersResponse,
   AgentSummary,
@@ -27,6 +27,7 @@ import { memberInvitationsFamily } from "./invitations.js";
 import { KNOWLEDGE_FAMILY_EXTRAS } from "./knowledge-library.js";
 import { ORG_FAMILY_EXTRAS, apiKeyFamily } from "./org-ops.js";
 import { PROVIDER_FAMILY_EXTRAS } from "./providers.js";
+import { PROVIDER_ROLE_FAMILY_EXTRAS } from "./provider-roles.js";
 import { skillFamily } from "./skills.js";
 import { credentialKind, refusePersonalToken } from "../runtime/credential.js";
 
@@ -517,11 +518,13 @@ const FAMILIES: Record<string, Record<string, Node>> = {
 };
 
 const FAMILY_SUMMARIES: Record<string, string> = {
-  org: "inspect the organisation, rename it, and share provider credentials",
-  "org secrets": "the provider credentials every agent in the organisation falls back to",
+  org: "inspect the organisation, rename it, and share its credentials",
+  "org secrets": "the credentials every agent in the organisation falls back to",
   "org audit": "who changed what, and who was refused",
   "org providers": "which providers and models this organisation may run",
   "org connections": "the organisation's named provider credentials",
+  "org provider-roles": "which connection each of the organisation's credential roles runs on (Enterprise)",
+  "org ambient-aws": "whether an organisation may use the deployment's AWS identity (Platform Admin)",
   "org knowledge": "the organisation's shared knowledge library",
   "org tasks": "scheduled tasks across every workspace and agent",
   workspace: "manage the organisation's workspaces and who is bound to them",
@@ -561,6 +564,7 @@ export function createAdminCommands(overrides: Partial<ServiceDependencies> = {}
         ...actions,
         ...(ORG_FAMILY_EXTRAS[name] ?? {}),
         ...(PROVIDER_FAMILY_EXTRAS[name] ?? {}),
+        ...(PROVIDER_ROLE_FAMILY_EXTRAS[name] ?? {}),
         ...(KNOWLEDGE_FAMILY_EXTRAS[name] ?? {}),
         ...(EXTRA_SUBTREES[name] ?? {}),
       },

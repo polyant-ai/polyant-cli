@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Polyant-Enterprise
+// SPDX-License-Identifier: Apache-2.0
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Command, CommandContext } from "../command.js";

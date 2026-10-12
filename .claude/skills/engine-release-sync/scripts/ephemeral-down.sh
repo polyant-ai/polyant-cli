@@ -12,6 +12,6 @@ if [ -f "$WORKDIR/engine.pid" ]; then
   kill -TERM -- "-$(cat "$WORKDIR/engine.pid")" 2>/dev/null
 fi
 docker rm -f "$PG_NAME" >/dev/null 2>&1
-git -C "$ENTERPRISE_DIR" worktree remove --force "$ENGINE" 2>/dev/null
+git -C "$ENGINE_DIR" worktree remove --force "$ENGINE" 2>/dev/null
 rm -f "$WORKDIR/state.env" "$WORKDIR/engine.pid" "$WORKDIR"/*.tok
 echo "stopped; logs kept in $WORKDIR" >&2
