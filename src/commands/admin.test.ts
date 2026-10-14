@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
 import type { WorkspaceConfig } from "../config.js";
-import { ConfigError } from "../exit.js";
+import { ConfigError, RemoteError } from "../exit.js";
 import type { GlobalOptions } from "../runtime/global-options.js";
 import type { ServiceDependencies } from "../runtime/service.js";
 import { createAdminCommands } from "./admin.js";
@@ -101,6 +101,16 @@ describe("organisation resolution", () => {
 
     expect(h.calls).toHaveLength(1);
     expect(h.calls[0].path).toBe("/api/organizations/acme/workspaces");
+  });
+
+  it("asks for --org when the engine has no service-context route (OSS)", async () => {
+    const h = harness([], {
+      request: (async () => {
+        throw new RemoteError("Cannot GET /api/service-context", 2, 404);
+      }) as unknown as ServiceDependencies["request"],
+    });
+
+    await expect(leaf(h.commands, "workspace", "list")([], context())).rejects.toThrow(/no GET \/api\/service-context.*--org/);
   });
 
   it("fails with a usable message when neither the flag nor the key names one", async () => {

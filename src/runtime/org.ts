@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { RoleSummary, RolesResponse, WorkspaceSummary, WorkspacesResponse } from "../api/types.js";
 import type { CommandContext } from "../command.js";
-import { ConfigError } from "../exit.js";
+import { ConfigError, RemoteError } from "../exit.js";
 import { writeRawResponse } from "../render/output.js";
 import { confirmMutation, type MutationPlan } from "./confirm.js";
 import { takeValue } from "./flags.js";
@@ -23,7 +23,19 @@ export async function orgFor(
   const explicit = context?.global.org ?? scope.org;
   if (explicit !== undefined && explicit.trim().length > 0) return explicit;
 
-  const res = await call(deps, scope, { path: "/api/service-context" });
+  let res;
+  try {
+    res = await call(deps, scope, { path: "/api/service-context" });
+  } catch (error) {
+    // An OSS engine does not serve the route, so there is nothing to look up.
+    if (error instanceof RemoteError && error.status === 404) {
+      throw new ConfigError(
+        "Cannot resolve an organisation: this engine has no GET /api/service-context. " +
+          "Pass --org <slug>, or select a context that names one.",
+      );
+    }
+    throw error;
+  }
   const slug = (res.body as { organization?: { slug?: unknown } } | null)?.organization?.slug;
   if (typeof slug !== "string" || slug.length === 0) {
     throw new ConfigError(
