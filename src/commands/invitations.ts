@@ -155,6 +155,10 @@ need the token by hand.
 
 An address the organisation's SSO sign-in list would later lock out is refused
 here rather than at acceptance: the invitation that cannot work never exists.
+
+A new invitation revokes any still pending for the same address, so only the
+latest link works. \`--workspace\` needs workspace roles on the deployment; the
+engine refuses it otherwise, since every member already reaches every workspace.
 ${INVITE_NOTE} ${ORG_NOTE}`,
     action: invitationsCreate,
     mutates: true,
