@@ -870,7 +870,11 @@ resolved back to slugs. ${EE_NOTE} ${ORG_NOTE}`,
       usage: `Usage: polyant-cli member set-role <userId> --role <key>
 
 The organisation scope. For a role that applies in one workspace only, use
-\`workspace member set\`. ${ORG_NOTE}`,
+\`workspace member set\`.
+
+The user must already belong to the organisation: where invitations are
+licensed the engine refuses anyone else, and they join through
+\`member invitations create\`, with the role set on acceptance. ${ORG_NOTE}`,
       action: memberSetRole,
       mutates: true,
     },
