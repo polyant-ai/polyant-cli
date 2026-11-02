@@ -27,7 +27,7 @@ package. Each release is a `v<version>` tag with a GitHub Release.
 Install the release tarball attached to the GitHub Release:
 
 ```bash
-npm install -g https://github.com/polyant-ai/polyant-cli/releases/download/v0.9.0/polyant-ai-cli-0.9.0.tgz
+npm install -g https://github.com/polyant-ai/polyant-cli/releases/download/v0.9.1/polyant-ai-cli-0.9.1.tgz
 ```
 
 Then `polyant-cli --version` works in any shell. The tarball carries the
@@ -45,7 +45,7 @@ project that scripts against one instance can pin the release tag as a dev
 dependency:
 
 ```bash
-npm install -D git+https://github.com/polyant-ai/polyant-cli.git#v0.9.0
+npm install -D git+https://github.com/polyant-ai/polyant-cli.git#v0.9.1
 ```
 
 This one compiles on install: `prepare` runs `tsc`, so `dist/` is built for you
@@ -121,7 +121,7 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | 0.6.x | 1.2.0 and 1.2.0-ee, verified against the engine's develop as of 2026-10-01 | adds `agent budget`, `agent providers`, `agent channels slack url` and `agent conversations show --follow`; `agent checkup` gains `--fail-on`, `monitor status` probes the scheduler, `agent models` lists the embedders and the five-minute cache-write rate, `agent tools show` names a tool's plugin, and `agent secrets` accepts the keys a tool declares. Reads the 1.2.0 plugin and provider lists, where an ungranted row is absent — against 0.5.x those made `workspace providers admit` and `workspace plugins assign` refuse everything |
 | 0.7.x | 1.2.0-ee with the telephone voice channel, verified against the engine's develop as of 2026-10-07 | adds `agent channels voice status` and `agent channels voice settings show\|set`; an engine built without the voice package reports `available: no`, and 1.2.0 OSS answers `404` |
 | 0.8.x | 1.2.0-ee with credential roles, written against a pre-release 1.2.0-ee engine (2026-10-08) | adds `agent provider-roles`, `agent connections`, `org provider-roles` and `org ambient-aws`; **removes** `agent update --provider-connection`, which the engine now refuses with a `400`. `agent channels voice status` reports roles where it reported keys, `org providers show` adds the ambient AWS grant and the provider catalogue, and `agent import` repeats the engine's warnings on stderr. Against an older engine the new commands answer `404`, and `voice status` refuses the old shape. From 0.8.1 the CLI follows the consistent provider-roles API of 1.2.0-ee: `agent connections list` reads `GET /api/instances/:slug/provider-connections` and shows `USABLE`, so it answers `404` against an engine that predates it |
-| 0.9.x | 1.2.0 and 1.2.0-ee, verified against the engine's develop as of 2026-10-12 (OSS and Enterprise); 1.3.4, 1.3.4-ee, 1.3.5 and 1.3.5-ee by comparing the route list | the first public release, under Apache-2.0, installed from this repository: the release tarball for a global install, the tag for a project. No command added or removed: 0.9.0 carries 0.8.1's command set. Engine 1.3.4-ee adds management routes to the 1.2.0-ee list and removes or changes none, so every command 0.9.x sends still has its route; the new routes have no command here yet. Engine 1.3.5-ee adds one route, `GET /api/platform/analytics/trend` for Platform Admins, and removes or changes none. Against an OSS engine only the commands listed under [OSS and Enterprise](#oss-and-enterprise) work; the rest answer `404` |
+| 0.9.x | 1.2.x and 1.3.0, and 1.2.x-ee and 1.3.0-ee, verified against the v1.3.0 and v1.3.0-ee tags on 2026-10-14 (OSS and Enterprise); 1.3.4, 1.3.4-ee, 1.3.5 and 1.3.5-ee by comparing the route list | the first public release, under Apache-2.0, installed from this repository: the release tarball for a global install, the tag for a project. No command added or removed: 0.9.0 carries 0.8.1's command set. 0.9.1 adds none either: run without `--org` against an engine that has no `GET /api/service-context`, as an OSS engine, an organization command says `--org` is needed instead of reporting an unmatched route. Engine 1.3.4-ee adds management routes to the 1.2.0-ee list and removes or changes none, so every command 0.9.x sends still has its route; the new routes have no command here yet. Engine 1.3.5-ee adds one route, `GET /api/platform/analytics/trend` for Platform Admins, and removes or changes none. Against an OSS engine only the commands listed under [OSS and Enterprise](#oss-and-enterprise) work; the rest answer `404` |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
 `agent a2a enable` is a `400` — the field does not exist there. Everything else
@@ -253,7 +253,7 @@ than this CLI.
 The CLI drives two editions of the engine: the open-source
 [Polyant](https://github.com/polyant-ai/polyant) engine and Polyant Enterprise,
 which serves a superset of the same management API. What follows was checked
-against both at 1.2.0: a command that needs an Enterprise route answers `404`
+against both at 1.2.0 and 1.3.0: a command that needs an Enterprise route answers `404`
 against an OSS engine.
 
 **The credential comes first.** An OSS engine accepts a management key (`pk_…`)
