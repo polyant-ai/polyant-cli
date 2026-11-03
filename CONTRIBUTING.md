@@ -44,38 +44,13 @@ keeps with the people and agents that drive it. In particular:
   `*.test.ts`, and updates the README and, where it applies, `AGENTS.md`.
 - Every source file carries the header `// SPDX-License-Identifier: Apache-2.0`.
 
-## Sign your work (DCO)
-
-polyant-cli uses the [Developer Certificate of Origin](https://developercertificate.org/)
-for contributions, instead of a Contributor License Agreement.
-
-Every commit must include a `Signed-off-by` line. Sign your commits with:
-
-    git commit -s -m "feat: my change"
-
-This appends a line like:
-
-    Signed-off-by: Your Name <your.email@example.com>
-
-The `-s` flag uses your `git config user.name` and `user.email`. If you forgot to
-sign a previous commit, amend it with:
-
-    git commit --amend -s --no-edit
-
-Or rebase to add sign-off to a range of commits:
-
-    git rebase --exec "git commit --amend -s --no-edit" develop
-
-Pull requests without sign-off on every commit are not merged.
-
 ## Pull request process
 
 1. Branch from `develop` and open the pull request against `develop`, with a title
    in [Conventional Commits](https://www.conventionalcommits.org/) format.
 2. Describe what changes, why, and how you tested it.
 3. CI must pass.
-4. Every commit must be signed off (see above).
-5. A maintainer reviews it before merge.
+4. A maintainer reviews it before merge.
 
 ## Licence
 
