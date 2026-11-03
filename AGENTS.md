@@ -192,3 +192,6 @@ the second one tells you anything about the data.
 **Do not reach for `--yes` to get past a refusal you have not read.** A refusal on
 a production target, or a missing `--confirm`, is the one place where the tool is
 deliberately in your way. `--dry-run` first, read the recap, then commit.
+
+Changing polyant-cli itself rather than driving it? Read `CONTRIBUTING.md` and
+`CLAUDE.md` in the repository first.
