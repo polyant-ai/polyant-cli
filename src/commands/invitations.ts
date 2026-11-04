@@ -5,7 +5,7 @@ import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
 import { ORG_NOTE, orgPath, preflight, readScope, report, requirePositional, workspaceIdFor } from "../runtime/org.js";
-import { call, expectArray, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
+import { call, expectArray, maybe, positiveInteger, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
 import type { Node } from "../runtime/tree.js";
 
 /**
@@ -29,18 +29,33 @@ function invitationsPath(org: string, id?: string): string {
   return orgPath(org, id === undefined ? "/invitations" : `/invitations/${encodeURIComponent(id)}`);
 }
 
+/** The engine's page size for `?status=all` when no `limit` is sent. */
+const HISTORY_PAGE_SIZE = 50;
+
 async function invitationsList(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
-  assertKnown(args, { boolean: ["--pending-only"] }, "member invitations list option");
+  assertKnown(args, { boolean: ["--all", "--pending-only"], value: ["--limit", "--offset"] }, "member invitations list option");
+  const history = args.includes("--all");
+  if (history && args.includes("--pending-only")) {
+    throw new ConfigError("--all and --pending-only ask for different listings; pass one of them.");
+  }
+  const limit = positiveInteger(takeValue(args, "--limit"), "--limit");
+  const offset = positiveInteger(takeValue(args, "--offset"), "--offset");
+  if (!history && (limit !== undefined || offset !== undefined)) {
+    throw new ConfigError("--limit and --offset page the history, so they need --all.");
+  }
+
   const { scope, org } = await readScope(deps, context);
   const path = invitationsPath(org);
-  const res = await call(deps, scope, { path });
+  // Without a status the engine answers the open invitations. The history grows
+  // with every invitation ever sent, so the engine serves it a page at a time.
+  const query = history ? { status: "all", ...maybe("limit", limit), ...maybe("offset", offset) } : undefined;
+  const res = await call(deps, scope, { path, ...(query === undefined ? {} : { query }) });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
-  const all = expectArray<InvitationRow>((res.body as { invitations?: unknown } | null)?.invitations, `GET ${path}`);
-  // The engine returns accepted and revoked rows too, which is what makes the
-  // listing a history rather than a queue; the filter is local because the route
-  // takes no status parameter.
-  const invitations = args.includes("--pending-only") ? all.filter((invitation) => invitation.status === "pending") : all;
+  const rows = expectArray<InvitationRow>((res.body as { invitations?: unknown } | null)?.invitations, `GET ${path}`);
+  // An engine up to 1.3.5-ee ignores the status and returns the whole history,
+  // so the open listing is also filtered here; on a newer engine it is a no-op.
+  const invitations = history ? rows : rows.filter((invitation) => invitation.status === "pending");
   deps.io.stdout(
     `${renderTable({
       headers: ["ID", "EMAIL", "ROLE", "STATUS", "EXPIRES"],
@@ -51,9 +66,15 @@ async function invitationsList(args: string[], context: CommandContext | undefin
         text(invitation.status),
         text(invitation.expiresAt),
       ]),
-      emptyMessage: `Organisation ${org} has no invitations.`,
+      emptyMessage: history ? `Organisation ${org} has no invitations on this page.` : `Organisation ${org} has no open invitations.`,
     })}\n`,
   );
+  // A full page says nothing about what follows it, so the next offset is named
+  // rather than leaving a long history looking complete.
+  const pageSize = limit === undefined ? HISTORY_PAGE_SIZE : Number(limit);
+  if (history && rows.length >= pageSize) {
+    deps.io.stderr(`more may follow: --all --offset ${Number(offset ?? 0) + rows.length}\n`);
+  }
 }
 
 async function invitationsCreate(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -137,10 +158,17 @@ const INVITE_NOTE =
 /** The `member invitations` subtree. */
 export const memberInvitationsFamily: Record<string, Node> = {
   list: {
-    summary: "list the organisation's invitations",
-    usage: `Usage: polyant-cli member invitations list [--pending-only]
+    summary: "list the organisation's open invitations, or the whole history",
+    usage: `Usage: polyant-cli member invitations list
+       polyant-cli member invitations list --all [--limit <n>] [--offset <n>]
 
-Accepted and revoked rows are kept, so this is a history rather than a queue.
+Without --all, the invitations still open: not accepted, revoked or expired.
+--pending-only is accepted and means the same.
+
+--all is the history, accepted, revoked and expired rows included, newest first.
+The engine serves it a page at a time, 50 rows unless --limit says otherwise
+(it answers 400 above 200); a full page names the --offset of the next one on
+stderr. An engine up to 1.3.5-ee ignores the paging and returns every row.
 ${INVITE_NOTE} ${ORG_NOTE}`,
     action: invitationsList,
   },
