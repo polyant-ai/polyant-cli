@@ -208,6 +208,15 @@ visible without a new command too:
   `agent update --provider-connection` is gone. A new agent answers nothing until
   its `chat` role is bound.
 
+The first Enterprise engine release after 1.3.5-ee changes two listings:
+
+- `GET /api/organizations/:org/invitations` answers the open invitations unless
+  it is asked for `?status=all`, which pages the history. `member invitations
+  list` shows the open ones on any engine, and `--all` asks for the history.
+- The list of an agent's compliance snapshots no longer carries each version's
+  configuration. `agent compliance snapshots <slug>` prints the versions, and
+  `--version <n>` reads one configuration.
+
 One family is deliberately absent. Every `/api/platform/*` route — platform
 plugins, platform skills, deployment-wide analytics and audit logs — is declared
 `@PlatformAdminOnly()`, which admits **only a human principal** whose
@@ -908,7 +917,8 @@ polyant-cli org secrets show
 printf %s "$TAVILY_KEY" | polyant-cli org secrets set --key tavily_api_key --file - --yes
 polyant-cli org plugins
 
-polyant-cli member invitations list --pending-only
+polyant-cli member invitations list
+polyant-cli member invitations list --all --limit 100
 polyant-cli member invitations create ada@example.com --role member --workspace labs --yes
 polyant-cli member invitations revoke i-1 --yes --confirm i-1
 

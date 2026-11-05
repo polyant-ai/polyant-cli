@@ -437,19 +437,50 @@ describe("member invitations", () => {
     expect(text).toContain("token:      inv_abc");
   });
 
-  it("keeps accepted and revoked rows unless --pending-only asks otherwise", async () => {
-    const invitations = {
-      invitations: [
-        { id: "i-1", email: "ada@example.com", roleKey: "member", status: "pending", expiresAt: null, createdAt: null, acceptedAt: null, revokedAt: null },
-        { id: "i-2", email: "bob@example.com", roleKey: "member", status: "accepted", expiresAt: null, createdAt: null, acceptedAt: null, revokedAt: null },
-      ],
-    };
-    const all = harness([response(invitations)]);
-    await leaf(all.commands, ["member", "invitations", "list"])([], context());
-    expect(all.out.join("")).toContain("bob@example.com");
+  const history = {
+    invitations: [
+      { id: "i-1", email: "ada@example.com", roleKey: "member", status: "pending", expiresAt: null, createdAt: null, acceptedAt: null, revokedAt: null },
+      { id: "i-2", email: "bob@example.com", roleKey: "member", status: "accepted", expiresAt: null, createdAt: null, acceptedAt: null, revokedAt: null },
+    ],
+  };
 
-    const pending = harness([response(invitations)]);
-    await leaf(pending.commands, ["member", "invitations", "list"])(["--pending-only"], context());
-    expect(pending.out.join("")).not.toContain("bob@example.com");
+  // The engine's default is the open invitations; an engine up to 1.3.5-ee
+  // ignores the status and answers the history, which the CLI narrows itself.
+  it("lists the open invitations by default, whatever the engine sends", async () => {
+    for (const args of [[], ["--pending-only"]]) {
+      const h = harness([response(history)]);
+      await leaf(h.commands, ["member", "invitations", "list"])(args, context());
+      expect(h.calls[0].path).toBe("/api/organizations/acme/invitations");
+      expect(h.calls[0].query).toBeUndefined();
+      expect(h.out.join("")).toContain("ada@example.com");
+      expect(h.out.join("")).not.toContain("bob@example.com");
+    }
+  });
+
+  it("asks for the history with --all and passes its paging through", async () => {
+    const h = harness([response(history)]);
+    await leaf(h.commands, ["member", "invitations", "list"])(["--all", "--limit", "2", "--offset", "4"], context());
+
+    expect(h.calls[0].query).toEqual({ status: "all", limit: "2", offset: "4" });
+    expect(h.out.join("")).toContain("bob@example.com");
+    // A full page: the next offset is named, so a long history does not look complete.
+    expect(h.err.join("")).toContain("--all --offset 6");
+  });
+
+  it("says nothing about a next page when the history page is not full", async () => {
+    const h = harness([response(history)]);
+    await leaf(h.commands, ["member", "invitations", "list"])(["--all"], context());
+
+    expect(h.calls[0].query).toEqual({ status: "all" });
+    expect(h.err.join("")).not.toContain("more may follow");
+  });
+
+  it("refuses paging without --all, and --all together with --pending-only", async () => {
+    const h = harness([]);
+    const list = leaf(h.commands, ["member", "invitations", "list"]);
+
+    await expect(list(["--limit", "10"], context())).rejects.toThrow(/need --all/);
+    await expect(list(["--all", "--pending-only"], context())).rejects.toThrow(/pass one of them/);
+    expect(h.calls).toHaveLength(0);
   });
 });

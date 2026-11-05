@@ -1401,7 +1401,10 @@ catalog. Run \`polyant-cli governance policy list\` for the ids.`,
       usage: `Usage: polyant-cli agent compliance snapshots <slug> [--version <n>]
        polyant-cli agent compliance snapshots <slug> --take [--label <text>]
 
-A snapshot freezes the agent's configuration as an immutable numbered version.`,
+A snapshot freezes the agent's configuration as an immutable numbered version.
+The list carries each version's number, label and dates; the configuration
+itself is read one version at a time with --version <n>. An engine up to
+1.3.5-ee also put every version's configuration in the list.`,
       action: complianceSnapshots,
       mutates: true,
     },
