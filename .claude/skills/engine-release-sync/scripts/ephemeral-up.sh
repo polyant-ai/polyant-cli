@@ -43,16 +43,16 @@ if [ -d "$ENGINE" ] && [ "$(git -C "$ENGINE" rev-parse HEAD 2>/dev/null)" != "$S
 fi
 [ -d "$ENGINE" ] || git -C "$ENGINE_DIR" worktree add -q --detach "$ENGINE" "$SHA"
 
-# Reuse the checkout's dependencies only when its lockfile is the target's;
-# otherwise install, which is slow but is the only honest choice.
-if [ ! -e "$ENGINE/node_modules" ]; then
-  if [ -d "$ENGINE_DIR/node_modules" ] && git -C "$ENGINE_DIR" diff --quiet "$SHA" -- package-lock.json packages/engine/package.json 2>/dev/null; then
-    ln -s "$ENGINE_DIR/node_modules" "$ENGINE/node_modules"
-    [ -d "$ENGINE_DIR/packages/engine/node_modules" ] && ln -s "$ENGINE_DIR/packages/engine/node_modules" "$ENGINE/packages/engine/node_modules"
-  else
-    echo "• npm ci (the checkout's lockfile differs from $REV)" >&2
-    (cd "$ENGINE" && npm ci --silent)
-  fi
+# Dependencies are installed in the worktree, for the revision under test. They
+# are never linked from ENGINE_DIR: a symlinked node_modules makes workspace
+# packages (the voice package, for one) resolve to the checkout's copy instead
+# of this revision. A link left by an earlier run of this script is removed.
+for link in "$ENGINE/node_modules" "$ENGINE/packages/engine/node_modules"; do
+  [ -L "$link" ] && rm "$link"
+done
+if [ ! -d "$ENGINE/node_modules" ]; then
+  echo "• npm ci at $SHA" >&2
+  (cd "$ENGINE" && npm ci --silent)
 fi
 
 # Something already answering on the API port would pass the health check below
@@ -111,7 +111,7 @@ curl -sf "http://localhost:$API_PORT/health" >/dev/null || { tail -30 "$WORKDIR/
 echo "• credentials" >&2
 read -r USER_ID ORG_ID < <(docker exec "$PG_NAME" psql -U polyant -d polyant -Atc \
   "select u.id || ' ' || o.id from users u, organizations o where u.email='admin@cli-sync.local' and o.is_default" | tr '|' ' ')
-SESSION=$(node "$HERE/mint-session.mjs" "$ENGINE_DIR/node_modules" "$AUTH_SECRET" "$USER_ID" admin@cli-sync.local "$ORG_ID")
+SESSION=$(node "$HERE/mint-session.mjs" "$ENGINE/node_modules" "$AUTH_SECRET" "$USER_ID" admin@cli-sync.local "$ORG_ID")
 echo "$SESSION" >"$WORKDIR/session.tok"
 B=http://localhost:$API_PORT
 H="Authorization: Bearer $SESSION"

@@ -1189,7 +1189,10 @@ ones granted to it, and two rows can share a name when an organisation
 deliberately overrides a platform skill — so `OWNER` is always printed and is not
 inferrable from anything else. `skill set` reads the catalog to decide whether it
 is creating or versioning, because the engine refuses a create for a name it
-already holds; `--description` is required only for the first case. `skill import`
+already holds; `--description` is required only for the first case. The
+`requiredEnv` list in the file's YAML frontmatter (names, `description`,
+`sensitive`, true by default) is sent with every `skill set` write, since the
+engine refuses `agent skills env set` for a key the skill does not declare. `skill import`
 names on stderr anything the engine skipped, which the counts alone hide.
 
 ### `polyant-cli governance`

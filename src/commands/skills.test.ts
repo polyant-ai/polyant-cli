@@ -147,6 +147,62 @@ describe("skill set", () => {
     );
   });
 
+  const WITH_ENV = [
+    "---",
+    "name: weather",
+    "requiredEnv:",
+    "  - name: API_KEY",
+    "    description: The key",
+    "  - name: REGION",
+    "    sensitive: false",
+    "  - LEGACY_TOKEN",
+    "---",
+    "# Weather",
+  ].join("\n");
+
+  it("sends the requiredEnv the frontmatter declares, sensitive unless marked otherwise, on create", async () => {
+    const h = harness([response({ skills: [] }), response({ skill: {} }, 201)], { readPayload: async () => WITH_ENV });
+
+    await leaf(h.commands, "set")(["weather", "--file", "-", "--description", "Weather"], context({ yes: true }));
+
+    expect(h.calls[1].body).toEqual({
+      name: "weather",
+      description: "Weather",
+      content: WITH_ENV,
+      requiredEnv: [
+        { name: "API_KEY", description: "The key", sensitive: true },
+        { name: "REGION", sensitive: false },
+        { name: "LEGACY_TOKEN", sensitive: true },
+      ],
+    });
+  });
+
+  it("sends it on a new version too, since a version written without it carries none", async () => {
+    const h = harness([response(CATALOG), response({ skill: {} })], { readPayload: async () => WITH_ENV });
+
+    await leaf(h.commands, "set")(["triage", "--file", "-"], context({ yes: true }));
+
+    expect((h.calls[1].body as { requiredEnv: unknown[] }).requiredEnv).toHaveLength(3);
+  });
+
+  it("sends no requiredEnv for a skill that declares none", async () => {
+    for (const content of ["# Plain", "---\nname: plain\n---\n# Plain"]) {
+      const h = harness([response({ skills: [] }), response({ skill: {} }, 201)], { readPayload: async () => content });
+
+      await leaf(h.commands, "set")(["plain", "--file", "-", "--description", "Plain"], context({ yes: true }));
+
+      expect(h.calls[1].body).not.toHaveProperty("requiredEnv");
+    }
+  });
+
+  it("refuses frontmatter that is not valid YAML", async () => {
+    const h = harness([], { readPayload: async () => "---\nrequiredEnv: [unclosed\n---\nbody" });
+
+    await expect(leaf(h.commands, "set")(["x", "--file", "-", "--description", "d"], context({ yes: true }))).rejects.toThrow(
+      /not valid YAML/,
+    );
+  });
+
   it("refuses an empty payload", async () => {
     const h = harness([], { readPayload: async () => "   \n" });
 
