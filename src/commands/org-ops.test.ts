@@ -253,6 +253,35 @@ describe("member set-role", () => {
   });
 });
 
+describe("org workspace-assignments", () => {
+  it("lists every workspace's skills and connections from the organisation route", async () => {
+    const h = harness([
+      response({
+        workspaces: [
+          { slug: "general", skills: ["triage", "billing"], connections: ["c-1"] },
+          { slug: "sales", skills: [], connections: [] },
+        ],
+      }),
+    ]);
+
+    await leaf(h.commands, ["org", "workspace-assignments"])([], context());
+
+    expect(h.calls[0].path).toBe("/api/organizations/default/workspace-assignments");
+    const table = h.out.join("");
+    expect(table).toMatch(/general\s+triage, billing\s+c-1/);
+    expect(table).toMatch(/sales\s+-\s+-/);
+  });
+
+  it("passes the body through with --json", async () => {
+    const body = response({ workspaces: [] });
+    const h = harness([body]);
+
+    await leaf(h.commands, ["org", "workspace-assignments"])([], context({ json: true }));
+
+    expect(h.out.join("")).toBe(body.raw);
+  });
+});
+
 describe("org plugins", () => {
   it("lists the plugins this organisation holds, with no grant column to misread", async () => {
     const h = harness([response({ plugins: [{ name: "booking", version: "1.2.0", compatible: false }] })]);

@@ -80,6 +80,22 @@ describe("explainUnmatchedRoute", () => {
 });
 
 describe("request", () => {
+  it("should_return_the_body_as_bytes_when_binary_is_asked", async () => {
+    const audio = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0xff, 0x00, 0xfe]);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(audio, { status: 200, headers: { "Content-Type": "audio/wav" } })));
+
+    const res = await request(TARGET, { path: "/api/conversations/c/recordings/RE1/audio", binary: true });
+
+    expect(res.raw).toBe("");
+    expect(res.bytes).toEqual(audio);
+  });
+
+  it("should_still_read_an_error_as_text_when_binary_is_asked", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(404, { message: "Recording not found: RE1" })));
+
+    await expect(request(TARGET, { path: "/api/x", binary: true })).rejects.toThrow("Recording not found: RE1");
+  });
+
   it("should_send_the_management_key_header_and_return_the_parsed_body", async () => {
     const fetchMock = vi.fn(async () => jsonResponse(200, { instances: [] }));
     vi.stubGlobal("fetch", fetchMock);

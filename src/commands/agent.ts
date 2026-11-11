@@ -41,6 +41,7 @@ import { agentSharedKnowledgeFamily } from "./knowledge-library.js";
 import { agentSupervisionFamily } from "./supervision.js";
 import { agentBudgetFamily } from "./budget.js";
 import { agentVoiceFamily } from "./voice.js";
+import { conversationReviewLeaves } from "./conversation-review.js";
 import { agentProvidersLeaf } from "./providers.js";
 import { agentConnectionsFamily, agentProviderRolesFamily } from "./provider-roles.js";
 import { AGENT_DATA_EXTRAS } from "./agent-data.js";
@@ -1490,6 +1491,7 @@ behind; the follow reconnects, says so on stderr, and skips the events the
 engine replays that it already printed.`,
       action: conversationsShow,
     },
+    ...conversationReviewLeaves,
   },
   messages: {
     summary: "list messages across all of an agent's conversations",

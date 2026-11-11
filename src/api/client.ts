@@ -51,6 +51,12 @@ export interface RequestOptions {
   bearer?: string;
   /** Slug of the active workspace, for management routes that resolve one. */
   workspaceSlug?: string;
+  /**
+   * Read a successful body as bytes into `ApiResponse.bytes` instead of text: a
+   * recording's audio would not survive a UTF-8 decode. An error body is still
+   * read as text, for its message.
+   */
+  binary?: boolean;
 }
 
 export interface ApiResponse {
@@ -59,6 +65,8 @@ export interface ApiResponse {
   raw: string;
   /** Parsed JSON when the body was JSON, the raw text otherwise, `null` when empty. */
   body: unknown;
+  /** The body as bytes, for a request made with `binary`; `raw` is then empty. */
+  bytes?: Uint8Array;
 }
 
 /**
@@ -195,6 +203,9 @@ export function explainUnmatchedRoute(status: number, message: string): string {
 
 export async function request(target: ResolvedTarget, opts: RequestOptions): Promise<ApiResponse> {
   const { res } = await dispatch(target, opts);
+  if (opts.binary === true && res.ok) {
+    return { status: res.status, raw: "", body: null, bytes: new Uint8Array(await res.arrayBuffer()) };
+  }
 
   const { raw, body } = await readBody(res);
   if (!res.ok) {

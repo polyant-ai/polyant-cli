@@ -262,7 +262,12 @@ saved while one remains — --dry-run runs that check too.
 twilio.authToken: absent, empty or masked keeps the stored token, null clears
 it. Do not commit it: set it in the panel, or pipe a one-off file through
 --file -. Saving an enabled channel synthesizes the agent's fixed phrases and
-wait lines again, which spends ElevenLabs characters. Needs channel:write.`,
+wait lines again, which spends ElevenLabs characters. Needs channel:write.
+
+From engine 1.3.6, twilio.accountSid (AC and 32 hex digits) lets the engine read
+the calls' recordings from Twilio, and diagnostics.recordDecisions keeps each
+call's timeline of the voice module's decisions. Both are read back by
+\`agent conversations recordings\` and \`agent conversations export-call\`.`,
       action: settingsSet,
       mutates: true,
     },
