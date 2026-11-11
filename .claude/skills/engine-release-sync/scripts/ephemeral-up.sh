@@ -97,7 +97,12 @@ echo "• engine on :$API_PORT (log: $WORKDIR/engine.log)" >&2
 # caller wait — a pipe, or an agent's tool runner — for as long as the engine runs.
 (
   cd "$ENGINE/packages/engine" || exit 1
-  perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' npx tsx src/index.ts </dev/null >"$WORKDIR/engine.log" 2>&1 &
+  # As the engine's own `dev` script runs it: under the tsx CLI, NestJS 12 loads
+  # a second @nestjs/core for the CommonJS throttler and the boot dies on
+  # ThrottlerGuard's Reflector. `polyant-source` resolves workspace packages
+  # (the voice package) to their sources, so no package needs a build.
+  perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' node --conditions=polyant-source --import tsx/esm src/index.ts \
+    </dev/null >"$WORKDIR/engine.log" 2>&1 &
   echo $! >"$WORKDIR/engine.pid"
 )
 for _ in $(seq 1 90); do curl -sf "http://localhost:$API_PORT/health" >/dev/null && break; sleep 2; done
