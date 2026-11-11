@@ -146,7 +146,10 @@ function temperature(args: readonly string[]): Record<string, number> {
   const raw = takeValue(args, "--temperature");
   if (raw === undefined) return {};
   const value = Number(raw);
-  if (!Number.isFinite(value)) throw new ConfigError("--temperature needs a number.");
+  // The engine's chat schema takes 0 to 2 and answers 400 outside it.
+  if (raw.trim() === "" || !Number.isFinite(value) || value < 0 || value > 2) {
+    throw new ConfigError(`--temperature takes a number from 0 to 2; got ${JSON.stringify(raw)}.`);
+  }
   return { temperature: value };
 }
 
@@ -196,14 +199,15 @@ export const CHAT_USAGE = `Usage: polyant-cli agent chat <slug> (--message <text
 
 Sends one turn to the agent's playground stream. Reply text goes to stdout as it
 arrives; steps, reasoning and tool calls go to stderr, so a pipe receives the
-answer alone.
+answer alone. The message is text only: from engine 1.3.6 the chat stream takes
+no image or file parts and at most 100 messages per request.
 
 Options:
   --message <text>       the user message
   --file <path|->        read the user message from a file, or stdin
   --expect <text>        exit 1 unless the reply contains this text
   --conversation <id>    reuse a conversation id across turns
-  --temperature <n>      override the agent's temperature for this turn
+  --temperature <n>      override the agent's temperature for this turn, 0 to 2
   --json                 emit JSON Lines: one engine frame per line, unmodified
 
 The playground route is an alias of the per-instance chat route, with the same

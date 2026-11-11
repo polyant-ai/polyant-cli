@@ -101,8 +101,11 @@ async function policyList(args: string[], context: CommandContext | undefined, d
   const policies = expectArray<PolicyRow>(res.body, `GET ${policiesPath(org)}`);
   deps.io.stdout(
     `${renderTable({
-      headers: ["POLICY ID", "NAME", "CATEGORY", "GATE", "SEVERITY", "BUILT IN"],
+      // ID is the row id that `policy update|delete` and `agent governance set`
+      // take; POLICY KEY is the catalog's stable name, which they refuse.
+      headers: ["ID", "POLICY KEY", "NAME", "CATEGORY", "GATE", "SEVERITY", "BUILT IN"],
       rows: policies.map((policy) => [
+        text(policy.id),
         text(policy.policyId),
         text(policy.name),
         text(policy.category),
@@ -213,7 +216,11 @@ workspace in the organisation. ${ORG_NOTE}`,
   policy: {
     list: {
       summary: "list the organisation's governance policy catalog",
-      usage: `Usage: polyant-cli governance policy list\n\nBuilt-in policies are visible to every organisation and marked as such. ${ORG_NOTE}`,
+      usage: `Usage: polyant-cli governance policy list
+
+Built-in policies are visible to every organisation and marked as such. ID is
+the row id that \`policy update\`, \`policy delete\` and \`agent governance set\`
+take; POLICY KEY is the catalog's name for the policy. ${ORG_NOTE}`,
       action: policyList,
     },
     create: {
@@ -227,13 +234,13 @@ legal values. Creating a policy does not assign it to anything. ${ORG_NOTE}`,
     },
     update: {
       summary: "patch a governance policy from a JSON file or stdin",
-      usage: `Usage: polyant-cli governance policy update <id> --file <path|->\n\nThe id is the row id from \`policy list\`, not the policyId. ${ORG_NOTE}`,
+      usage: `Usage: polyant-cli governance policy update <id> --file <path|->\n\nThe id is the ID column of \`policy list\`, not the POLICY KEY. ${ORG_NOTE}`,
       action: policyUpdate,
       mutates: true,
     },
     delete: {
       summary: "delete a governance policy",
-      usage: `Usage: polyant-cli governance policy delete <id> --yes --confirm <id>\n\n${ORG_NOTE}`,
+      usage: `Usage: polyant-cli governance policy delete <id> --yes --confirm <id>\n\nThe id is the ID column of \`policy list\`, not the POLICY KEY. ${ORG_NOTE}`,
       action: policyDelete,
       mutates: true,
     },

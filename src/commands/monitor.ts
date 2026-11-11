@@ -27,6 +27,7 @@ import {
   wantsJson,
   type ServiceDependencies,
 } from "../runtime/service.js";
+import { followStream } from "../runtime/follow.js";
 import type { ResolvedScope } from "../runtime/scope.js";
 
 /**
@@ -210,37 +211,33 @@ async function follow(
   const max = positiveInteger(takeValue(options, "--max"), "--max");
   const limit = max === undefined ? Infinity : Number(max);
 
-  const stream = await callStream(deps, scope, {
-    path: "/api/activity-stream/live",
-    // The server-side filter is the one that matters: without it the socket
-    // carries other agents' events and the CLI would be trusted to hide them.
-    ...(instance === undefined ? {} : { query: { instance } }),
-    timeoutMs: 0,
-  });
-
-  let seen = 0;
-  for await (const event of stream.events) {
-    if (wantsJson(context)) {
-      // JSON Lines: one unmodified engine payload per line, so a consumer can
-      // read the stream incrementally.
-      deps.io.stdout(`${event.data}\n`);
-    } else {
+  await followStream(
+    deps,
+    () =>
+      callStream(deps, scope, {
+        path: "/api/activity-stream/live",
+        // The server-side filter is the one that matters: without it the socket
+        // carries other agents' events and the CLI would be trusted to hide them.
+        ...(instance === undefined ? {} : { query: { instance } }),
+        timeoutMs: 0,
+      }),
+    (event) => {
+      // JSON Lines with --json: one unmodified engine payload per line, so a
+      // consumer can read the stream incrementally.
+      if (wantsJson(context)) return deps.io.stdout(`${event.data}\n`);
       let parsed: FeedEvent;
       try {
         parsed = JSON.parse(event.data) as FeedEvent;
       } catch {
         // A frame the engine did not shape as JSON is still evidence; print it
         // rather than dropping it silently.
-        deps.io.stdout(`${event.data}\n`);
-        seen += 1;
-        if (seen >= limit) return;
-        continue;
+        return deps.io.stdout(`${event.data}\n`);
       }
       deps.io.stdout(`${renderFeedEvent(parsed)}\n`);
-    }
-    seen += 1;
-    if (seen >= limit) return;
-  }
+    },
+    limit,
+    "activity stream",
+  );
 }
 
 async function events(
@@ -434,7 +431,13 @@ in the table.
 Mind that the engine drops the parameter today: GET /api/audit-logs declares
 instanceId, toolName, action, search, from and to, and nothing else, so
 --conversation is sent and ignored and the answer is the whole log. The
-CONVERSATION column is the filter that actually holds until the route takes it.`;
+CONVERSATION column is the filter that actually holds until the route takes it.
+
+--follow has no deadline: bound it with --max <n>. From engine 1.3.6 the engine
+ends a live stream after 15 minutes, or at once for a client that falls behind;
+the follow reconnects, says so on stderr, and skips the events the engine
+replays that it already printed. Events emitted while it reconnects, beyond the
+engine's replay of its last 100, are not recovered.`;
 
 export function createMonitorCommand(overrides: Partial<ServiceDependencies> = {}): { command: Command; actions: MonitorActions } {
   const deps = { ...processServiceDependencies, ...overrides };
