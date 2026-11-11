@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { request as processRequest, requestStream as processRequestStream, type ApiResponse, type RequestOptions, type StreamResponse } from "../api/client.js";
 import type { CommandContext } from "../command.js";
 import { loadWorkspaceConfig, type WorkspaceConfig } from "../config.js";
@@ -33,6 +33,13 @@ export interface ServiceDependencies {
    * multipart part needs a filename, and stdin has none.
    */
   readBytes(source: string): Promise<Uint8Array>;
+  /**
+   * Writes a downloaded file (`--out`). Optional so a test harness that never
+   * downloads need not supply it; the process default writes to disk.
+   */
+  writeOutput?(path: string, data: string | Uint8Array): Promise<void>;
+  /** Waits between reconnects of a follow. Optional; a test passes one that does not wait. */
+  sleep?(ms: number): Promise<void>;
 }
 
 export const processServiceDependencies: ServiceDependencies = {
@@ -43,6 +50,7 @@ export const processServiceDependencies: ServiceDependencies = {
   io: processConfirmationIO,
   readPayload: (source) => (source === "-" ? readStdin() : readFile(source, "utf8")),
   readBytes: async (source) => new Uint8Array(await readFile(source)),
+  writeOutput: (path, data) => writeFile(path, data),
 };
 
 /**

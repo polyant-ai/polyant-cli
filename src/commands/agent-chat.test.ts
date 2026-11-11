@@ -158,8 +158,25 @@ describe("agent chat", () => {
     const h = harness();
 
     await expect(chat(["acme", "--message", "hi", "--temperature", "warm"], context(), h.deps)).rejects.toThrow(
-      /--temperature needs a number/,
+      /--temperature takes a number from 0 to 2/,
     );
+  });
+
+  it.each(["3", "-0.1", "2.01", ""])("refuses temperature %j outside 0..2 before sending anything", async (value) => {
+    const h = harness();
+
+    await expect(chat(["acme", "--message", "hi", "--temperature", value], context(), h.deps)).rejects.toThrow(
+      /--temperature takes a number from 0 to 2/,
+    );
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it.each(["0", "2"])("accepts the bounds, temperature %s", async (value) => {
+    const h = harness();
+
+    await chat(["acme", "--message", "hi", "--temperature", value], context(), h.deps);
+
+    expect(h.calls[0].body).toMatchObject({ temperature: Number(value) });
   });
 
   // An error frame means the turn never completed: neither success nor a mere

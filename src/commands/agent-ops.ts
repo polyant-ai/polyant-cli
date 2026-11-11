@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
+import type { ApiResponse } from "../api/client.js";
 import type { CommandContext } from "../command.js";
 import type { ScheduledTask, ScheduledTasksResponse } from "../api/types.js";
-import { ConfigError } from "../exit.js";
+import { ConfigError, RemoteError } from "../exit.js";
 import { writePrettyResource, writeRawResponse } from "../render/output.js";
 import { renderTable } from "../render/table.js";
 import { assertKnown, takeValue } from "../runtime/flags.js";
@@ -39,6 +40,8 @@ function requireFile(options: readonly string[], action: string): string {
   if (file === undefined) throw new ConfigError(`polyant-cli agent ${action} needs --file <path> (or --file - for stdin).`);
   return file;
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function paging(args: readonly string[]): Record<string, string> {
   return {
@@ -185,21 +188,34 @@ async function skillsEnvShow(args: string[], context: CommandContext | undefined
   const res = await call(deps, scope, { path });
   if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
 
-  const env = expectArray<{ key: string; sensitive?: boolean; value?: string | null }>(
-    (res.body as { env?: unknown } | null)?.env,
-    `GET ${path}`,
-  );
+  const env = expectArray<SkillEnvEntry>((res.body as { env?: unknown } | null)?.env, `GET ${path}`);
   deps.io.stdout(
     `${renderTable({
       headers: ["KEY", "SENSITIVE", "SET"],
-      rows: env.map((entry) => [
-        text(entry.key),
-        entry.sensitive === true ? "yes" : "no",
-        entry.value === null || entry.value === undefined || entry.value === "" ? "no" : "yes",
-      ]),
+      rows: env.map((entry) => [text(entry.key), entry.sensitive === true ? "yes" : "no", isConfigured(entry) ? "yes" : "no"]),
       emptyMessage: `Skill ${name} declares no environment on ${slug}.`,
     })}\n`,
   );
+}
+
+/** One key a skill declares, as `GET …/skills/:name/env` reports it. */
+interface SkillEnvEntry {
+  key: string;
+  sensitive?: boolean;
+  /** Always "" for a sensitive key: the engine never serves it back. */
+  value?: string | null;
+  /** Whether a value is stored. Absent before engine 1.3.6. */
+  configured?: boolean;
+  description?: string;
+}
+
+/**
+ * A sensitive key's value is never served, so before `configured` existed a set
+ * secret read as unset; the field is the answer when the engine sends it.
+ */
+function isConfigured(entry: SkillEnvEntry): boolean {
+  if (typeof entry.configured === "boolean") return entry.configured;
+  return !(entry.value === null || entry.value === undefined || entry.value === "");
 }
 
 async function skillsEnvSet(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -212,24 +228,41 @@ async function skillsEnvSet(args: string[], context: CommandContext | undefined,
   const file = requireFile(options, "skills env set");
   const value = (await deps.readPayload(file)).trim();
   if (value.length === 0) throw new ConfigError(`${file === "-" ? "stdin" : file} contained no value.`);
-  const sensitive = options.includes("--sensitive");
+  const requested = options.includes("--sensitive");
 
   const scope = await scopeFor(deps, context);
+  // Engine 1.3.6 stores only the keys the skill declares (400 otherwise) and
+  // encrypts a key the skill declares sensitive whatever the request says, so
+  // the declaration is read first: the refusal names the keys, and the recap
+  // says how the value will actually be stored.
+  const envPath = agentPath(slug, `/skills/${encodeURIComponent(name)}/env`);
+  const declared = expectArray<SkillEnvEntry>(
+    ((await call(deps, scope, { path: envPath })).body as { env?: unknown } | null)?.env,
+    `GET ${envPath}`,
+  );
+  const entry = declared.find((candidate) => candidate.key === key);
+  if (entry === undefined) {
+    throw new ConfigError(
+      declared.length === 0
+        ? `Skill ${name} declares no environment on ${slug}, so it takes no ${key}.`
+        : `Skill ${name} declares no ${key} on ${slug}. It declares: ${declared.map((candidate) => candidate.key).join(", ")}.`,
+    );
+  }
+  const sensitive = requested || entry.sensitive === true;
   const plan = {
     title: `Set ${name}'s ${key} on ${slug}`,
     changes: [
       `Value: ${value.length} characters from ${file === "-" ? "stdin" : file}, never shown.`,
-      sensitive ? "Stored as sensitive: the engine will not serve it back." : "Stored as plain configuration, readable through the API.",
+      `${isConfigured(entry) ? "Replaces the value stored now." : "No value is stored now."}`,
+      sensitive
+        ? `Stored encrypted as sensitive${requested ? "" : ` (${name} declares ${key} sensitive)`}: the engine will not serve it back.`
+        : "Stored as plain configuration, readable through the API.",
     ],
   };
   if (!(await preflight(deps, scope, context, options, plan))) return;
 
   // A PUT of one entry, which the engine merges: the others stay set.
-  const res = await call(deps, scope, {
-    method: "PUT",
-    path: agentPath(slug, `/skills/${encodeURIComponent(name)}/env`),
-    body: { env: [{ key, value, sensitive }] },
-  });
+  const res = await call(deps, scope, { method: "PUT", path: envPath, body: { env: [{ key, value, sensitive }] } });
   reportWrite(deps, context, res, `Set ${key} for ${name} on ${slug}.`);
 }
 
@@ -268,15 +301,43 @@ interface DocumentRow {
   updatedAt: string | null;
 }
 
+interface DocumentPage {
+  documents?: unknown;
+  /** The offset of the next page, or null on the last. Absent before engine 1.3.6, which sent one page of everything. */
+  nextOffset?: unknown;
+  /** Every document of the agent, and those whose indexing failed. Absent before engine 1.3.6. */
+  total?: unknown;
+  failed?: unknown;
+}
+
+/**
+ * From engine 1.3.6 the list is paged (500 documents a page, the default
+ * per-agent cap) with `nextOffset`, and `total`/`failed` count the whole agent.
+ * The command reads every page, so an agent above the cap is never shown cut
+ * short.
+ */
 async function knowledgeList(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
   const slug = requireSlug(args, "knowledge list");
   assertKnown(args.slice(1), {}, "agent knowledge list option");
   const scope = await scopeFor(deps, context, "read");
   const path = agentPath(slug, "/knowledge");
-  const res = await call(deps, scope, { path });
-  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+  const pages: { raw: string; body: DocumentPage }[] = [];
+  let offset: string | undefined;
+  do {
+    const res = await call(deps, scope, { path, ...(offset === undefined ? {} : { query: { offset } }) });
+    const body = (res.body ?? {}) as DocumentPage;
+    pages.push({ raw: res.raw, body });
+    offset = typeof body.nextOffset === "number" && body.nextOffset > 0 ? String(body.nextOffset) : undefined;
+  } while (offset !== undefined);
+  const documents = pages.flatMap((page) => expectArray<DocumentRow>(page.body.documents, `GET ${path}`));
+  const last = pages[pages.length - 1].body;
 
-  const documents = expectArray<DocumentRow>((res.body as { documents?: unknown } | null)?.documents, `GET ${path}`);
+  if (wantsJson(context)) {
+    // One page passes through byte for byte; several are joined into the same
+    // shape, with every document and no next page.
+    if (pages.length === 1) return writeRawResponse(deps.io, pages[0].raw);
+    return writeRawResponse(deps.io, JSON.stringify({ nextOffset: null, total: last.total, failed: last.failed, documents }));
+  }
   deps.io.stdout(
     `${renderTable({
       headers: ["ID", "FILENAME", "STATUS", "CHUNKS", "BYTES", "UPDATED"],
@@ -293,6 +354,9 @@ async function knowledgeList(args: string[], context: CommandContext | undefined
       emptyMessage: `Agent ${slug} has no knowledge documents.`,
     })}\n`,
   );
+  if (last.total !== undefined) {
+    deps.io.stderr(`${documents.length} of ${text(last.total)} documents; ${text(last.failed)} failed to index.\n`);
+  }
 }
 
 async function knowledgeShow(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
@@ -813,12 +877,25 @@ async function agentGovernanceSet(args: string[], context: CommandContext | unde
   const file = requireFile(options, "governance set");
   const body = await readPayloadObject(deps, file);
   const assignments = Array.isArray(body.assignments) ? body.assignments : undefined;
-  if (assignments === undefined) throw new ConfigError('The governance payload needs an "assignments" array.');
+  if (assignments === undefined || assignments.length === 0) {
+    throw new ConfigError('The governance payload needs a non-empty "assignments" array.');
+  }
+  // Engine 1.3.6 names a policy by its catalog ROW id (a UUID) and answers 400
+  // for anything else, which is what the catalog key ("pii:email") looks like.
+  const notRowIds = (assignments as { policyId?: unknown }[])
+    .map((entry) => entry?.policyId)
+    .filter((id) => typeof id !== "string" || !UUID.test(id));
+  if (notRowIds.length > 0) {
+    throw new ConfigError(
+      `Each assignment's policyId is the policy's row id, a UUID — the ID column of \`polyant-cli governance policy list\`, ` +
+        `not its POLICY KEY. Not a row id: ${notRowIds.map((id) => JSON.stringify(id ?? null)).join(", ")}.`,
+    );
+  }
 
   const scope = await scopeFor(deps, context);
   const plan = {
     title: `Assign ${assignments.length} governance policy assignment(s) to ${slug}`,
-    changes: [`Read from ${file === "-" ? "stdin" : file}.`, "Each entry names a policyId from the organisation's catalog."],
+    changes: [`Read from ${file === "-" ? "stdin" : file}.`, "Each entry names a policy by its row id in the organisation's catalog."],
   };
   if (!(await preflight(deps, scope, context, options, plan))) return;
 
@@ -925,6 +1002,8 @@ async function complianceReports(args: string[], context: CommandContext | undef
     if (from === undefined || to === undefined) {
       throw new ConfigError("Generating a report needs both --from <iso> and --to <iso>.");
     }
+    // A snapshot is numbered from 1; the engine answers 400 for anything that is not an integer.
+    const snapshot = positiveInteger(takeValue(options, "--snapshot"), "--snapshot");
     const scope = await scopeFor(deps, context);
     const plan = { title: `Generate a compliance report for ${slug}`, changes: [`Cover ${from} to ${to}.`] };
     if (!(await preflight(deps, scope, context, options, plan))) return;
@@ -935,7 +1014,7 @@ async function complianceReports(args: string[], context: CommandContext | undef
         periodFrom: from,
         periodTo: to,
         ...(takeValue(options, "--type") === undefined ? {} : { type: takeValue(options, "--type") }),
-        ...(takeValue(options, "--snapshot") === undefined ? {} : { snapshotVersion: Number(takeValue(options, "--snapshot")) }),
+        ...(snapshot === undefined ? {} : { snapshotVersion: Number(snapshot) }),
       },
     });
     return writeRawResponse(deps.io, res.raw);
@@ -988,9 +1067,17 @@ async function importAgent(args: string[], context: CommandContext | undefined, 
   // the addressed workspace. Same body, opposite blast radius.
   const slug = args[0]?.startsWith("--") === false ? args[0] : undefined;
   const options = slug === undefined ? args : args.slice(1);
-  assertKnown(options, { value: ["--file", "--confirm"] }, "agent import option");
+  assertKnown(options, { value: ["--file", "--slug", "--name", "--confirm"] }, "agent import option");
   const file = requireFile(options, "import");
   const body = await readPayloadObject(deps, file);
+  const newSlug = takeValue(options, "--slug");
+  const newName = takeValue(options, "--name");
+  if (slug !== undefined && (newSlug !== undefined || newName !== undefined)) {
+    throw new ConfigError(
+      `--slug and --name name a NEW agent; an overwrite keeps ${slug}'s slug. Drop them, or drop ${slug} to create a new agent.`,
+    );
+  }
+  const importedSlug = slug === undefined ? renameBundle(body, newSlug, newName) : slug;
   const { carried, keyOnly } = bundleSecrets(body);
   const secretLines = [
     ...(carried.length === 0 ? [] : [`Write the settings the bundle carries values for: ${carried.join(", ")}.`]),
@@ -1004,8 +1091,12 @@ async function importAgent(args: string[], context: CommandContext | undefined, 
   const plan =
     slug === undefined
       ? {
-          title: "Import a new agent",
-          changes: [`Create an agent from ${file === "-" ? "stdin" : file} in the addressed workspace.`, ...secretLines],
+          title: `Import a new agent as ${importedSlug}`,
+          changes: [
+            `Create agent ${importedSlug} from ${file === "-" ? "stdin" : file} in the addressed workspace.`,
+            "The engine refuses a slug another agent of this deployment already uses; pass --slug to choose another.",
+            ...secretLines,
+          ],
         }
       : {
           title: `Overwrite ${slug} from a bundle`,
@@ -1018,13 +1109,56 @@ async function importAgent(args: string[], context: CommandContext | undefined, 
         };
   if (!(await preflight(deps, scope, context, options, plan))) return;
 
-  const res = await call(deps, scope, {
-    method: "POST",
-    path: slug === undefined ? "/api/instances/import" : agentPath(slug, "/import"),
-    body,
-  });
+  let res: ApiResponse;
+  try {
+    res = await call(deps, scope, {
+      method: "POST",
+      path: slug === undefined ? "/api/instances/import" : agentPath(slug, "/import"),
+      body,
+    });
+  } catch (error) {
+    // Engine 1.3.6: a taken slug is a 409, where earlier engines imported the
+    // agent as `<slug>-imported` without being asked.
+    if (slug === undefined && error instanceof RemoteError && error.status === 409) {
+      throw new RemoteError(
+        `${error.message} — agent slugs are unique across the deployment. Import under another one with --slug <new-slug> (and --name <name>).`,
+        error.code,
+        error.status,
+      );
+    }
+    throw error;
+  }
   writeRawResponse(deps.io, res.raw);
   writeImportWarnings(deps, res.body, slug);
+}
+
+/**
+ * Engine 1.3.6 creates the agent under the bundle's own `instance.slug` and
+ * `instance.name`, and refuses a slug already in use with a 409 instead of
+ * suffixing it. `--slug` and `--name` rewrite those two fields before sending,
+ * which is what the panel's import dialog does. Returns the slug the agent will
+ * have, for the recap.
+ */
+function renameBundle(body: Record<string, unknown>, slug: string | undefined, name: string | undefined): string {
+  const instance = body.instance;
+  const isObject = instance !== null && typeof instance === "object" && !Array.isArray(instance);
+  if (slug === undefined && name === undefined) {
+    const own = isObject ? (instance as Record<string, unknown>).slug : undefined;
+    return typeof own === "string" ? own : "<the bundle's slug>";
+  }
+  if (!isObject) throw new ConfigError('The bundle needs an "instance" object, as `agent export` writes it.');
+  const fields = instance as Record<string, unknown>;
+  if (slug !== undefined) {
+    if (slug.length > 100 || !/^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$/.test(slug)) {
+      throw new ConfigError(`--slug ${JSON.stringify(slug)} is not an agent slug: use up to 100 lowercase letters, digits, hyphens or underscores, starting and ending with a letter or digit.`);
+    }
+    fields.slug = slug;
+  }
+  if (name !== undefined) {
+    if (name.trim() === "") throw new ConfigError("--name cannot be empty.");
+    fields.name = name;
+  }
+  return typeof fields.slug === "string" ? fields.slug : "<the bundle's slug>";
 }
 
 interface ImportWarning {
@@ -1178,7 +1312,10 @@ The ids come from \`polyant-cli skill versions <name>\`.`,
         summary: "set one environment entry for a skill",
         usage: `Usage: polyant-cli agent skills env set <slug> <name> --key <key> --file <path|-> [--sensitive]
 
-The value comes from a file or stdin, never a flag, and is never printed.`,
+The value comes from a file or stdin, never a flag, and is never printed. Only a
+key the skill declares is accepted (\`skills env show\` lists them), and a key the
+skill declares sensitive is stored encrypted whether or not --sensitive is given;
+the recap says which.`,
         action: skillsEnvSet,
         mutates: true,
       },
@@ -1193,7 +1330,12 @@ The value comes from a file or stdin, never a flag, and is never printed.`,
   knowledge: {
     list: {
       summary: "list an agent's knowledge documents and their ingestion status",
-      usage: "Usage: polyant-cli agent knowledge list <slug>\n\nA failed ingestion shows its error next to the status.",
+      usage: `Usage: polyant-cli agent knowledge list <slug>
+
+A failed ingestion shows its error next to the status. The engine pages the list
+(500 documents a page from engine 1.3.6); every page is read, and stderr reports
+the agent's total and how many documents failed to index. --json passes a single
+page through unchanged and joins several into one object of the same shape.`,
       action: knowledgeList,
     },
     show: {
@@ -1205,8 +1347,9 @@ The value comes from a file or stdin, never a flag, and is never printed.`,
       summary: "upload a document from a file or stdin",
       usage: `Usage: polyant-cli agent knowledge add <slug> --file <path|-> [--filename <name>]
 
-The filename defaults to the file's own; from stdin it must be given. The
-document is not retrievable until the engine finishes chunking and embedding it.`,
+The filename defaults to the file's own; from stdin it must be given. The engine
+takes a document of at most 10 MB. It is not retrievable until the engine
+finishes chunking and embedding it.`,
       action: knowledgeAdd,
       mutates: true,
     },
@@ -1245,13 +1388,21 @@ document is not retrievable until the engine finishes chunking and embedding it.
       usage: `Usage: polyant-cli agent tasks create <slug> --file <path|->
 
 Needs name, prompt and schedule. The schedule is one of the engine's three
-types — cron, interval or one-shot — so it arrives as JSON rather than as flags.`,
+types — cron, interval or one-shot — so it arrives as JSON rather than as flags:
+{"type":"cron","expression":"0 9 * * 1"}, {"type":"interval","everyMs":3600000}
+or {"type":"one-shot","runAt":"<iso>"}. From engine 1.3.6 an interval's everyMs is
+an integer of at least 60000, and a schedule that does not fit its type answers
+400 naming the field.`,
       action: tasksCreate,
       mutates: true,
     },
     update: {
       summary: "patch a scheduled task from a JSON file or stdin",
-      usage: "Usage: polyant-cli agent tasks update <slug> <taskId> --file <path|->",
+      usage: `Usage: polyant-cli agent tasks update <slug> <taskId> --file <path|->
+
+A schedule in the patch follows the rules of \`tasks create\`: from engine 1.3.6
+an interval's everyMs is an integer of at least 60000, and a schedule that does
+not fit its type answers 400 naming the field.`,
       action: tasksUpdate,
       mutates: true,
     },
@@ -1372,8 +1523,9 @@ the CLI's, and sends no writes.`,
       summary: "assign governance policies from a JSON file or stdin",
       usage: `Usage: polyant-cli agent governance set <slug> --file <path|->
 
-Needs an "assignments" array, each naming a policyId from the organisation's
-catalog. Run \`polyant-cli governance policy list\` for the ids.`,
+Needs an "assignments" array. Each entry's policyId is the policy's row id, a
+UUID: the ID column of \`polyant-cli governance policy list\`, not its POLICY KEY.
+enforcement is block, warn or log. The engine answers 400 for anything else.`,
       action: agentGovernanceSet,
       mutates: true,
     },
@@ -1428,11 +1580,15 @@ only; stderr names which keys carry a value.`,
   },
   import: {
     summary: "create an agent from a bundle, or overwrite one",
-    usage: `Usage: polyant-cli agent import --file <path|->                        (create)
-       polyant-cli agent import <slug> --file <path|-> --yes --confirm <slug>  (overwrite)
+    usage: `Usage: polyant-cli agent import --file <path|-> [--slug <new-slug>] [--name <name>]   (create)
+       polyant-cli agent import <slug> --file <path|-> --yes --confirm <slug>               (overwrite)
 
 Naming a slug OVERWRITES that agent: prompts, tools, channels and hooks are
-replaced, not merged. Without one, a new agent lands in the addressed workspace.
+replaced, not merged. Without one, a new agent lands in the addressed workspace
+under the bundle's slug and name, or the ones --slug and --name give it. Agent
+slugs are unique across the deployment: from engine 1.3.6 a slug already in use
+is refused with 409 (earlier engines imported it as <slug>-imported), so import
+an export onto the deployment it came from with --slug.
 
 stdout is the engine's response. Its warnings are repeated on stderr, one line
 each. A bundle carries no provider connection, so from engine 1.2.0-ee each role

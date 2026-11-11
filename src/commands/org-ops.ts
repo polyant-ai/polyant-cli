@@ -199,6 +199,32 @@ async function orgPlugins(args: string[], context: CommandContext | undefined, d
 }
 
 /**
+ * Every workspace's skill and connection assignments in one read (engine
+ * 1.3.6), where `workspace skills list` answers for one workspace at a time.
+ * Workspaces are named by slug; skills by slug; connections by id.
+ */
+async function orgWorkspaceAssignments(args: string[], context: CommandContext | undefined, deps: ServiceDependencies): Promise<void> {
+  assertKnown(args, {}, "org workspace-assignments option");
+  const { scope, org } = await readScope(deps, context);
+  const path = orgPath(org, "/workspace-assignments");
+  const res = await call(deps, scope, { path });
+  if (wantsJson(context)) return writeRawResponse(deps.io, res.raw);
+
+  const workspaces = expectArray<{ slug?: string; skills?: unknown; connections?: unknown }>(
+    (res.body as { workspaces?: unknown } | null)?.workspaces,
+    `GET ${path}`,
+  );
+  const list = (value: unknown) => (Array.isArray(value) && value.length > 0 ? value.map(String).join(", ") : "-");
+  deps.io.stdout(
+    `${renderTable({
+      headers: ["WORKSPACE", "SKILLS", "CONNECTIONS"],
+      rows: workspaces.map((row) => [text(row.slug), list(row.skills), list(row.connections)]),
+      emptyMessage: `Organisation ${org} has no workspaces.`,
+    })}\n`,
+  );
+}
+
+/**
  * How an organisation comes to hold a plugin, which no management-key route
  * does: an Organization Admin installs a marketplace plugin from the web
  * console, and a Platform Admin grants a plugin baked into the image.
@@ -776,6 +802,18 @@ The permission is \`org.plugin:read\`, which used to be the \`org:read\` floor: 
 issued before that split, holding only \`org:read\`, now answers 403 here.
 ${ORG_NOTE}`,
       action: orgPlugins,
+    },
+    "workspace-assignments": {
+      summary: "every workspace's assigned skills and provider connections",
+      usage: `Usage: polyant-cli org workspace-assignments
+
+One row per workspace of the organisation: the skills it may use (by slug) and
+the provider connections assigned to it (by id). \`workspace skills list\` is the
+same answer for one workspace, with the whole catalogue beside it. Needs
+workspace.assignment:manage, held through an organisation binding: a key or
+token bound to a workspace alone is refused. Needs Polyant Enterprise 1.3.6.
+${ORG_NOTE}`,
+      action: orgWorkspaceAssignments,
     },
   },
   workspace: {

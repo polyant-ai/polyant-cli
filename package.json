@@ -1,6 +1,6 @@
 {
   "name": "@polyant-ai/cli",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Configure a Polyant instance as code",
   "author": "Exelab S.r.l.",
   "license": "Apache-2.0",

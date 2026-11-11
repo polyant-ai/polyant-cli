@@ -35,7 +35,7 @@ interface Harness {
 
 function harness(
   responses: (ApiResponse | Error)[],
-  options: { stream?: string[] | Error } = {},
+  options: { stream?: string[] | Error; reconnects?: string[][] } = {},
 ): Harness {
   const out: string[] = [];
   const err: string[] = [];
@@ -54,8 +54,11 @@ function harness(
     requestStream: async (_target, opts): Promise<StreamResponse> => {
       streamCalls.push(opts);
       if (options.stream instanceof Error) throw options.stream;
-      return { status: 200, events: eventsOf(options.stream ?? []) };
+      // The first connection carries `stream`; each reconnect the next entry of `reconnects`.
+      const frames = streamCalls.length === 1 ? (options.stream ?? []) : (options.reconnects?.[streamCalls.length - 2] ?? []);
+      return { status: 200, events: eventsOf(frames) };
     },
+    sleep: async () => {},
     loadConfig: async () => CONFIG,
     env: ENV,
     io: {
@@ -332,6 +335,28 @@ describe("monitor events --follow", () => {
     expect(h.out.join("")).toBe("not json at all\n");
   });
 
+  // Engine 1.3.6 ends a stream after 15 minutes, or at once for a client that falls behind.
+  it("reconnects when the engine ends the stream before --max, skipping the events it replays", async () => {
+    const third = JSON.stringify({ id: "e3", ts: "2026-07-29T10:00:02.000Z", persona: "agent", text: "after", instance: { slug: "acme", name: "Acme" } });
+    const h = harness([], { stream: [feed[0]], reconnects: [[feed[0], feed[1], third]] });
+
+    await action(h.monitor, "events")(["--follow", "--max", "3"], context({ json: true }));
+
+    expect(h.streamCalls).toHaveLength(2);
+    expect(h.streamCalls[1]).toMatchObject({ path: "/api/activity-stream/live", timeoutMs: 0 });
+    expect(h.out.join("")).toBe(`${feed[0]}\n${feed[1]}\n${third}\n`);
+    expect(h.err.join("")).toContain("the engine closed the activity stream; reconnected");
+  });
+
+  it("stops with a remote failure when the stream keeps closing as soon as it opens", async () => {
+    const h = harness([], { stream: [] });
+
+    const failure = action(h.monitor, "events")(["--follow"], context());
+
+    await expect(failure).rejects.toThrow(/closed 3 times right after opening/);
+    await expect(failure).rejects.toMatchObject({ code: ExitCode.Remote });
+  });
+
   it("surfaces a refused subscription as a remote failure", async () => {
     const h = harness([], { stream: new RemoteError("Too many concurrent activity-stream subscribers", ExitCode.Remote, 503) });
 
@@ -370,9 +395,9 @@ describe("monitor events as agent logs", () => {
   });
 
   it("keeps the forced filter on the live stream too", async () => {
-    const h = harness([], { stream: [] });
+    const h = harness([], { stream: ['{"id":"e1"}'] });
 
-    await h.monitor.actions.events(["acme", "--follow"], context(), "acme");
+    await h.monitor.actions.events(["acme", "--follow", "--max", "1"], context(), "acme");
 
     expect(h.streamCalls[0].query).toMatchObject({ instance: "acme" });
   });

@@ -87,7 +87,9 @@ describe("governance policy list", () => {
 
     const table = h.out.join("");
     // A built-in is visible to every organisation and is not theirs to delete.
-    expect(table).toMatch(/builtin:pii\s+PII\s+privacy\s+regex\s+high\s+yes/);
+    // ID first: the row id is what `policy update|delete` and `agent governance set` take.
+    expect(table).toMatch(/^ID\s+POLICY KEY\s+NAME/);
+    expect(table).toMatch(/r-1\s+builtin:pii\s+PII\s+privacy\s+regex\s+high\s+yes/);
     expect(table).toMatch(/custom:tone.*\sno/);
   });
 });

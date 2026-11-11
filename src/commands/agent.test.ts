@@ -81,6 +81,8 @@ function harness(
     },
     ...(overrides.readPayload === undefined ? {} : { readPayload: overrides.readPayload }),
     ...(overrides.requestStream === undefined ? {} : { requestStream: overrides.requestStream }),
+    ...(overrides.writeOutput === undefined ? {} : { writeOutput: overrides.writeOutput }),
+    sleep: async () => {},
   });
 
   return { command, request, out, err, calls };
@@ -319,6 +321,61 @@ describe("agent update", () => {
     );
 
     expect(h.out.join("")).toContain("Updated agent acme.");
+  });
+
+  // Engine 1.3.6 types every PATCH field: a name that looks like a number is still a string.
+  it("types each --set value after the field's current value", async () => {
+    const current = { ...AGENT, cacheTtl: "1h", messageSoftDebounceMs: 0, temperature: null };
+    const h = harness([
+      response({ instance: current }),
+      response({ instance: { ...current, name: "2025", cacheTtl: "5m", messageSoftDebounceMs: 1500, authEnabled: false, temperature: 0.4 } }),
+    ]);
+
+    await leaf(h.command, ["update"])(
+      [
+        "acme",
+        "--set", "name=2025",
+        "--set", "cacheTtl=5m",
+        "--set", "messageSoftDebounceMs=1500",
+        "--set", "authEnabled=false",
+        "--set", "temperature=0.4",
+      ],
+      context({ yes: true }),
+    );
+
+    expect(h.calls[1].body).toEqual({ name: "2025", cacheTtl: "5m", messageSoftDebounceMs: 1500, authEnabled: false, temperature: 0.4 });
+  });
+
+  it("sends null to clear a field, and a quoted JSON string for a field that holds null", async () => {
+    const current = { ...AGENT, datetimeLocale: null, description: null };
+    const h = harness([
+      response({ instance: { ...current, description: "Old" } }),
+      response({ instance: { ...current, description: null } }),
+    ]);
+
+    await leaf(h.command, ["update"])(["acme", "--set", "description=null"], context({ yes: true }));
+    expect(h.calls[1].body).toEqual({ description: null });
+
+    const quoted = harness([response({ instance: current }), response({ instance: { ...current, description: "2025" } })]);
+    await leaf(quoted.command, ["update"])(["acme", "--set", 'description="2025"'], context({ yes: true }));
+    expect(quoted.calls[1].body).toEqual({ description: "2025" });
+  });
+
+  it("refuses a value of another type than the field holds, before writing", async () => {
+    const h = harness([response({ instance: AGENT })]);
+
+    await expect(leaf(h.command, ["update"])(["acme", "--set", "authEnabled=yes"], context({ yes: true }))).rejects.toThrow(
+      /--set authEnabled takes a boolean \(it holds true\); got "yes"/,
+    );
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("refuses a field given by its own flag and by --set", async () => {
+    const h = harness([response({ instance: AGENT })]);
+
+    await expect(
+      leaf(h.command, ["update"])(["acme", "--name", "A", "--set", "name=B"], context({ yes: true })),
+    ).rejects.toThrow(/name is given twice/);
   });
 
   it("refuses --set on a field the engine only reports", async () => {
@@ -1134,6 +1191,26 @@ describe("agent conversations show --follow", () => {
     const lines = h.out.join("").trim().split("\n");
     expect(lines).toHaveLength(2);
     expect(JSON.parse(lines[1])).toEqual({ event: "persisted" });
+  });
+
+  // Engine 1.3.6 ends the stream after 15 minutes; the follow reconnects and does
+  // not repeat what the engine replays. `persisted` carries no id and is never replayed.
+  it("reconnects when the stream ends before --max, without repeating replayed events", async () => {
+    const streamCalls: RequestOptions[] = [];
+    const first: StreamEvent[] = [{ data: JSON.stringify({ id: "e1", text: "one" }) }];
+    const second: StreamEvent[] = [{ data: JSON.stringify({ id: "e1", text: "one" }) }, { event: "persisted", data: "{}" }];
+    const requestStream = (async (_target: unknown, opts: RequestOptions): Promise<StreamResponse> => {
+      streamCalls.push(opts);
+      return { status: 200, events: framesOf(streamCalls.length === 1 ? first : second) };
+    }) as unknown as AgentCommandDependencies["requestStream"];
+    const h = harness([], { requestStream });
+
+    await leaf(h.command, ["conversations", "show"])(["acme", "c-1", "--follow", "--max", "2"], context({ json: true }));
+
+    expect(streamCalls).toHaveLength(2);
+    expect(streamCalls[1]).toMatchObject({ path: "/api/activity-stream/conversation", query: { conversationId: "c-1", instanceId: "acme" } });
+    expect(h.out.join("")).toBe(`${first[0].data}\n{"event":"persisted"}\n`);
+    expect(h.err.join("")).toContain("the engine closed the conversation stream; reconnected");
   });
 
   it("refuses --max without --follow", async () => {
