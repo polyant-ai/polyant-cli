@@ -7,6 +7,7 @@ import { assertKnown, takeValue } from "../runtime/flags.js";
 import { ORG_NOTE, orgPath, preflight, readScope, report, requirePositional } from "../runtime/org.js";
 import { call, expectArray, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
 import type { Node } from "../runtime/tree.js";
+import { readRequiredEnv } from "./skill-frontmatter.js";
 
 /**
  * The skill catalog an organisation owns. It moved off `/api/skills` onto
@@ -179,6 +180,10 @@ async function skillSet(args: string[], context: CommandContext | undefined, dep
   if (content.trim().length === 0) throw new ConfigError(`${file === "-" ? "stdin" : file} contained no content.`);
   const description = takeValue(options, "--description");
   const changelog = takeValue(options, "--changelog");
+  // The skill declares its environment in its own frontmatter. The engine takes
+  // it as a field of the request, and a version written without it carries none,
+  // so it is read here and sent on every write.
+  const requiredEnv = readRequiredEnv(content, file === "-" ? "The stdin payload" : file);
 
   const { scope, org } = await readScope(deps, context);
 
@@ -198,6 +203,9 @@ async function skillSet(args: string[], context: CommandContext | undefined, dep
     changes: [
       `Content: ${content.length} characters from ${file === "-" ? "stdin" : file}.`,
       ...(description === undefined ? [] : [`Description: ${JSON.stringify(description)}.`]),
+      ...(requiredEnv === undefined
+        ? []
+        : [`Environment: ${requiredEnv.map((e) => `${e.name} (${e.sensitive ? "sensitive" : "not sensitive"})`).join(", ") || "none"}.`]),
       ...(existing === undefined ? [] : ["The previous version stays in the version history and can be rolled back to."]),
     ],
   };
@@ -208,7 +216,7 @@ async function skillSet(args: string[], context: CommandContext | undefined, dep
       ? await call(deps, scope, {
           method: "POST",
           path: skillsPath(org),
-          body: { name, description, content },
+          body: { name, description, content, ...(requiredEnv === undefined ? {} : { requiredEnv }) },
         })
       : await call(deps, scope, {
           method: "PUT",
@@ -216,6 +224,7 @@ async function skillSet(args: string[], context: CommandContext | undefined, dep
           body: {
             description: description ?? existing.description,
             content,
+            ...(requiredEnv === undefined ? {} : { requiredEnv }),
             ...(changelog === undefined ? {} : { changelog }),
           },
         });
@@ -284,7 +293,11 @@ Anything the engine skips is named on stderr. ${ORG_NOTE}`,
 
 Which of the two applies is read from the catalog, not asked for: the engine
 refuses a create for a name it already holds. --description is required only
-when the skill does not exist yet. ${ORG_NOTE}`,
+when the skill does not exist yet.
+
+The \`requiredEnv\` list in the file's YAML frontmatter (names, \`description\`,
+\`sensitive\`, which defaults to true) is sent with the write; a file without one
+sends none. ${ORG_NOTE}`,
     action: skillSet,
     mutates: true,
   },
