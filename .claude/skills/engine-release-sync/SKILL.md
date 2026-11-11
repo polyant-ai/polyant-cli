@@ -73,7 +73,9 @@ scripts/ephemeral-up.sh [rev]        # default origin/develop; prints the CLI wr
 ```
 
 It runs the engine in `ENGINE_DIR` at `rev` from a detached worktree with its own
-Postgres (`:55499`) and port (`:4499`), mints an admin session, and issues a
+Postgres (`:55499`) and port (`:4499`), installs the worktree's own dependencies
+(`npm ci`, never a link to `ENGINE_DIR`'s, so workspace packages resolve to the
+revision under test), mints an admin session, and issues a
 management key and a personal token. Issuing them takes the key routes Polyant
 Enterprise serves: the OSS engine accepts a management key but has no route that
 issues one, so against an OSS checkout the script stops at its credentials step.
@@ -110,9 +112,12 @@ from the live command tree. A non-zero exit there is either an empty state the
 engine refuses (an unconfigured channel, A2A off) or a bug — name which, for each.
 
 Then exercise by hand every command you added or changed, writes included, with
-`--dry-run` and for real. Give the engine the state each needs: a conversation (an
-`agent chat` turn creates one even without a provider key), an org secret, a
-granted plugin, a connection.
+`--dry-run` and for real. Give the engine the state each needs: a conversation, an
+org secret, a granted plugin, a connection. An `agent chat` turn against engine
+>= 1.3.6 needs two things first, or it fails before a conversation exists: the
+web channel enabled on the agent (otherwise the playground answers 404 "Unknown
+model") and a bound connection for the turn to complete with (a provider key
+alone is not enough). Enable the channel, bind the connection, then chat.
 
 **Done when** each changed command has run against the engine with the outcome you
 expected, and every smoke failure is explained.
