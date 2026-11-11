@@ -34,12 +34,14 @@ import {
 } from "../runtime/service.js";
 import { buildNode, type Node } from "../runtime/tree.js";
 import { preflight, reportWrite, requireSlug } from "../runtime/workspace.js";
+import { followStream } from "../runtime/follow.js";
 import type { ResolvedScope } from "../runtime/scope.js";
 import { AGENT_FAMILY_EXTRAS } from "./agent-ops.js";
 import { agentSharedKnowledgeFamily } from "./knowledge-library.js";
 import { agentSupervisionFamily } from "./supervision.js";
 import { agentBudgetFamily } from "./budget.js";
 import { agentVoiceFamily } from "./voice.js";
+import { conversationReviewLeaves } from "./conversation-review.js";
 import { agentProvidersLeaf } from "./providers.js";
 import { agentConnectionsFamily, agentProviderRolesFamily } from "./provider-roles.js";
 import { AGENT_DATA_EXTRAS } from "./agent-data.js";
@@ -167,12 +169,11 @@ const READ_ONLY_FIELDS = new Set(["id", "slug", "workspaceId", "workspaceSlug", 
  * touch, and a hand-written list of them would be the exact drift that let six
  * settings reach the API and never be persisted.
  *
- * The value is read as JSON when it parses as one, so `--set cacheEnabled=true`
- * sends a boolean and `--set cacheTtl=300` a number; anything else is the string
- * it looks like, so `--set datetimeTimezone=Europe/Rome` needs no quoting.
+ * Returns the raw text of each value; {@link coerceSetValues} types it once the
+ * agent has been read.
  */
-function parseSetFlags(options: readonly string[]): Record<string, unknown> {
-  const body: Record<string, unknown> = {};
+function parseSetFlags(options: readonly string[]): Record<string, string> {
+  const raw: Record<string, string> = {};
   for (let index = 0; index < options.length; index += 1) {
     if (options[index] !== "--set") continue;
     const pair = options[index + 1];
@@ -180,16 +181,55 @@ function parseSetFlags(options: readonly string[]): Record<string, unknown> {
     const separator = pair.indexOf("=");
     if (separator <= 0) throw new ConfigError(`--set needs <field>=<value>; got ${JSON.stringify(pair)}.`);
     const field = pair.slice(0, separator);
-    const raw = pair.slice(separator + 1);
     if (READ_ONLY_FIELDS.has(field)) throw new ConfigError(`${field} is reported by the engine but cannot be written.`);
-    if (Object.hasOwn(body, field)) throw new ConfigError(`--set names ${field} twice.`);
-    try {
-      body[field] = JSON.parse(raw) as unknown;
-    } catch {
-      body[field] = raw;
+    if (Object.hasOwn(raw, field)) throw new ConfigError(`--set names ${field} twice.`);
+    raw[field] = pair.slice(separator + 1);
+  }
+  return raw;
+}
+
+/**
+ * Types each `--set` value after the field's current value in the agent's own
+ * read. Engine 1.3.6 validates every PATCH field by its exact JSON type, so
+ * guessing from the text alone sent `--set name=2025` as a number and got a 400:
+ *
+ * - a field that holds a string takes the text as is (`cacheTtl=5m`, `name=2025`);
+ * - a number, a boolean, an object or an array takes the text as JSON, and a value
+ *   of another type is refused here, naming the field;
+ * - `null` clears a field to the deployment default wherever the engine allows it;
+ * - a field that holds null, or that the read does not carry, has no type to go
+ *   by: its text is read as JSON when it parses as JSON, as a string otherwise.
+ *   Quote it as JSON (`--set 'description="2025"'`) to force a string.
+ */
+function coerceSetValues(raw: Record<string, string>, current: Record<string, unknown>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(raw)) {
+    const stored = current[field];
+    if (value === "null") {
+      body[field] = null;
+    } else if (typeof stored === "string") {
+      body[field] = value;
+    } else if (stored === null || stored === undefined) {
+      body[field] = parseJsonOr(value, value);
+    } else {
+      const expected = Array.isArray(stored) ? "array" : typeof stored;
+      const parsed = parseJsonOr(value, undefined);
+      const got = Array.isArray(parsed) ? "array" : parsed === null ? "null" : typeof parsed;
+      if (parsed === undefined || got !== expected) {
+        throw new ConfigError(`--set ${field} takes a${expected === "array" || expected === "object" ? "n" : ""} ${expected} (it holds ${JSON.stringify(stored)}); got ${JSON.stringify(value)}.`);
+      }
+      body[field] = parsed;
     }
   }
   return body;
+}
+
+function parseJsonOr(value: string, fallback: unknown): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return fallback;
+  }
 }
 
 /**
@@ -288,9 +328,11 @@ async function update(args: string[], context: CommandContext | undefined, deps:
     ...optional(options, "--status", "status"),
     ...sttProvider(options),
     ...memoryScope(options),
-    ...parseSetFlags(options),
   };
-  if (Object.keys(body).length === 0) throw new ConfigError("polyant-cli agent update needs at least one field to change.");
+  const setValues = parseSetFlags(options);
+  if (Object.keys(body).length + Object.keys(setValues).length === 0) {
+    throw new ConfigError("polyant-cli agent update needs at least one field to change.");
+  }
 
   const scope = await scopeFor(deps, context);
   // Read the current state first: a recap that cannot name the previous value
@@ -298,6 +340,10 @@ async function update(args: string[], context: CommandContext | undefined, deps:
   const before = await call(deps, scope, { path: `/api/instances/${encodeURIComponent(slug)}` });
   const current = (before.body as Partial<AgentDetailResponse> | null)?.instance;
   if (current === undefined) throw new ConfigError(`GET /api/instances/${slug} did not return an instance.`);
+  for (const [field, value] of Object.entries(coerceSetValues(setValues, current as unknown as Record<string, unknown>))) {
+    if (Object.hasOwn(body, field)) throw new ConfigError(`${field} is given twice: by its own flag and by --set.`);
+    body[field] = value;
+  }
 
   const changes = Object.entries(body).map(([field, value]) => {
     const previous = (current as unknown as Record<string, unknown>)[field];
@@ -1077,25 +1123,25 @@ async function followConversation(
   max: string | undefined,
 ): Promise<void> {
   const limit = max === undefined ? Infinity : Number(max);
-  const stream = await callStream(deps, scope, {
-    path: "/api/activity-stream/conversation",
-    // `instanceId` takes the agent's SLUG here, whatever the name says.
-    query: { conversationId: id, instanceId: slug },
-    timeoutMs: 0,
-  });
   if (!wantsJson(context)) deps.io.stderr(`following conversation ${id} — interrupt to stop\n`);
-
-  let seen = 0;
-  for await (const event of stream.events) {
-    if (event.event === "persisted") {
-      deps.io.stdout(
-        wantsJson(context)
-          ? `${JSON.stringify({ event: "persisted" })}\n`
-          : `${new Date().toISOString()}  persisted  a message or hook run was stored\n`,
-      );
-    } else if (wantsJson(context)) {
-      deps.io.stdout(`${event.data}\n`);
-    } else {
+  await followStream(
+    deps,
+    () =>
+      callStream(deps, scope, {
+        path: "/api/activity-stream/conversation",
+        // `instanceId` takes the agent's SLUG here, whatever the name says.
+        query: { conversationId: id, instanceId: slug },
+        timeoutMs: 0,
+      }),
+    (event) => {
+      if (event.event === "persisted") {
+        return deps.io.stdout(
+          wantsJson(context)
+            ? `${JSON.stringify({ event: "persisted" })}\n`
+            : `${new Date().toISOString()}  persisted  a message or hook run was stored\n`,
+        );
+      }
+      if (wantsJson(context)) return deps.io.stdout(`${event.data}\n`);
       let parsed: FeedEvent | undefined;
       try {
         parsed = JSON.parse(event.data) as FeedEvent;
@@ -1103,10 +1149,10 @@ async function followConversation(
         parsed = undefined;
       }
       deps.io.stdout(`${parsed === undefined ? event.data : renderFeedEvent(parsed)}\n`);
-    }
-    seen += 1;
-    if (seen >= limit) return;
-  }
+    },
+    limit,
+    "conversation stream",
+  );
 }
 
 /**
@@ -1197,9 +1243,14 @@ const LEAVES: Record<string, Node> = {
                                  [--set <field>=<value> ...]
 
 --set reaches the writable settings with no flag of their own: the timezone and
-locale, the debounce and typing delays, the cache TTL, the opt-out wording. The
-value is read as JSON when it parses as one, so cacheEnabled=true sends a boolean
-and datetimeTimezone=Europe/Rome a string. Run \`agent show <slug> --json\` for the
+locale, the debounce and typing delays, the cache TTL, the opt-out wording. Each
+value takes the type the field holds in the agent's current read: a string field
+takes the text as is (name=2025, cacheTtl=5m), a number or boolean field takes
+JSON (cacheEnabled=true, messageSoftDebounceMs=1500) and refuses anything else,
+and null clears a field to the deployment default. A field that holds null has
+no type to go by: its value is read as JSON when it parses as one, so quote a
+string that looks like a number ('description="2025"'). From engine 1.3.6 a value
+of the wrong type is a 400 naming the field. Run \`agent show <slug> --json\` for the
 field names. Two worth knowing from engine 1.2.0: memoryEnabled=true, since new
 agents start with memory off, and webContextFieldMapping='{"customerId":"customer.id"}',
 which maps the \`context\` a web chat sends onto conversation state — the web twin
@@ -1434,9 +1485,13 @@ first replays the conversation's recent events, then sends each turn's events
 live as it runs, on any channel, and a "persisted" line each time a
 message or hook run is stored — re-run without --follow to read it. It has no
 deadline: bound it with --max <n> events. With --json the follow prints the
-live frames alone, as JSON Lines. Needs engine 1.2.0.`,
+live frames alone, as JSON Lines. Needs engine 1.2.0. From engine 1.3.6 the
+engine ends the stream after 15 minutes, or at once for a client that falls
+behind; the follow reconnects, says so on stderr, and skips the events the
+engine replays that it already printed.`,
       action: conversationsShow,
     },
+    ...conversationReviewLeaves,
   },
   messages: {
     summary: "list messages across all of an agent's conversations",

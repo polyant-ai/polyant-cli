@@ -103,6 +103,8 @@ its job. Use `monitor status` when you need a gate that fails.
 | one agent in detail | `agent show <slug>` — reports stored and effective provider/model separately |
 | is it healthy | `agent checkup <slug> [--fail-on broken\|warning\|note]` for operational checks; `monitor status` for probes, the scheduler included |
 | what happened | `monitor events --limit 50`, `agent logs <slug>` |
+| why one turn took what it took | `agent conversations debug <slug> <conversationId> <messageId>` |
+| review a phone call | `agent conversations recordings <slug> <conversationId>`, `agent conversations export-call <slug> <conversationId> <callSid>` (Enterprise) |
 | watch it live | `monitor events --follow [--instance <slug>] [--max <n>]`, one conversation with `agent conversations show <slug> <id> --follow --max <n>` |
 | cost and latency | `analytics overview`, `analytics agent <slug>`, `analytics org` |
 | cap what an agent spends | `agent budget show <slug>`, `agent budget set <slug> --file -` (Enterprise) |
@@ -115,9 +117,9 @@ its job. Use `monitor status` when you need a gate that fails.
 | is it exposed to other agents | `agent a2a show <slug>` |
 | who asked to be left alone | `agent optouts list <slug>` |
 | what governs an agent | `agent governance show <slug>`, `governance policy list` |
-| move an agent between instances | `agent export <slug>` → `agent import --file -` |
+| move an agent between instances | `agent export <slug>` → `agent import --file - [--slug <new>]` (a slug in use answers `409`) |
 | who may do what | `role list`, `workspace bindings`, `apikey list` |
-| what a workspace may use | `workspace skills list <ws>`, `workspace plugins list <ws>` |
+| what a workspace may use | `workspace skills list <ws>`, `workspace plugins list <ws>`, every workspace at once with `org workspace-assignments` |
 | run your local tools against a remote agent | `dev token issue <slug>` → `dev init` → `dev connect <slug> --watch` |
 | anything not covered | `api <METHOD> <path>` |
 
@@ -125,6 +127,8 @@ its job. Use `monitor status` when you need a gate that fails.
 API reads are eventually consistent rather than a server-side snapshot.
 
 `--follow` has no deadline: bound it with `--max <n>` or you will wait forever.
+The engine ends a live stream after 15 minutes; the follow reconnects on its own
+and notes it on stderr.
 `dev connect` never returns at all — it holds a session open until interrupted,
 and exits `0` when you interrupt it.
 
@@ -192,3 +196,6 @@ the second one tells you anything about the data.
 **Do not reach for `--yes` to get past a refusal you have not read.** A refusal on
 a production target, or a missing `--confirm`, is the one place where the tool is
 deliberately in your way. `--dry-run` first, read the recap, then commit.
+
+Changing polyant-cli itself rather than driving it? Read `CONTRIBUTING.md` and
+`CLAUDE.md` in the repository first.

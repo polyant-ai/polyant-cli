@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiResponse, RequestOptions } from "../api/client.js";
 import type { Command, CommandContext } from "../command.js";
 import type { WorkspaceConfig } from "../config.js";
+import { ExitCode, RemoteError } from "../exit.js";
 import type { GlobalOptions } from "../runtime/global-options.js";
 import type { AgentCommandDependencies } from "./agent.js";
 import { createAgentCommand } from "./agent.js";
@@ -19,7 +20,7 @@ function response(body: unknown, status = 200): ApiResponse {
   return { status, raw: JSON.stringify(body), body };
 }
 
-function harness(responses: ApiResponse[], overrides: Partial<AgentCommandDependencies> = {}) {
+function harness(responses: (ApiResponse | Error)[], overrides: Partial<AgentCommandDependencies> = {}) {
   const out: string[] = [];
   const err: string[] = [];
   const calls: RequestOptions[] = [];
@@ -28,6 +29,7 @@ function harness(responses: ApiResponse[], overrides: Partial<AgentCommandDepend
     calls.push(opts);
     const next = queue.shift();
     if (next === undefined) throw new Error(`Unexpected request: ${opts.method ?? "GET"} ${opts.path}`);
+    if (next instanceof Error) throw next;
     return next;
   });
   const command = createAgentCommand({
@@ -120,8 +122,15 @@ describe("agent skills", () => {
     );
   });
 
+  const DECLARED = {
+    env: [
+      { key: "ZENDESK_TOKEN", value: "", sensitive: true, configured: false },
+      { key: "ZENDESK_HOST", value: "acme.zendesk.com", sensitive: false, configured: true },
+    ],
+  };
+
   it("keeps a skill env value out of the recap and out of stdout", async () => {
-    const h = harness([response({ env: [] })], { readPayload: async () => "tok-secret\n" });
+    const h = harness([response(DECLARED), response({ env: [] })], { readPayload: async () => "tok-secret\n" });
 
     await leaf(h.command, ["skills", "env", "set"])(
       ["acme", "triage", "--key", "ZENDESK_TOKEN", "--file", "t.txt", "--sensitive"],
@@ -130,11 +139,51 @@ describe("agent skills", () => {
 
     expect(h.err.join("")).toContain("10 characters from t.txt");
     expect(h.err.join("")).not.toContain("tok-secret");
-    expect(h.calls[0]).toMatchObject({
+    expect(h.calls[1]).toMatchObject({
       method: "PUT",
       path: "/api/instances/acme/skills/triage/env",
       body: { env: [{ key: "ZENDESK_TOKEN", value: "tok-secret", sensitive: true }] },
     });
+  });
+
+  // Engine 1.3.6 answers 400 for a key the skill does not declare.
+  it("refuses a key the skill does not declare, naming the ones it does, before writing", async () => {
+    const h = harness([response(DECLARED)], { readPayload: async () => "x" });
+
+    await expect(
+      leaf(h.command, ["skills", "env", "set"])(["acme", "triage", "--key", "ZENDESK_TOKN", "--file", "t.txt"], context({ yes: true })),
+    ).rejects.toThrow(/declares no ZENDESK_TOKN on acme\. It declares: ZENDESK_TOKEN, ZENDESK_HOST/);
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]).toMatchObject({ path: "/api/instances/acme/skills/triage/env" });
+  });
+
+  // ... and encrypts a key the skill declares sensitive whatever the request says.
+  it("says a declared-sensitive key is stored encrypted without --sensitive, and sends it so", async () => {
+    const h = harness([response(DECLARED), response({ env: [] })], { readPayload: async () => "tok" });
+
+    await leaf(h.command, ["skills", "env", "set"])(["acme", "triage", "--key", "ZENDESK_TOKEN", "--file", "t.txt"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain("Stored encrypted as sensitive (triage declares ZENDESK_TOKEN sensitive)");
+    expect(h.calls[1].body).toEqual({ env: [{ key: "ZENDESK_TOKEN", value: "tok", sensitive: true }] });
+  });
+
+  it("says a plain key replaces the stored value and stays readable", async () => {
+    const h = harness([response(DECLARED)], { readPayload: async () => "other.zendesk.com" });
+
+    await leaf(h.command, ["skills", "env", "set"])(["acme", "triage", "--key", "ZENDESK_HOST", "--file", "h.txt"], context({ dryRun: true }));
+
+    const recap = h.err.join("");
+    expect(recap).toContain("Replaces the value stored now.");
+    expect(recap).toContain("Stored as plain configuration");
+  });
+
+  // A sensitive value is never served back, so `value` alone read a set secret as unset.
+  it("reports a set sensitive key as set from the engine's configured flag", async () => {
+    const h = harness([response({ env: [{ key: "ZENDESK_TOKEN", value: "", sensitive: true, configured: true }] })]);
+
+    await leaf(h.command, ["skills", "env", "show"])(["acme", "triage"], context());
+
+    expect(h.out.join("")).toMatch(/ZENDESK_TOKEN\s+yes\s+yes/);
   });
 });
 
@@ -152,6 +201,46 @@ describe("agent knowledge", () => {
     await leaf(h.command, ["knowledge", "list"])(["acme"], context());
 
     expect(h.out.join("")).toContain("error: too large");
+  });
+
+  const doc = (id: string) => ({ id, filename: `${id}.md`, status: "ready", chunkCount: 1, sizeBytes: 1, errorMessage: null, updatedAt: null });
+
+  // Engine 1.3.6 pages the list at 500 with nextOffset; total and failed count the whole agent.
+  it("reads every page and reports the total and the failed count", async () => {
+    const h = harness([
+      response({ nextOffset: 500, total: 502, failed: 1, documents: [doc("d-1"), doc("d-2")] }),
+      response({ nextOffset: null, total: 502, failed: 1, documents: [doc("d-3")] }),
+    ]);
+
+    await leaf(h.command, ["knowledge", "list"])(["acme"], context());
+
+    expect(h.calls[0].query).toBeUndefined();
+    expect(h.calls[1].query).toEqual({ offset: "500" });
+    expect(h.out.join("")).toContain("d-3.md");
+    expect(h.err.join("")).toContain("3 of 502 documents; 1 failed to index.");
+  });
+
+  it("passes a single page through byte for byte with --json", async () => {
+    const page = response({ nextOffset: null, total: 1, failed: 0, documents: [doc("d-1")] });
+    const h = harness([page]);
+
+    await leaf(h.command, ["knowledge", "list"])(["acme"], context({ json: true }));
+
+    expect(h.out.join("")).toBe(page.raw);
+  });
+
+  it("joins several pages into one object of the same shape with --json", async () => {
+    const h = harness([
+      response({ nextOffset: 500, total: 2, failed: 0, documents: [doc("d-1")] }),
+      response({ nextOffset: null, total: 2, failed: 0, documents: [doc("d-2")] }),
+    ]);
+
+    await leaf(h.command, ["knowledge", "list"])(["acme"], context({ json: true }));
+
+    const joined = JSON.parse(h.out.join("")) as { nextOffset: unknown; total: number; documents: { id: string }[] };
+    expect(joined.nextOffset).toBeNull();
+    expect(joined.total).toBe(2);
+    expect(joined.documents.map((row) => row.id)).toEqual(["d-1", "d-2"]);
   });
 
   it("defaults the filename to the file's own", async () => {
@@ -381,6 +470,52 @@ describe("agent import", () => {
     expect(err).toContain("polyant-cli agent provider-roles bind acme-copy voice_tts <connectionId>");
   });
 
+  // Engine 1.3.6 refuses a taken slug with 409 instead of importing as <slug>-imported.
+  it("rewrites the bundle's slug and name with --slug and --name, and names the slug in the recap", async () => {
+    const h = harness([response({ slug: "acme-copy", warnings: [] }, 201)], { readPayload: async () => JSON.stringify(BUNDLE) });
+
+    await leaf(h.command, ["import"])(["--file", "-", "--slug", "acme-copy", "--name", "Acme copy"], context({ yes: true }));
+
+    expect(h.err.join("")).toContain("Import a new agent as acme-copy");
+    expect(h.calls[0].body).toMatchObject({ instance: { slug: "acme-copy", name: "Acme copy", secrets: BUNDLE.instance.secrets } });
+  });
+
+  it("names the bundle's own slug in the recap without --slug", async () => {
+    const h = harness([], { readPayload: async () => JSON.stringify(BUNDLE) });
+
+    await leaf(h.command, ["import"])(["--file", "-"], context({ dryRun: true }));
+
+    expect(h.err.join("")).toContain("Create agent acme from stdin");
+  });
+
+  it("explains a 409 and points at --slug", async () => {
+    const h = harness([new RemoteError('Slug "acme" already exists', ExitCode.Config, 409)], {
+      readPayload: async () => JSON.stringify(BUNDLE),
+    });
+
+    const failure = leaf(h.command, ["import"])(["--file", "-"], context({ yes: true }));
+
+    await expect(failure).rejects.toThrow(/Slug "acme" already exists — .*--slug <new-slug>/);
+    await expect(failure).rejects.toMatchObject({ code: ExitCode.Config, status: 409 });
+  });
+
+  it("refuses a malformed --slug before sending", async () => {
+    const h = harness([], { readPayload: async () => JSON.stringify(BUNDLE) });
+
+    await expect(leaf(h.command, ["import"])(["--file", "-", "--slug", "Acme Copy"], context({ yes: true }))).rejects.toThrow(
+      /is not an agent slug/,
+    );
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("refuses --slug on an overwrite, which keeps the named agent's slug", async () => {
+    const h = harness([], { readPayload: async () => JSON.stringify(BUNDLE) });
+
+    await expect(
+      leaf(h.command, ["import"])(["acme", "--file", "-", "--slug", "other", "--confirm", "acme"], context({ yes: true })),
+    ).rejects.toThrow(/an overwrite keeps acme's slug/);
+  });
+
   it("overwrites the named agent, and refuses without a matching --confirm", async () => {
     const h = harness([], { readPayload: async () => JSON.stringify({ version: 1 }) });
 
@@ -486,7 +621,53 @@ describe("agent governance", () => {
     const h = harness([], { readPayload: async () => JSON.stringify({ policies: [] }) });
 
     await expect(leaf(h.command, ["governance", "set"])(["acme", "--file", "-"], context({ yes: true }))).rejects.toThrow(
-      /needs an "assignments" array/,
+      /needs a non-empty "assignments" array/,
     );
+  });
+
+  // Engine 1.3.6 answers 400 for a policyId that is not the catalog row's UUID.
+  it("refuses a catalog key in place of the row id, pointing at the ID column", async () => {
+    const h = harness([], {
+      readPayload: async () => JSON.stringify({ assignments: [{ policyId: "pii:email", enforcement: "block" }] }),
+    });
+
+    await expect(leaf(h.command, ["governance", "set"])(["acme", "--file", "-"], context({ yes: true }))).rejects.toThrow(
+      /ID column of `polyant-cli governance policy list`.*"pii:email"/,
+    );
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("sends assignments that name row ids", async () => {
+    const body = { assignments: [{ policyId: "2f0e8a61-5d0b-4c39-9a3e-0d4b7f3c2a11", enforcement: "warn" }] };
+    const h = harness([response([])], { readPayload: async () => JSON.stringify(body) });
+
+    await leaf(h.command, ["governance", "set"])(["acme", "--file", "-"], context({ yes: true }));
+
+    expect(h.calls[0]).toMatchObject({ method: "PATCH", path: "/api/instances/acme/governance/policies", body });
+  });
+});
+
+describe("agent compliance reports", () => {
+  it.each(["0", "-1", "1.5", "two"])("refuses --snapshot %j before sending", async (value) => {
+    const h = harness([]);
+
+    await expect(
+      leaf(h.command, ["compliance", "reports"])(
+        ["acme", "--from", "2026-01-01", "--to", "2026-02-01", "--snapshot", value],
+        context({ yes: true }),
+      ),
+    ).rejects.toThrow(/--snapshot needs a positive integer/);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("sends the snapshot version as a number", async () => {
+    const h = harness([response({ id: "r-1" }, 201)]);
+
+    await leaf(h.command, ["compliance", "reports"])(
+      ["acme", "--from", "2026-01-01", "--to", "2026-02-01", "--snapshot", "3"],
+      context({ yes: true }),
+    );
+
+    expect(h.calls[0].body).toMatchObject({ snapshotVersion: 3 });
   });
 });

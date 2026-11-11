@@ -121,6 +121,7 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | 0.6.x | 1.2.0 and 1.2.0-ee, verified against the engine's develop as of 2026-10-01 | adds `agent budget`, `agent providers`, `agent channels slack url` and `agent conversations show --follow`; `agent checkup` gains `--fail-on`, `monitor status` probes the scheduler, `agent models` lists the embedders and the five-minute cache-write rate, `agent tools show` names a tool's plugin, and `agent secrets` accepts the keys a tool declares. Reads the 1.2.0 plugin and provider lists, where an ungranted row is absent — against 0.5.x those made `workspace providers admit` and `workspace plugins assign` refuse everything |
 | 0.7.x | 1.2.0-ee with the telephone voice channel, verified against the engine's develop as of 2026-10-07 | adds `agent channels voice status` and `agent channels voice settings show\|set`; an engine built without the voice package reports `available: no`, and 1.2.0 OSS answers `404` |
 | 0.8.x | 1.2.0-ee with credential roles, written against a pre-release 1.2.0-ee engine (2026-10-08) | adds `agent provider-roles`, `agent connections`, `org provider-roles` and `org ambient-aws`; **removes** `agent update --provider-connection`, which the engine now refuses with a `400`. `agent channels voice status` reports roles where it reported keys, `org providers show` adds the ambient AWS grant and the provider catalogue, and `agent import` repeats the engine's warnings on stderr. Against an older engine the new commands answer `404`, and `voice status` refuses the old shape. From 0.8.1 the CLI follows the consistent provider-roles API of 1.2.0-ee: `agent connections list` reads `GET /api/instances/:slug/provider-connections` and shows `USABLE`, so it answers `404` against an engine that predates it |
+| 0.10.x | 1.3.6 and 1.3.6-ee, verified against the engine's develop as of 2026-11-11 (Enterprise, which serves both route sets) | adds `agent conversations recordings`, `agent conversations export-call`, `agent conversations debug` and `org workspace-assignments`; `agent import` gains `--slug` and `--name`, because the engine now answers `409` for a slug already in use where it used to import as `<slug>-imported`. `agent update --set` types each value after the field it sets (the engine now refuses `name` sent as a number), `monitor events --follow` and `agent conversations show --follow` reconnect when the engine ends the stream after 15 minutes, `agent knowledge list` reads every page and reports the total and the failed count, `agent skills env set` refuses a key the skill does not declare and says when a key is stored encrypted, `governance policy list` shows the row ID the assignment and policy writes take, and `agent chat --temperature` and `agent compliance reports --snapshot` are checked locally. `agent conversations recordings`, `export-call` and `org workspace-assignments` need Enterprise; `conversations debug` works against both |
 | 0.9.x | 1.2.x and 1.3.0, and 1.2.x-ee and 1.3.0-ee, verified against the v1.3.0 and v1.3.0-ee tags on 2026-10-14 (OSS and Enterprise); 1.3.4, 1.3.4-ee, 1.3.5 and 1.3.5-ee by comparing the route list | the first public release, under Apache-2.0, installed from this repository: the release tarball for a global install, the tag for a project. No command added or removed: 0.9.0 carries 0.8.1's command set. 0.9.1 adds none either: run without `--org` against an engine that has no `GET /api/service-context`, as an OSS engine, an organization command says `--org` is needed instead of reporting an unmatched route. Engine 1.3.4-ee adds management routes to the 1.2.0-ee list and removes or changes none, so every command 0.9.x sends still has its route; the new routes have no command here yet. Engine 1.3.5-ee adds one route, `GET /api/platform/analytics/trend` for Platform Admins, and removes or changes none. Against an OSS engine only the commands listed under [OSS and Enterprise](#oss-and-enterprise) work; the rest answer `404` |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
@@ -208,6 +209,15 @@ visible without a new command too:
   `agent update --provider-connection` is gone. A new agent answers nothing until
   its `chat` role is bound.
 
+The first Enterprise engine release after 1.3.5-ee changes two listings:
+
+- `GET /api/organizations/:org/invitations` answers the open invitations unless
+  it is asked for `?status=all`, which pages the history. `member invitations
+  list` shows the open ones on any engine, and `--all` asks for the history.
+- The list of an agent's compliance snapshots no longer carries each version's
+  configuration. `agent compliance snapshots <slug>` prints the versions, and
+  `--version <n>` reads one configuration.
+
 One family is deliberately absent. Every `/api/platform/*` route — platform
 plugins, platform skills, deployment-wide analytics and audit logs — is declared
 `@PlatformAdminOnly()`, which admits **only a human principal** whose
@@ -268,7 +278,8 @@ management keys also through `apikey create`.
 - agents: `agent list`, `show`, `create`, `update`, `delete`, `export`, `import`,
   `models` and `logs`, and the families `agent prompt`, `tools`, `hooks`,
   `channels` (all but `channels voice`), `secrets`, `skills`, `knowledge`,
-  `tasks`, `events`, `mcp`, `memory`, `optouts`, `conversations` and `a2a`. The
+  `tasks`, `events`, `mcp`, `memory`, `optouts`, `conversations` (all but
+  `conversations recordings` and `export-call`) and `a2a`. The
   OSS engine has no memory scope, so `agent update --memory-scope` exits `1`,
   reporting the field as not written;
 - `analytics overview` and `analytics agent`; `monitor status`, `monitor events`
@@ -288,7 +299,8 @@ panel's URL, `/organizations/<org>/workspaces/<workspace>/…`.
 **Needs Enterprise:**
 
 - agents: `agent chat` (the playground stream), `agent messages`, `agent budget`,
-  `agent channels voice`, `agent checkup`, `agent checks`, `agent health`,
+  `agent channels voice`, `agent conversations recordings` and `export-call`,
+  `agent checkup`, `agent checks`, `agent health`,
   `agent compliance`, `agent governance`, `agent retention`, `agent providers`,
   `agent provider-roles`, `agent connections` and `agent shared-knowledge`;
 - administration: every `org`, `workspace`, `role` and `skill` command,
@@ -529,6 +541,11 @@ polyant-cli --context engineering agent conversations list acme --limit 20
 polyant-cli --context engineering agent conversations show acme <conversationId> --follow --max 50
 polyant-cli --context engineering agent conversations list acme --from 2026-09-03 --to 2026-09-04
 polyant-cli --context engineering agent conversations show acme <conversationId>
+polyant-cli --context engineering agent conversations debug acme <conversationId> <messageId>
+polyant-cli --context engineering agent conversations debug acme <conversationId> <messageId> --call <callId> --json
+polyant-cli --context engineering agent conversations recordings acme <conversationId>
+polyant-cli --context engineering agent conversations recordings acme <conversationId> --audio <recordingSid> --out call.wav
+polyant-cli --context engineering agent conversations export-call acme <conversationId> <callSid> --out call.json
 polyant-cli --context engineering agent messages acme --from 2026-08-31 --limit 200
 ```
 
@@ -544,6 +561,26 @@ inclusive, `--to` exclusive, so one day is `--from 2026-09-03 --to 2026-09-04`.
 The engine's search is relevance-ranked and drops the window, so `--search`
 refuses to combine with either rather than answering a narrower question than
 the one asked.
+
+`conversations show --follow` has no deadline of its own. From engine 1.3.6 the
+engine ends the stream after 15 minutes, or at once for a client that falls
+behind; the follow reconnects, says so on stderr, and skips the events the
+engine replays on connect that it already printed. `monitor events --follow`
+does the same.
+
+`conversations debug` is a turn's request path, from engine 1.3.6: name the
+assistant message (`conversations show --json` carries the ids) and it lists
+every model call and hook run filed under it, with timing, tokens, cost and
+outcome. `--call <callId>` reads one model call's raw exchanges with the
+provider, which the engine keeps only while the agent's `debugEnabled` is on.
+
+`conversations recordings` and `export-call` review a phone call (Enterprise
+1.3.6). The recordings are read from Twilio through the voice channel's account,
+so the channel needs `twilio.accountSid` in `agent channels voice settings set`;
+any other conversation answers with the reason, `not_voice` for a chat. The call
+timelines, and `export-call`'s bundle of one call, exist only for calls made
+while the channel's `diagnostics.recordDecisions` was on. `--audio` writes a
+recording's WAV to `--out`; each download and each export is audited.
 
 `conversations show` names the tools each turn invoked, in step order, in a
 `TOOLS` column; a call whose result never came back is marked `?`. The arguments
@@ -567,7 +604,9 @@ sends no writes. It may still read current state when the recap depends on it;
 `prompt set` does this to report the actual character delta.
 
 `agent chat` sends one turn through the **playground** route and
-streams the reply. Reply text goes to stdout as it arrives; steps, reasoning and
+streams the reply. The message is text only: from engine 1.3.6 the chat stream
+takes no image or file parts and at most 100 messages, and `--temperature` takes
+0 to 2, which the CLI checks before sending. Reply text goes to stdout as it arrives; steps, reasoning and
 tool calls go to stderr, so a pipe receives the answer alone. `--json` switches to
 JSON Lines — one engine frame per line, tagged with its name and carrying the
 original payload. `--expect <text>` exits `1` when the assembled reply does not
@@ -694,7 +733,23 @@ Several of these carry a sharp edge worth stating plainly.
 the recap says so rather than reading as "enable these".
 
 `agent tasks run` is a real run — it calls the model and delivers to the task's
-outbound channel, exactly as the scheduler would.
+outbound channel, exactly as the scheduler would. From engine 1.3.6 an interval
+schedule's `everyMs` is an integer of at least `60000`, and a schedule that does
+not fit its type answers `400` naming the field.
+
+`agent knowledge list` reads every page of the engine's list (500 documents a
+page from engine 1.3.6) and reports the agent's total and how many documents
+failed to index on stderr. `agent knowledge add` takes a document of at most
+10 MB.
+
+`agent skills env set` reads the skill's declared environment first: a key the
+skill does not declare is refused before anything is sent (the engine answers
+`400` for it from 1.3.6), and a key the skill declares sensitive is stored
+encrypted whether or not `--sensitive` is given, which the recap says.
+
+`agent governance set` names each policy by its row id, a UUID: the `ID` column
+of `governance policy list`, not its `POLICY KEY`. From engine 1.3.6 anything
+else answers `400`, and the CLI refuses it first.
 
 `agent events rotate` invalidates the current ingest token the moment the new one
 is issued, so every producer has to be updated first. The token appears once, in
@@ -708,7 +763,11 @@ it would remove; `--dry-run` is the CLI's, and sends no writes.
 `agent import` with a slug **overwrites** that agent — prompts, tools, channels and
 hooks are replaced, not merged — and needs `--confirm <slug>`. Without a slug it
 creates a new agent in the addressed workspace instead. Same body, opposite blast
-radius. stdout is the engine's response; its warnings are repeated on stderr. A
+radius. The new agent takes the bundle's slug and name, or the ones `--slug` and
+`--name` give it, and the recap names the slug. Agent slugs are unique across the
+deployment: from engine 1.3.6 a slug already in use answers `409` (earlier
+engines imported it as `<slug>-imported` without saying so), so importing an
+export onto the deployment it came from needs `--slug`. stdout is the engine's response; its warnings are repeated on stderr. A
 bundle carries no provider connection, so each role the imported agent uses
 comes back as a `provider_role_required` warning naming the role in its `role`
 field, and the CLI prints the `agent provider-roles bind` command for each.
@@ -721,8 +780,13 @@ and it is now declared rather than inherited.
 
 `agent update --set <field>=<value>` reaches the writable settings with no flag of
 their own — timezone and locale, the debounce and typing delays, the cache TTL,
-the opt-out wording. The value is read as JSON when it parses as one, so
-`cacheEnabled=true` sends a boolean and `datetimeTimezone=Europe/Rome` a string;
+the opt-out wording. Each value takes the type the field holds in the agent's
+current read: a string field takes the text as is (`name=2025`, `cacheTtl=5m`), a
+number or boolean field takes JSON (`cacheEnabled=true`) and refuses anything
+else, and `null` clears a field to the deployment default. A field that holds
+`null` has no type to go by, so its value is read as JSON when it parses as one:
+quote a string that looks like a number (`'description="2025"'`). From engine
+1.3.6 the engine answers `400` naming a field sent with the wrong type.
 `agent show <slug> --json` lists the field names. The engine ignores a field it
 does not treat as writable — with a `200` and a fresh `updatedAt`, which is
 exactly the shape that let a panel report a save that never happened — so the CLI
@@ -855,7 +919,11 @@ exits `0` — use `monitor status` when you need the gate.
 stream instead: the `--instance` filter is applied **server-side**, the request
 carries no deadline (interrupt it, or bound it with `--max <n>`), and `--json`
 switches to JSON Lines — one unmodified engine payload per line, so a consumer
-can read the stream incrementally.
+can read the stream incrementally. From engine 1.3.6 the engine ends the stream
+after 15 minutes, or at once for a client that falls behind: the follow
+reconnects, says so on stderr, and skips the events it already printed that the
+engine replays on connect. Events emitted while it reconnects, beyond that replay
+of the last 100, are not recovered.
 
 `polyant-cli agent logs <slug>` is the same query with the instance filter
 forced to that agent, including under `--follow`.
@@ -908,7 +976,8 @@ polyant-cli org secrets show
 printf %s "$TAVILY_KEY" | polyant-cli org secrets set --key tavily_api_key --file - --yes
 polyant-cli org plugins
 
-polyant-cli member invitations list --pending-only
+polyant-cli member invitations list
+polyant-cli member invitations list --all --limit 100
 polyant-cli member invitations create ada@example.com --role member --workspace labs --yes
 polyant-cli member invitations revoke i-1 --yes --confirm i-1
 
@@ -936,6 +1005,7 @@ polyant-cli org knowledge add --file ./handbook.pdf --yes
 polyant-cli org knowledge grant d-1 labs --yes
 polyant-cli workspace knowledge list labs
 
+polyant-cli org workspace-assignments
 polyant-cli workspace skills list labs
 polyant-cli workspace skills assign labs billing --yes
 polyant-cli workspace skills revoke labs billing --yes --confirm billing
@@ -944,6 +1014,11 @@ polyant-cli workspace plugins list labs
 polyant-cli workspace plugins assign labs booking --yes
 polyant-cli workspace plugins revoke labs booking --yes --confirm booking
 ```
+
+`org workspace-assignments` (Enterprise 1.3.6) answers for every workspace at
+once: the skills each may use, by slug, and the provider connections assigned to
+it, by id. It needs `workspace.assignment:manage` through an organisation binding;
+a credential bound to one workspace alone is refused.
 
 `org tasks list` collects every workspace and agent before printing, so its CLI
 output is all-or-nothing. The sequential reads are eventually consistent, not a
@@ -1123,7 +1198,7 @@ names on stderr anything the engine skipped, which the counts alone hide.
 polyant-cli governance overview
 polyant-cli governance analytics [--org-wide]
 polyant-cli governance metadata
-polyant-cli governance policy list
+polyant-cli governance policy list          # ID is the row id the writes take
 polyant-cli governance policy create --file policy.json --yes
 polyant-cli governance policy delete <id> --yes --confirm <id>
 ```
