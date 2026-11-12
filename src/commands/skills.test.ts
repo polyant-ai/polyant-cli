@@ -156,11 +156,14 @@ describe("skill set", () => {
     "  - name: REGION",
     "    sensitive: false",
     "  - LEGACY_TOKEN",
+    "requiredTools:",
+    "  - web_search",
+    "  - send_email",
     "---",
     "# Weather",
   ].join("\n");
 
-  it("sends the requiredEnv the frontmatter declares, sensitive unless marked otherwise, on create", async () => {
+  it("sends the requiredEnv and requiredTools the frontmatter declares, sensitive unless marked otherwise, on create", async () => {
     const h = harness([response({ skills: [] }), response({ skill: {} }, 201)], { readPayload: async () => WITH_ENV });
 
     await leaf(h.commands, "set")(["weather", "--file", "-", "--description", "Weather"], context({ yes: true }));
@@ -174,6 +177,7 @@ describe("skill set", () => {
         { name: "REGION", sensitive: false },
         { name: "LEGACY_TOKEN", sensitive: true },
       ],
+      requiredTools: ["web_search", "send_email"],
     });
   });
 
@@ -182,16 +186,28 @@ describe("skill set", () => {
 
     await leaf(h.commands, "set")(["triage", "--file", "-"], context({ yes: true }));
 
+    expect(h.calls[1].body).toMatchObject({ requiredEnv: expect.any(Array), requiredTools: ["web_search", "send_email"] });
     expect((h.calls[1].body as { requiredEnv: unknown[] }).requiredEnv).toHaveLength(3);
   });
 
-  it("sends no requiredEnv for a skill that declares none", async () => {
+  it("sends no requiredEnv or requiredTools for a skill that declares none", async () => {
     for (const content of ["# Plain", "---\nname: plain\n---\n# Plain"]) {
       const h = harness([response({ skills: [] }), response({ skill: {} }, 201)], { readPayload: async () => content });
 
       await leaf(h.commands, "set")(["plain", "--file", "-", "--description", "Plain"], context({ yes: true }));
 
       expect(h.calls[1].body).not.toHaveProperty("requiredEnv");
+      expect(h.calls[1].body).not.toHaveProperty("requiredTools");
+    }
+  });
+
+  it("refuses a requiredTools entry that is not a tool name", async () => {
+    for (const tools of ["requiredTools: web_search", "requiredTools:\n  - name: web_search", "requiredTools:\n  - ''"]) {
+      const h = harness([], { readPayload: async () => `---\n${tools}\n---\nbody` });
+
+      await expect(leaf(h.commands, "set")(["x", "--file", "-", "--description", "d"], context({ yes: true }))).rejects.toThrow(
+        /requiredTools/,
+      );
     }
   });
 
