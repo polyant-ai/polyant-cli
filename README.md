@@ -1192,7 +1192,10 @@ is creating or versioning, because the engine refuses a create for a name it
 already holds; `--description` is required only for the first case. The
 `requiredEnv` list in the file's YAML frontmatter (names, `description`,
 `sensitive`, true by default) is sent with every `skill set` write, since the
-engine refuses `agent skills env set` for a key the skill does not declare. `skill import`
+engine refuses `agent skills env set` for a key the skill does not declare; the
+`requiredTools` list (tool names) travels the same way, and the engine refuses a
+tool the organisation does not hold. A version written from a file without these
+lists requires nothing. `skill import`
 names on stderr anything the engine skipped, which the counts alone hide.
 
 ### `polyant-cli governance`

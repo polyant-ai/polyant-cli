@@ -7,7 +7,7 @@ import { assertKnown, takeValue } from "../runtime/flags.js";
 import { ORG_NOTE, orgPath, preflight, readScope, report, requirePositional } from "../runtime/org.js";
 import { call, expectArray, text, wantsJson, type ServiceDependencies } from "../runtime/service.js";
 import type { Node } from "../runtime/tree.js";
-import { readRequiredEnv } from "./skill-frontmatter.js";
+import { readSkillRequirements } from "./skill-frontmatter.js";
 
 /**
  * The skill catalog an organisation owns. It moved off `/api/skills` onto
@@ -180,10 +180,11 @@ async function skillSet(args: string[], context: CommandContext | undefined, dep
   if (content.trim().length === 0) throw new ConfigError(`${file === "-" ? "stdin" : file} contained no content.`);
   const description = takeValue(options, "--description");
   const changelog = takeValue(options, "--changelog");
-  // The skill declares its environment in its own frontmatter. The engine takes
-  // it as a field of the request, and a version written without it carries none,
-  // so it is read here and sent on every write.
-  const requiredEnv = readRequiredEnv(content, file === "-" ? "The stdin payload" : file);
+  // The skill declares its environment and tools in its own frontmatter. The
+  // engine takes them as fields of the request, and a version written without
+  // them carries none, so they are read here and sent on every write.
+  const requirements = readSkillRequirements(content, file === "-" ? "The stdin payload" : file);
+  const { requiredEnv, requiredTools } = requirements;
 
   const { scope, org } = await readScope(deps, context);
 
@@ -206,6 +207,7 @@ async function skillSet(args: string[], context: CommandContext | undefined, dep
       ...(requiredEnv === undefined
         ? []
         : [`Environment: ${requiredEnv.map((e) => `${e.name} (${e.sensitive ? "sensitive" : "not sensitive"})`).join(", ") || "none"}.`]),
+      ...(requiredTools === undefined ? [] : [`Tools: ${requiredTools.join(", ") || "none"}.`]),
       ...(existing === undefined ? [] : ["The previous version stays in the version history and can be rolled back to."]),
     ],
   };
@@ -216,7 +218,7 @@ async function skillSet(args: string[], context: CommandContext | undefined, dep
       ? await call(deps, scope, {
           method: "POST",
           path: skillsPath(org),
-          body: { name, description, content, ...(requiredEnv === undefined ? {} : { requiredEnv }) },
+          body: { name, description, content, ...requirements },
         })
       : await call(deps, scope, {
           method: "PUT",
@@ -224,7 +226,7 @@ async function skillSet(args: string[], context: CommandContext | undefined, dep
           body: {
             description: description ?? existing.description,
             content,
-            ...(requiredEnv === undefined ? {} : { requiredEnv }),
+            ...requirements,
             ...(changelog === undefined ? {} : { changelog }),
           },
         });
@@ -296,8 +298,10 @@ refuses a create for a name it already holds. --description is required only
 when the skill does not exist yet.
 
 The \`requiredEnv\` list in the file's YAML frontmatter (names, \`description\`,
-\`sensitive\`, which defaults to true) is sent with the write; a file without one
-sends none. ${ORG_NOTE}`,
+\`sensitive\`, which defaults to true) and its \`requiredTools\` list (tool
+names) are sent with the write; a file without them sends none, and the new
+version then requires nothing. The engine refuses a tool the organization does
+not hold. ${ORG_NOTE}`,
     action: skillSet,
     mutates: true,
   },
