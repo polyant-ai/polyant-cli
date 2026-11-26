@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-26T00:00:00.000Z",
+  "plugins": [
+    {
+      "pluginId": "exelab.sql",
+      "name": {
+        "en-US": "SQL Database",
+        "it-IT": "Database SQL"
+      },
+      "summary": {
+        "en-US": "Agents explore and query a PostgreSQL, MySQL, MariaDB or SQL Server database, read-only.",
+        "it-IT": "Gli agenti esplorano e interrogano in sola lettura un database PostgreSQL, MySQL, MariaDB o SQL Server."
+      },
+      "longDescription": {
+        "en-US": "The agent sees the database's tables and views, reads their structure (columns, types, primary and foreign keys) and runs SELECT queries to answer with up-to-date data. Every query runs in a transaction that is never committed, with a time and row limit; the plugin rejects multiple statements at once and any command that changes data.\n\nThe admin chooses the engine and enters the connection string of a database user with read-only permissions: that user's permissions decide what the agent can read. The admin can limit the schemas the agent explores. No tool writes to the database or sends communications externally.\n\nPostgreSQL, MySQL, MariaDB and Microsoft SQL Server are trademarks of their respective owners. This integration is developed by Exelab and is not affiliated with, sponsored by, or endorsed by the trademark owners.",
+        "it-IT": "L'agente vede le tabelle e le viste del database, ne legge la struttura (colonne, tipi, chiavi primarie ed esterne) ed esegue query SELECT per rispondere con dati aggiornati. Ogni query gira in una transazione che non viene mai confermata, con un limite di tempo e di righe; il plugin rifiuta più istruzioni insieme e qualunque comando che modifica i dati.\n\nL'amministratore sceglie il motore e inserisce la stringa di connessione di un utente del database con soli permessi di lettura: sono i permessi di quell'utente a decidere cosa l'agente può leggere. Può limitare gli schemi che l'agente esplora. Nessun tool scrive nel database o invia comunicazioni all'esterno.\n\nPostgreSQL, MySQL, MariaDB e Microsoft SQL Server sono marchi dei rispettivi titolari. Questa integrazione è sviluppata da Exelab e non è affiliata, sponsorizzata né approvata dai titolari dei marchi."
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMwMzY5QTEiLz48ZWxsaXBzZSBjeD0iMzIiIGN5PSIyMCIgcng9IjE0IiByeT0iNSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjMuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PHBhdGggZD0iTTE4IDIwdjI0YTE0IDUgMCAwIDAgMjggMFYyME0xOCAzMmExNCA1IDAgMCAwIDI4IDAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIzLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPgo=",
+      "category": {
+        "en-US": "Data",
+        "it-IT": "Dati"
+      },
+      "publisher": "Exelab",
+      "releases": [
+        {
+          "version": "1.0.0",
+          "namespace": "sql",
+          "engineRange": ">=1.2.0",
+          "artifactPath": "/v1/artifacts/exelab.sql/1.0.0/c946e1d0405d36daf2ff0e943d24433ce4ed7e86c951871e45d90d04ebb24106.tar.gz",
+          "sha256": "c946e1d0405d36daf2ff0e943d24433ce4ed7e86c951871e45d90d04ebb24106",
+          "compressedBytes": 914728,
+          "expandedBytes": 4489775,
+          "fileCount": 3,
+          "status": "published",
+          "changelogSummary": {
+            "en-US": "First release. Agents explore and query a PostgreSQL, MySQL, MariaDB or SQL Server database, read-only.",
+            "it-IT": "Prima versione. Gli agenti esplorano e interrogano in sola lettura un database PostgreSQL, MySQL, MariaDB o SQL Server."
+          },
+          "publishedAt": "2026-10-13T12:16:41.516Z",
+          "capabilityDescriptions": {
+            "sql:describeTable": "Describe one table or view of the configured database: every column with its type, whether it accepts NULL, its default and comment, the primary key, and the foreign keys with the table and columns they reference (use them to write joins). The name is matched ignoring case; when it exists in more than one schema, the result lists them and you call again with the schema.",
+            "sql:listTables": "List the tables and views of the configured database with their schema, type and an approximate row count when the engine keeps one cheaply (null otherwise). Also reports the engine (postgres, mysql or sqlserver), so queries can use its SQL dialect. Filter by schema or by part of the name on large databases. Call describeTable next to see a table's columns and keys.",
+            "sql:runQuery": "Run one read-only SQL statement on the configured database and return its columns and rows (as arrays aligned with the columns). Write it in the database's own dialect (listTables reports the engine). Only SELECT and WITH are accepted, plus SHOW and EXPLAIN (without ANALYZE) on PostgreSQL and MySQL; one statement per call, no data changes. Rows stop at maxRows (truncated: true means there were more): filter and aggregate in SQL rather than reading many rows. Long texts are cut and binary values are summarised by size. Call describeTable first to learn the exact table and column names."
+          },
+          "permissions": {
+            "tools": [
+              "sql:describeTable",
+              "sql:listTables",
+              "sql:runQuery"
+            ],
+            "hooks": [],
+            "requiredSecrets": [
+              "sql_engine",
+              "sql_connection_string",
+              "sql_allowed_schemas"
+            ],
+            "oauthProviders": [],
+            "requiredKnowledge": [],
+            "mayHalt": false,
+            "mayMutateResponse": false
+          }
+        },
+        {
+          "version": "1.2.0",
+          "namespace": "sql",
+          "engineRange": ">=1.3.0",
+          "artifactPath": "/v1/artifacts/exelab.sql/1.2.0/6c4b6be7c6c0b732c1b603e347475ae8026d624707d1b73e4c205e0e1ab8fc7d.tar.gz",
+          "sha256": "6c4b6be7c6c0b732c1b603e347475ae8026d624707d1b73e4c205e0e1ab8fc7d",
+          "compressedBytes": 915973,
+          "expandedBytes": 4495956,
+          "fileCount": 3,
+          "status": "published",
+          "changelogSummary": {
+            "en-US": "Every tool now has a short description and every field a label, in English and Italian, shown in the reader's language. Requires Polyant engine 1.3.0.",
+            "it-IT": "Ogni tool ha ora una breve descrizione e ogni campo un'etichetta, in italiano e in inglese, mostrate nella lingua di chi legge. Richiede l'engine Polyant 1.3.0."
+          },
+          "publishedAt": "2026-10-14T07:56:46.629Z",
+          "capabilityDescriptions": {
+            "sql:describeTable": {
+              "en-US": "Shows the columns and keys of a table in the connected database.",
+              "it-IT": "Mostra colonne e chiavi di una tabella del database collegato."
+            },
+            "sql:listTables": {
+              "en-US": "Lists the tables and views of the connected database.",
+              "it-IT": "Elenca le tabelle e le viste del database collegato."
+            },
+            "sql:runQuery": {
+              "en-US": "Runs a read-only SQL query on the connected database.",
+              "it-IT": "Esegue una query SQL in sola lettura sul database collegato."
+            }
+          },
+          "secretLabels": {
+            "sql_engine": {
+              "en-US": "Database engine",
+              "it-IT": "Motore del database"
+            },
+            "sql_connection_string": {
+              "en-US": "Connection string",
+              "it-IT": "Stringa di connessione"
+            },
+            "sql_allowed_schemas": {
+              "en-US": "Schemas the agent browses (optional)",
+              "it-IT": "Schemi visibili all'agente (facoltativo)"
+            }
+          },
+          "permissions": {
+            "tools": [
+              "sql:describeTable",
+              "sql:listTables",
+              "sql:runQuery"
+            ],
+            "hooks": [],
+            "requiredSecrets": [
+              "sql_engine",
+              "sql_connection_string",
+              "sql_allowed_schemas"
+            ],
+            "oauthProviders": [],
+            "requiredKnowledge": [],
+            "mayHalt": false,
+            "mayMutateResponse": false
+          }
+        }
+      ]
+    }
+  ]
+}
