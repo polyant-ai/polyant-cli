@@ -123,6 +123,7 @@ instance's. There is no negotiation: a route the engine has not shipped answers
 | 0.8.x | 1.2.0-ee with credential roles, written against a pre-release 1.2.0-ee engine (2026-10-08) | adds `agent provider-roles`, `agent connections`, `org provider-roles` and `org ambient-aws`; **removes** `agent update --provider-connection`, which the engine now refuses with a `400`. `agent channels voice status` reports roles where it reported keys, `org providers show` adds the ambient AWS grant and the provider catalogue, and `agent import` repeats the engine's warnings on stderr. Against an older engine the new commands answer `404`, and `voice status` refuses the old shape. From 0.8.1 the CLI follows the consistent provider-roles API of 1.2.0-ee: `agent connections list` reads `GET /api/instances/:slug/provider-connections` and shows `USABLE`, so it answers `404` against an engine that predates it |
 | 0.10.x | 1.3.6 and 1.3.6-ee, verified against the engine's develop as of 2026-11-11 (Enterprise, which serves both route sets) | adds `agent conversations recordings`, `agent conversations export-call`, `agent conversations debug` and `org workspace-assignments`; `agent import` gains `--slug` and `--name`, because the engine now answers `409` for a slug already in use where it used to import as `<slug>-imported`. `agent update --set` types each value after the field it sets (the engine now refuses `name` sent as a number), `monitor events --follow` and `agent conversations show --follow` reconnect when the engine ends the stream after 15 minutes, `agent knowledge list` reads every page and reports the total and the failed count, `agent skills env set` refuses a key the skill does not declare and says when a key is stored encrypted, `governance policy list` shows the row ID the assignment and policy writes take, and `agent chat --temperature` and `agent compliance reports --snapshot` are checked locally. `agent conversations recordings`, `export-call` and `org workspace-assignments` need Enterprise; `conversations debug` works against both |
 | 0.9.x | 1.2.x and 1.3.0, and 1.2.x-ee and 1.3.0-ee, verified against the v1.3.0 and v1.3.0-ee tags on 2026-10-14 (OSS and Enterprise); 1.3.4, 1.3.4-ee, 1.3.5 and 1.3.5-ee by comparing the route list | the first public release, under Apache-2.0, installed from this repository: the release tarball for a global install, the tag for a project. No command added or removed: 0.9.0 carries 0.8.1's command set. 0.9.1 adds none either: run without `--org` against an engine that has no `GET /api/service-context`, as an OSS engine, an organization command says `--org` is needed instead of reporting an unmatched route. Engine 1.3.4-ee adds management routes to the 1.2.0-ee list and removes or changes none, so every command 0.9.x sends still has its route; the new routes have no command here yet. Engine 1.3.5-ee adds one route, `GET /api/platform/analytics/trend` for Platform Admins, and removes or changes none. Against an OSS engine only the commands listed under [OSS and Enterprise](#oss-and-enterprise) work; the rest answer `404` |
+| 0.11.x (pending) | the Enterprise release that ships organization custom marketplaces, not yet released | adds `marketplace serve`, which builds local plugin projects and serves them as an unsigned marketplace. It sends nothing to an engine; the engine side, an Organization adding an unsigned marketplace, needs that Enterprise release |
 
 Against an engine older than 1.1.0 the commands added in 0.2.0 answer `404`, and
 `agent a2a enable` is a `400` — the field does not exist there. Everything else
@@ -289,8 +290,9 @@ management keys also through `apikey create`.
 - `member list`, `show`, `remove` and `set-role`, with an explicit `--org`;
 - `apikey list`. Creating and revoking a key needs a signed-in panel session on
   OSS, so `apikey create` and `apikey delete` answer `403` with a key;
-- `api`, every `config` command, and `dev init`, which run locally or forward as
-  given.
+- `api`, every `config` command, `dev init` and `marketplace serve`, which run
+  locally or forward as given. A marketplace served by `marketplace serve` is
+  added to an Organization only on Enterprise.
 
 A write needs `--org` and `--workspace` on both editions (or a context naming
 them). An OSS engine cannot list them for the CLI, so read the slugs from the
@@ -1263,6 +1265,51 @@ reach, and `0` when you interrupt it.
 A dev session lives in memory on **one** engine node: with more than one
 replica, turns served by the others equip no dev tools. Every `dev` read says
 so. The permission is `agent.dev:write` (admin and above).
+
+### `polyant-cli marketplace`
+
+Your own plugin projects, served as an **unsigned marketplace** from this
+machine, so an Organization can install them the way it installs a plugin from
+the official marketplace: as a versioned release, digest checked.
+
+```bash
+# build every project given (default: the current directory) and serve /v1/*
+polyant-cli marketplace serve ./my-plugin ./other-plugin --port 4870
+
+# in another terminal: an HTTPS origin for the engine to reach
+ngrok http 4870
+```
+
+Each project is a plugin directory with a `plugin.json` (`namespace`, a SemVer
+`version`, an `engine` range) and its dependencies installed; the dev kit's
+`templates/plugin` is one. Each is bundled with esbuild into one `worker.mjs`
+with its dependencies inlined, and the tool and hook definitions are read from
+that bundle in a child process. The output directory (`--out`, default
+`.polyant-marketplace/`) holds `v1/catalog.json` and `v1/artifacts/…`; add it to
+`.gitignore`.
+
+Add the HTTPS origin in Polyant under Organization settings → Plugins as an
+unsigned marketplace, which a Platform Admin must have allowed for the
+Organization, and install from the Organization's plugin catalogue.
+
+- **A version is immutable.** The engine refuses a version it has verified with
+  different bytes, so `marketplace serve` refuses to rebuild a version already
+  in the output directory with a different digest: bump `version` in
+  `plugin.json` and restart. Earlier versions stay in the catalogue.
+- **The catalogue is unsigned.** There is no `/v1/catalog.sig.json`; it answers
+  `404`, and the engine does not ask for it when the marketplace is unsigned.
+  `generatedAt` grows with every start, even when the clock does not, because
+  the engine refuses an older catalogue as a rollback.
+- `--token-env <VAR>` requires `Authorization: Bearer $VAR` on every request;
+  give the engine the same token when adding the marketplace. There is no
+  `--token` flag.
+- It listens on `127.0.0.1` only. stdout carries the local URL (one JSON object
+  with `--json`); the build log and one line per request go to stderr. It does
+  not terminate until interrupted, and exits `0` then. A manifest or build
+  problem exits `2` before anything is served.
+
+For edit-and-retry against one agent, `dev connect` is faster: it needs no
+version bump and no install.
 
 ### `polyant-cli whoami`
 
