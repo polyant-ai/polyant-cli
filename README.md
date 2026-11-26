@@ -1288,9 +1288,9 @@ that bundle in a child process. The output directory (`--out`, default
 `.polyant-marketplace/`) holds `v1/catalog.json` and `v1/artifacts/…`; add it to
 `.gitignore`.
 
-Add the HTTPS origin in Polyant under Organization settings → Plugins as an
-unsigned marketplace, which a Platform Admin must have allowed for the
-Organization, and install from the Organization's plugin catalogue.
+Add the HTTPS origin in Polyant under Organization → Integrations → Your
+marketplaces → Add as an unsigned marketplace, which a Platform Admin must have
+allowed for the Organization, and install from Integrations → Add → Marketplace.
 
 - **A version is immutable.** The engine refuses a version it has verified with
   different bytes, so `marketplace serve` refuses to rebuild a version already

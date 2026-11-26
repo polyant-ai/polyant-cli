@@ -196,10 +196,11 @@ async function serve(args: string[], context: CommandContext | undefined, deps: 
       `Serving an unsigned marketplace from ${outDir} on ${server.url}${token === undefined ? "" : " (Bearer token required)"}.`,
       "",
       `Expose it over HTTPS, for example:  ngrok http ${server.port}`,
-      "Then add the https:// origin it prints in Polyant → Organization settings → Plugins → marketplaces, as an",
-      "unsigned marketplace" + (token === undefined ? "" : " with the same access token") +
-        ". That needs a Platform Admin to have granted your Organization custom marketplaces.",
-      "Install from the Organization's plugin catalogue. For every change, bump \"version\" in plugin.json and restart.",
+      "Then add the https:// origin it prints in Polyant → Organization → Integrations → Your marketplaces → Add,",
+      "with Verification set to Unsigned" + (token === undefined ? "" : " and the same access token") +
+        ". That needs a Platform Admin to have enabled \"Own marketplaces\" and \"Unsigned own marketplaces\" for your",
+      "Organization, and \"Read unsigned marketplaces\" on the installation.",
+      "Install from Integrations → Add → Marketplace. For every change, bump \"version\" in plugin.json and restart.",
       "Ctrl-C stops serving.",
       "",
     ].join("\n"),
@@ -215,7 +216,7 @@ const SERVE_USAGE = `Usage: polyant-cli marketplace serve [<plugin-dir>...] [--p
 Build each plugin project (default: the current directory) into a runtime bundle,
 write an unsigned catalogue, and serve /v1/* on http://127.0.0.1:<port> until
 interrupted. Expose it over HTTPS (ngrok http <port>) and add that origin as an
-unsigned marketplace in Polyant → Organization settings → Plugins.
+unsigned marketplace in Polyant → Organization → Integrations → Your marketplaces → Add.
 
   --port <n>          port on 127.0.0.1 (default ${DEFAULT_PORT}; 0 picks a free one)
   --out <dir>         build directory, kept between runs (default ${DEFAULT_OUT_DIR})
