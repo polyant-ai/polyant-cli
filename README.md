@@ -1311,6 +1311,10 @@ Organization, and install from the Organization's plugin catalogue.
 For edit-and-retry against one agent, `dev connect` is faster: it needs no
 version bump and no install.
 
+The whole loop, from the Organization's grant to switching it off, is written
+for a coding agent in `.claude/skills/local-plugin-marketplace/` (linked from
+`.agents/skills/`).
+
 ### `polyant-cli whoami`
 
 Active target, whether the instance answers, and the agents the key can see.
