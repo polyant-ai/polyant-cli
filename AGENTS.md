@@ -121,6 +121,7 @@ its job. Use `monitor status` when you need a gate that fails.
 | who may do what | `role list`, `workspace bindings`, `apikey list` |
 | what a workspace may use | `workspace skills list <ws>`, `workspace plugins list <ws>`, every workspace at once with `org workspace-assignments` |
 | run your local tools against a remote agent | `dev token issue <slug>` → `dev init` → `dev connect <slug> --watch` |
+| install your own plugin builds in an Organization | `marketplace serve [<plugin-dir>...]`, exposed over HTTPS and added as an unsigned marketplace (Enterprise) |
 | anything not covered | `api <METHOD> <path>` |
 
 `org tasks list` is all-or-nothing at the CLI output boundary, but its sequential
@@ -129,8 +130,8 @@ API reads are eventually consistent rather than a server-side snapshot.
 `--follow` has no deadline: bound it with `--max <n>` or you will wait forever.
 The engine ends a live stream after 15 minutes; the follow reconnects on its own
 and notes it on stderr.
-`dev connect` never returns at all — it holds a session open until interrupted,
-and exits `0` when you interrupt it.
+`dev connect` and `marketplace serve` never return at all — they hold a session
+or a server open until interrupted, and exit `0` when you interrupt them.
 
 `agent chat --expect <text>` exits `1` when the reply does not contain that text,
 which makes a scenario check a one-liner.
